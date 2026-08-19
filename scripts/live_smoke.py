@@ -102,7 +102,8 @@ def main() -> int:
     print(f"results={len(liquidity_results)}")
     print(f"snapshot={liquidity.snapshot()}")
     print(f"export={liquidity.export_contract}")
-    print(f"pools={len(liquidity.pools)}")
+    active_pools = [pool for pool in liquidity.pools if pool.state.value not in {"CONSUMED", "INVALIDATED"}]
+    print(f"pools_total={len(liquidity.pools)} active={len(active_pools)}")
 
     print("\nSMOKE_OK")
     return 0
