@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import argparse
 import time
-from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -61,30 +60,35 @@ def _bucket_start(ts: pd.Timestamp, timeframe: str) -> pd.Timestamp:
     return day_open + pd.Timedelta(minutes=(elapsed // minutes) * minutes)
 
 
+def _compact_row(row: pd.Series | None) -> dict[str, object] | None:
+    if row is None:
+        return None
+    return {
+        "O": float(row["open"]),
+        "H": float(row["high"]),
+        "L": float(row["low"]),
+        "C": float(row["close"]),
+        "V": float(row["volume"]),
+        "closed": bool(row["is_closed"]),
+        "complete": bool(row["is_complete"]),
+    }
+
+
 def _compare_bucket(before: pd.DataFrame, after: pd.DataFrame, bucket_ts: pd.Timestamp) -> dict[str, object]:
     b = before[before["timestamp"] == bucket_ts]
     a = after[after["timestamp"] == bucket_ts]
-    if b.empty and a.empty:
-        return {"before": None, "after": None, "changed": False}
     before_row = None if b.empty else b.iloc[-1]
     after_row = None if a.empty else a.iloc[-1]
-
-    def compact(row):
-        if row is None:
-            return None
-        return {
-            "O": float(row["open"]),
-            "H": float(row["high"]),
-            "L": float(row["low"]),
-            "C": float(row["close"]),
-            "V": float(row["volume"]),
-            "closed": bool(row["is_closed"]),
-            "complete": bool(row["is_complete"]),
-        }
-
-    before_compact = compact(before_row)
-    after_compact = compact(after_row)
+    before_compact = _compact_row(before_row)
+    after_compact = _compact_row(after_row)
     return {"before": before_compact, "after": after_compact, "changed": before_compact != after_compact}
+
+
+def _unrelated_rows_unchanged(before: pd.DataFrame, after: pd.DataFrame, bucket_ts: pd.Timestamp) -> bool:
+    columns = ["timestamp", "open", "high", "low", "close", "volume", "is_closed", "is_complete"]
+    b = before[before["timestamp"] != bucket_ts].loc[:, columns].reset_index(drop=True)
+    a = after[after["timestamp"] != bucket_ts].loc[:, columns].reset_index(drop=True)
+    return b.equals(a)
 
 
 def main() -> int:
@@ -104,11 +108,8 @@ def main() -> int:
 
     current_5m = _floor_5m(now)
     close_time = current_5m + pd.Timedelta(minutes=5)
-    if now >= close_time:
-        print("ERROR: current time is not inside a 5m candle window")
-        return 2
-
     start = (now - pd.Timedelta(days=args.history_days)).to_pydatetime()
+
     provider = TvDatafeedProvider(exchange="BIST", max_bars=args.max_bars)
     store = ParquetOHLCVStore(Path(args.cache_root))
     pipeline = MarketDataPipeline(provider, store)
@@ -131,23 +132,21 @@ def main() -> int:
     if before_bar is None:
         print("ERROR: provider did not expose the current 5m candle yet; retry a little later inside the same candle")
         return 3
-
     if bool(before_bar["is_closed"]):
-        print("WARNING: current 5m row is already marked closed; run earlier inside a fresh candle")
+        print("WARNING: current 5m row is already marked closed; retry inside a fresh 5m candle")
+        return 3
 
     print("\n[OPEN PHASE DERIVED BUCKETS]")
     for tf in TARGETS:
         bucket = _bucket_start(current_5m, tf)
         row = before_derived[tf][before_derived[tf]["timestamp"] == bucket]
-        print(f"{tf} bucket={bucket} row=" + ("None" if row.empty else str({
-            "closed": bool(row.iloc[-1]["is_closed"]),
-            "complete": bool(row.iloc[-1]["is_complete"]),
-            "close": float(row.iloc[-1]["close"]),
-            "volume": float(row.iloc[-1]["volume"]),
-        })))
+        print(f"{tf} bucket={bucket} row=" + ("None" if row.empty else str(_compact_row(row.iloc[-1]))))
 
-    # Engines must only see closed+complete data. Record confirmed snapshots before the live bar closes.
     ms_before, pc_before, safe_rows_before = _snapshot_engines(before_derived["1h"])
+    one_hour_bucket = _bucket_start(current_5m, "1h")
+    one_hour_before = before_derived["1h"][before_derived["1h"]["timestamp"] == one_hour_bucket]
+    one_hour_before_complete = bool(not one_hour_before.empty and one_hour_before.iloc[-1]["is_complete"])
+
     print("\n[OPEN PHASE ENGINE CONFIRMED STATE]")
     print(f"safe_1h_rows={safe_rows_before}")
     print(f"market_structure={ms_before}")
@@ -181,29 +180,41 @@ def main() -> int:
     print(f"closed_after={closed_after}")
 
     print("\n[DERIVED BUCKET CHANGES]")
-    changed_targets: list[str] = []
+    unrelated_ok = True
     for tf in TARGETS:
         bucket = _bucket_start(current_5m, tf)
         comparison = _compare_bucket(before_derived[tf], after_derived[tf], bucket)
-        if comparison["changed"]:
-            changed_targets.append(tf)
-        print(f"{tf} bucket={bucket} {comparison}")
+        unrelated_unchanged = _unrelated_rows_unchanged(before_derived[tf], after_derived[tf], bucket)
+        unrelated_ok = unrelated_ok and unrelated_unchanged
+        print(f"{tf} bucket={bucket} {comparison} unrelated_unchanged={unrelated_unchanged}")
 
     ms_after, pc_after, safe_rows_after = _snapshot_engines(after_derived["1h"])
+    one_hour_after = after_derived["1h"][after_derived["1h"]["timestamp"] == one_hour_bucket]
+    one_hour_after_complete = bool(not one_hour_after.empty and one_hour_after.iloc[-1]["is_complete"])
+    one_hour_completed_now = (not one_hour_before_complete) and one_hour_after_complete
+
     print("\n[ENGINE CONFIRMED STATE AFTER CLOSE]")
     print(f"safe_1h_rows_before={safe_rows_before} safe_1h_rows_after={safe_rows_after}")
+    print(f"1h_completed_on_this_close={one_hour_completed_now}")
     print(f"market_structure_before={ms_before}")
     print(f"market_structure_after={ms_after}")
     print(f"pattern_compression_before={pc_before}")
     print(f"pattern_compression_after={pc_after}")
+
+    expected_safe_rows = safe_rows_before + (1 if one_hour_completed_now else 0)
+    engine_progress_ok = safe_rows_after == expected_safe_rows
+    engine_state_immutable_while_1h_open = True
+    if not one_hour_completed_now:
+        engine_state_immutable_while_1h_open = ms_before == ms_after and pc_before == pc_after
 
     print("\n[ASSERTIONS]")
     checks = {
         "open_bar_was_not_closed": before_bar is not None and not bool(before_bar["is_closed"]),
         "same_5m_timestamp_was_replaced": same_timestamp_replaced,
         "same_5m_bar_is_closed_after": closed_after,
-        "only_containing_derived_buckets_changed": set(changed_targets).issubset(set(TARGETS)),
-        "confirmed_engine_input_did_not_include_open_1h": safe_rows_after >= safe_rows_before,
+        "all_unrelated_derived_buckets_unchanged": unrelated_ok,
+        "confirmed_1h_input_progress_exact": engine_progress_ok,
+        "engine_state_immutable_while_1h_open": engine_state_immutable_while_1h_open,
     }
     for name, passed in checks.items():
         print(f"{name}={passed}")
