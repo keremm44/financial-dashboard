@@ -64,37 +64,63 @@ class MarketDataPipeline:
         session: BistEquitySession | None = None,
         target_timeframes: tuple[str, ...] | None = None,
     ) -> PipelineResult:
-        """Refresh a BIST symbol from canonical 5m bars and derive session-safe TFs."""
-
         session = session or BistEquitySession()
         targets = target_timeframes or bist_target_timeframes()
-        invalid = [tf for tf in targets if tf not in bist_target_timeframes()]
-        if invalid:
-            raise ValueError(f"unsupported BIST target timeframe(s): {', '.join(invalid)}")
-
         fetched = self.provider.get_ohlcv(symbol, "5m", start, end)
-        source = str(fetched["source"].iloc[-1]) if not fetched.empty and "source" in fetched.columns else self.provider.__class__.__name__
-
-        session_fetched = filter_bist_session(fetched, session)
-        base = self.store.merge_and_save(
-            session_fetched,
-            symbol=symbol,
-            timeframe="5m",
-            source=source,
-        )
-        # Re-filter the accumulated cache so a stale/out-of-session row from an older
-        # provider version can never participate in a derived candle.
-        base = filter_bist_session(base, session)
+        filtered = filter_bist_session(fetched, session)
+        source = str(filtered["source"].iloc[-1]) if not filtered.empty and "source" in filtered.columns else self.provider.__class__.__name__
+        base = self.store.merge_and_save(filtered, symbol=symbol, timeframe="5m", source=source)
 
         derived: dict[str, pd.DataFrame] = {}
-        for timeframe in targets:
-            frame = resample_bist_5m(base, timeframe, session=session)
-            cached = self.store.merge_and_save(
-                frame,
-                symbol=symbol,
-                timeframe=timeframe,
-                source=source,
-            )
-            derived[timeframe] = cached
-
+        for target in targets:
+            frame = resample_bist_5m(base, target, session=session)
+            cached = self.store.merge_and_save(frame, symbol=symbol, timeframe=target, source=source)
+            derived[target] = cached
         return PipelineResult(base=base, derived=derived)
+
+    def incremental_bist_start(
+        self,
+        *,
+        symbol: str,
+        requested_start: datetime,
+        overlap_bars: int = 1,
+    ) -> datetime:
+        """Return a safe incremental 5m fetch start with overlap for bar replacement."""
+        if overlap_bars < 0:
+            raise ValueError("overlap_bars must be non-negative")
+        latest = self.store.latest_timestamp(symbol, "5m")
+        if latest is None:
+            return requested_start
+
+        requested = pd.Timestamp(requested_start)
+        if requested.tzinfo is None and latest.tzinfo is not None:
+            requested = requested.tz_localize(latest.tzinfo)
+        elif requested.tzinfo is not None and latest.tzinfo is not None:
+            requested = requested.tz_convert(latest.tzinfo)
+
+        candidate = latest - pd.Timedelta(minutes=5 * overlap_bars)
+        start = max(candidate, requested)
+        return start.to_pydatetime()
+
+    def refresh_bist_5m_incremental(
+        self,
+        *,
+        symbol: str,
+        requested_start: datetime,
+        end: datetime,
+        session: BistEquitySession | None = None,
+        target_timeframes: tuple[str, ...] | None = None,
+        overlap_bars: int = 1,
+    ) -> PipelineResult:
+        start = self.incremental_bist_start(
+            symbol=symbol,
+            requested_start=requested_start,
+            overlap_bars=overlap_bars,
+        )
+        return self.refresh_bist_5m(
+            symbol=symbol,
+            start=start,
+            end=end,
+            session=session,
+            target_timeframes=target_timeframes,
+        )
