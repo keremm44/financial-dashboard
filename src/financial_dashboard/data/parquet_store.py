@@ -1,0 +1,54 @@
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pandas as pd
+
+from .schema import CANONICAL_COLUMNS, canonicalize_ohlcv
+
+
+class ParquetOHLCVStore:
+    """Incremental local OHLCV cache keyed by symbol and timeframe."""
+
+    def __init__(self, root: str | Path) -> None:
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _safe_part(value: str) -> str:
+        cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
+        return cleaned or "unknown"
+
+    def path_for(self, symbol: str, timeframe: str) -> Path:
+        return self.root / f"{self._safe_part(symbol)}__{self._safe_part(timeframe)}.parquet"
+
+    def load(self, symbol: str, timeframe: str) -> pd.DataFrame:
+        path = self.path_for(symbol, timeframe)
+        if not path.exists():
+            return pd.DataFrame(columns=CANONICAL_COLUMNS)
+        frame = pd.read_parquet(path)
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="raise")
+        return frame.sort_values("timestamp", kind="stable").reset_index(drop=True)
+
+    def merge_and_save(self, frame: pd.DataFrame, *, symbol: str, timeframe: str, source: str) -> pd.DataFrame:
+        incoming = canonicalize_ohlcv(frame, symbol=symbol, timeframe=timeframe, source=source)
+        existing = self.load(symbol, timeframe)
+        if existing.empty:
+            merged = incoming
+        elif incoming.empty:
+            merged = existing
+        else:
+            merged = pd.concat([existing, incoming], ignore_index=True)
+            merged = merged.sort_values("timestamp", kind="stable")
+            merged = merged.drop_duplicates(subset=["timestamp"], keep="last").reset_index(drop=True)
+
+        path = self.path_for(symbol, timeframe)
+        merged.to_parquet(path, index=False)
+        return merged
+
+    def latest_timestamp(self, symbol: str, timeframe: str) -> pd.Timestamp | None:
+        frame = self.load(symbol, timeframe)
+        if frame.empty:
+            return None
+        return pd.Timestamp(frame.iloc[-1]["timestamp"])

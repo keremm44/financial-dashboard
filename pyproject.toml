@@ -9,6 +9,7 @@ description = "Local-first OHLCV analysis and financial dashboard engine"
 requires-python = ">=3.11"
 dependencies = [
     "pandas>=2.2",
+    "pyarrow>=16",
 ]
 
 [project.optional-dependencies]
