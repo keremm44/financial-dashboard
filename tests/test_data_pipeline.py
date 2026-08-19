@@ -9,6 +9,8 @@ from financial_dashboard.data.pipeline import MarketDataPipeline
 from financial_dashboard.data.provider import MarketDataProvider
 from financial_dashboard.data.resampler import ResamplePolicy
 from financial_dashboard.data.schema import canonicalize_ohlcv
+from financial_dashboard.engines.market_structure import MarketStructureConfig
+from financial_dashboard.engines.market_structure_engine import MarketStructureEngine
 
 
 class _Provider(MarketDataProvider):
@@ -38,6 +40,32 @@ def _base_frame() -> pd.DataFrame:
             "volume": [10, 20, 30, 40, 50, 60],
         }
     )
+
+
+def _multi_day_bist_5m() -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    trading_days = pd.bdate_range("2026-07-20", periods=12)
+    k = 0
+    for day_idx, day in enumerate(trading_days):
+        session_start = pd.Timestamp(day.date()).tz_localize("Europe/Istanbul") + pd.Timedelta(hours=10)
+        for bar_idx in range(96):
+            ts = session_start + pd.Timedelta(minutes=5 * bar_idx)
+            wave = ((bar_idx % 24) - 12) * 0.08
+            day_wave = ((day_idx % 4) - 1.5) * 0.7
+            trend = day_idx * 0.45
+            base = 100.0 + trend + day_wave + wave
+            rows.append(
+                {
+                    "timestamp": ts,
+                    "open": base,
+                    "high": base + 0.55 + (0.05 if bar_idx % 7 == 0 else 0.0),
+                    "low": base - 0.50 - (0.05 if bar_idx % 11 == 0 else 0.0),
+                    "close": base + (0.18 if (k % 3) else -0.12),
+                    "volume": 1000.0 + (bar_idx * 7) + (day_idx * 50),
+                }
+            )
+            k += 1
+    return pd.DataFrame(rows)
 
 
 def test_pipeline_fetches_caches_and_resamples(tmp_path) -> None:
@@ -72,3 +100,61 @@ def test_pipeline_fetches_caches_and_resamples(tmp_path) -> None:
     assert bool(first["is_complete"])
     assert store.latest_timestamp("THYAO", "5m") == pd.Timestamp("2026-08-19T10:25:00+03:00")
     assert store.latest_timestamp("THYAO", "15m") == pd.Timestamp("2026-08-19T10:15:00+03:00")
+
+
+def test_bist_pipeline_builds_all_default_timeframes(tmp_path) -> None:
+    provider = _Provider(_multi_day_bist_5m())
+    store = ParquetOHLCVStore(tmp_path)
+    pipeline = MarketDataPipeline(provider, store)
+
+    result = pipeline.refresh_bist_5m(
+        symbol="THYAO",
+        start=datetime.fromisoformat("2026-07-20T10:00:00+03:00"),
+        end=datetime.fromisoformat("2026-08-04T18:00:00+03:00"),
+    )
+
+    assert provider.calls == 1
+    assert set(result.derived) == {"15m", "30m", "1h", "2h", "4h", "1d"}
+    assert len(result.base) == 12 * 96
+    assert len(result.derived["1h"]) == 12 * 8
+    assert len(result.derived["4h"]) == 12 * 2
+    assert len(result.derived["1d"]) == 12
+    for frame in result.derived.values():
+        assert frame["is_complete"].all()
+        assert frame["is_closed"].all()
+
+
+def test_bist_pipeline_one_hour_output_replays_in_market_structure(tmp_path) -> None:
+    provider = _Provider(_multi_day_bist_5m())
+    store = ParquetOHLCVStore(tmp_path)
+    pipeline = MarketDataPipeline(provider, store)
+
+    result = pipeline.refresh_bist_5m(
+        symbol="THYAO",
+        start=datetime.fromisoformat("2026-07-20T10:00:00+03:00"),
+        end=datetime.fromisoformat("2026-08-04T18:00:00+03:00"),
+        target_timeframes=("1h",),
+    )
+    one_hour = result.derived["1h"]
+
+    config = MarketStructureConfig(
+        external_pivot_len=3,
+        internal_pivot_len=2,
+        atr_length=5,
+        external_min_atr_distance=0.10,
+        internal_min_atr_distance=0.10,
+        min_tick=0.01,
+    )
+    first_engine = MarketStructureEngine(config)
+    second_engine = MarketStructureEngine(config)
+
+    first = first_engine.replay(one_hour)
+    second = second_engine.replay(one_hour)
+
+    assert first
+    assert len(first) == len(one_hour)
+    assert [(r.timestamp, r.state, r.direction, r.score, r.events) for r in first] == [
+        (r.timestamp, r.state, r.direction, r.score, r.events) for r in second
+    ]
+    assert first_engine.export_contract is not None
+    assert first_engine.export_contract.handshake == 314159.0
