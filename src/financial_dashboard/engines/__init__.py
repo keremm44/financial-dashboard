@@ -2,6 +2,7 @@
 
 from .market_structure_engine import MarketStructureEngine
 from .mtf_story_context import MTFStoryContextError, classify_context
+from .mtf_story_engine import classify_story
 from .mtf_story_models import (
     ConflictSeverity,
     ContextAssessment,
@@ -41,4 +42,5 @@ __all__ = [
     "classify_context",
     "MTFStoryTriggerError",
     "classify_trigger",
+    "classify_story",
 ]
