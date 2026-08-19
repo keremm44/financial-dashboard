@@ -26,6 +26,8 @@ class LiquidityConfig:
     min_tick: float = 0.01
     min_touches_active: int = 2
     test_tolerance_factor: float = 1.0
+    pivot_span: int = 2
+    atr_length: int = 14
 
     def __post_init__(self) -> None:
         if self.atr_tolerance <= 0:
@@ -36,6 +38,10 @@ class LiquidityConfig:
             raise ValueError("min_touches_active must be >= 2")
         if self.test_tolerance_factor <= 0:
             raise ValueError("test_tolerance_factor must be > 0")
+        if self.pivot_span < 1:
+            raise ValueError("pivot_span must be >= 1")
+        if self.atr_length < 2:
+            raise ValueError("atr_length must be >= 2")
 
 
 @dataclass(frozen=True, slots=True)
