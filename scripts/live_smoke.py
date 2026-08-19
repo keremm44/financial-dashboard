@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from financial_dashboard.data.engine_input import prepare_engine_input
+from financial_dashboard.data.engine_input import EngineInputError, prepare_engine_input
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.data.pipeline import MarketDataPipeline
 from financial_dashboard.data.tvdatafeed_provider import TvDatafeedProvider
@@ -61,11 +60,23 @@ def main() -> int:
     for timeframe, frame in result.derived.items():
         print(f"{timeframe}={_summary(frame)}")
 
-    if "1h" not in result.derived:
-        print("ERROR: 1h frame was not produced")
-        return 2
+    if result.base.empty:
+        print("\nSMOKE_NO_DATA")
+        print("reason=provider returned no rows for the requested window; retry before treating as a symbol/data failure")
+        return 3
 
-    batch = prepare_engine_input(result.derived["1h"])
+    if "1h" not in result.derived or result.derived["1h"].empty:
+        print("\nSMOKE_NO_ENGINE_INPUT")
+        print("reason=1h frame was not produced")
+        return 4
+
+    try:
+        batch = prepare_engine_input(result.derived["1h"])
+    except EngineInputError as exc:
+        print("\nSMOKE_NO_ENGINE_INPUT")
+        print(f"reason={exc}")
+        return 4
+
     print("\n[engine-input 1h]")
     print(f"quality={batch.source_quality.status.value} rows={len(batch.frame)}")
     if batch.source_quality.warnings:
