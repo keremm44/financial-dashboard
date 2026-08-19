@@ -18,6 +18,8 @@ from .mtf_story_models import (
     role_for_timeframe,
 )
 from .mtf_story_normalizer import MTFStoryNormalizationError, normalize_timeframe_evidence
+from .mtf_story_replay import replay_story_results
+from .mtf_story_state_machine import MTFStoryStateMachine
 from .mtf_story_trigger import MTFStoryTriggerError, classify_trigger
 from .pattern_compression_engine import PatternCompressionEngine
 
@@ -43,4 +45,6 @@ __all__ = [
     "MTFStoryTriggerError",
     "classify_trigger",
     "classify_story",
+    "MTFStoryStateMachine",
+    "replay_story_results",
 ]
