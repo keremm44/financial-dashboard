@@ -70,19 +70,19 @@ def classify_bar_event(
     level = pool.level
 
     if pool.side is LiquiditySide.BSL:
+        if pool.state is LiquidityPoolState.SWEPT and close < level:
+            return "RECLAIM"
         if high > level + tol:
             return "SWEEP" if close <= level else "CONSUME"
         if high >= level - tol:
             return "TEST"
-        if pool.state is LiquidityPoolState.SWEPT and close < level:
-            return "RECLAIM"
     else:
+        if pool.state is LiquidityPoolState.SWEPT and close > level:
+            return "RECLAIM"
         if low < level - tol:
             return "SWEEP" if close >= level else "CONSUME"
         if low <= level + tol:
             return "TEST"
-        if pool.state is LiquidityPoolState.SWEPT and close > level:
-            return "RECLAIM"
     return None
 
 
