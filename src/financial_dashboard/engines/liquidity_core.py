@@ -98,6 +98,9 @@ def classify_bar_event(
     atr: float | None,
     config: LiquidityConfig,
 ) -> str | None:
+    if pool.state is LiquidityPoolState.FORMING:
+        return None
+
     tol = tolerance(atr, config) * config.test_tolerance_factor
     level = pool.level
 
@@ -128,7 +131,11 @@ def apply_bar_event(
     atr: float | None,
     config: LiquidityConfig,
 ) -> LiquidityPool:
-    if pool.state in {LiquidityPoolState.CONSUMED, LiquidityPoolState.INVALIDATED}:
+    if pool.state in {
+        LiquidityPoolState.FORMING,
+        LiquidityPoolState.CONSUMED,
+        LiquidityPoolState.INVALIDATED,
+    }:
         return pool
 
     event = classify_bar_event(pool, high=high, low=low, close=close, atr=atr, config=config)
@@ -136,7 +143,7 @@ def apply_bar_event(
         return pool
 
     state = pool.state
-    if event == "TEST" and state in {LiquidityPoolState.FORMING, LiquidityPoolState.ACTIVE}:
+    if event == "TEST" and state in {LiquidityPoolState.ACTIVE, LiquidityPoolState.RECLAIMED}:
         state = LiquidityPoolState.TESTED
     elif event == "SWEEP":
         state = LiquidityPoolState.SWEPT
