@@ -147,13 +147,21 @@ class TimeframeStoryState:
 
 @dataclass(frozen=True, slots=True)
 class ContextAssessment:
-    """Structural 1D/4H/2H context classification output.
-
-    This contract deliberately does not contain BUY/SELL, trigger, entry, or final
-    story fields. Tur 3 only establishes hierarchical market context.
-    """
+    """Structural 1D/4H/2H context classification output."""
 
     state: ContextState
+    direction: Direction
+    anchor_timeframe: str | None
+    usable_timeframes: tuple[str, ...] = ()
+    reasons: tuple[str, ...] = ()
+    conflicts: tuple[StoryConflict, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class TriggerAssessment:
+    """Tactical 1H/30m/15m trigger classification output."""
+
+    state: TriggerState
     direction: Direction
     anchor_timeframe: str | None
     usable_timeframes: tuple[str, ...] = ()
