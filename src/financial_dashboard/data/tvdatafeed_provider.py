@@ -172,6 +172,9 @@ class TvDatafeedProvider(MarketDataProvider):
         start_ts = start_ts.tz_localize(self.timezone) if start_ts.tzinfo is None else start_ts.tz_convert(self.timezone)
         end_ts = end_ts.tz_localize(self.timezone) if end_ts.tzinfo is None else end_ts.tz_convert(self.timezone)
         work = work[(work["timestamp"] >= start_ts) & (work["timestamp"] <= end_ts)].copy()
+        work["symbol"] = symbol
+        work["timeframe"] = timeframe
+        work["source"] = self.source
         work["is_closed"] = self._mark_closed(work, timeframe, end)
         work["is_complete"] = True
 
