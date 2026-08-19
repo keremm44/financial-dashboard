@@ -83,12 +83,7 @@ class StoryConflict:
 
 @dataclass(frozen=True, slots=True)
 class RawTimeframeEvidence:
-    """Uninterpreted engine evidence for one timeframe.
-
-    Tur 1 deliberately keeps the two engine contracts intact. Tur 2 owns the
-    translation into `TimeframeStoryState`; this model must not silently reinterpret
-    Market Structure or Pattern/Compression semantics.
-    """
+    """Uninterpreted engine evidence for one timeframe."""
 
     timeframe: str
     role: TimeframeRole
@@ -148,6 +143,22 @@ class TimeframeStoryState:
     @property
     def usable(self) -> bool:
         return self.data_quality is not DataQualityStatus.INVALID
+
+
+@dataclass(frozen=True, slots=True)
+class ContextAssessment:
+    """Structural 1D/4H/2H context classification output.
+
+    This contract deliberately does not contain BUY/SELL, trigger, entry, or final
+    story fields. Tur 3 only establishes hierarchical market context.
+    """
+
+    state: ContextState
+    direction: Direction
+    anchor_timeframe: str | None
+    usable_timeframes: tuple[str, ...] = ()
+    reasons: tuple[str, ...] = ()
+    conflicts: tuple[StoryConflict, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
