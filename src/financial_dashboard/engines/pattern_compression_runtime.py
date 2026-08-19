@@ -368,10 +368,11 @@ class PatternLifecycleRuntime:
             )
             age = bar.bar_index - self.break_candidate_bar
             if back_inside and bar.bar_index > self.break_candidate_bar:
+                was_attempt = self.state == ST_BREAK_ATTEMPT
                 self.state = ST_BREAK_FAILED
                 self.invalid_reason = (
                     "Kırılım denemesi formasyon içine döndü"
-                    if self.state == ST_BREAK_ATTEMPT
+                    if was_attempt
                     else "Teyitsiz kırılım formasyon içine döndü"
                 )
             elif bar.bar_index > self.break_candidate_bar and age <= self.profile.confirm_window and (strong_same_side_close or attempt_retest):
@@ -463,8 +464,6 @@ class PatternLifecycleRuntime:
         close_down = close_down_raw and (
             not self.config.use_breakout_quality_filter or down_strength.strength >= self.profile.min_break_strength
         )
-        weak_up = close_up_raw and not close_up
-        weak_down = close_down_raw and not close_down
         closed_boundary_break = close_up_raw or close_down_raw
 
         if closed_boundary_break and not hard_geometry_invalid:
