@@ -57,6 +57,38 @@ def add_touch(pool: LiquidityPool, touch: LiquidityTouch, atr: float | None, con
     return replace(updated, state=state, last_event="POOL_TOUCH")
 
 
+def cluster_touch(
+    pools: tuple[LiquidityPool, ...] | list[LiquidityPool],
+    *,
+    side: LiquiditySide,
+    touch: LiquidityTouch,
+    atr: float | None,
+    config: LiquidityConfig,
+) -> tuple[tuple[LiquidityPool, ...], LiquidityPool]:
+    """Assign a touch to the nearest eligible same-side pool, else create one.
+
+    Selection is deterministic: distance first, identity second. Terminal pools are
+    never revived by a later touch.
+    """
+    items = list(pools)
+    candidates = [
+        (abs(float(touch.price) - pool.level), pool.identity, index, pool)
+        for index, pool in enumerate(items)
+        if pool.side is side
+        and pool.state not in {LiquidityPoolState.CONSUMED, LiquidityPoolState.INVALIDATED}
+        and same_pool(touch.price, pool.level, atr, config)
+    ]
+    if not candidates:
+        created = new_pool(side, touch)
+        items.append(created)
+        return tuple(items), created
+
+    _, _, index, chosen = min(candidates, key=lambda item: (item[0], item[1]))
+    updated = add_touch(chosen, touch, atr, config)
+    items[index] = updated
+    return tuple(items), updated
+
+
 def classify_bar_event(
     pool: LiquidityPool,
     *,
