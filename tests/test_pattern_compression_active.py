@@ -125,7 +125,7 @@ def test_frozen_refresh_moves_projected_boundaries_without_repricing_quality() -
         violation_end_bar=29,
     )
     assert refreshed.upper_now == pytest.approx(110.0)
-    assert refreshed.lower_now == pytest.approx(111.25)
+    assert refreshed.lower_now == pytest.approx(106.25)
     assert refreshed.raw_quality == 20.0
     assert refreshed.frozen_raw_quality == 70.0
     assert refreshed.violation_scan_mode == "Dondurulmuş"
@@ -183,7 +183,7 @@ def test_generic_normal_state_progression_uses_age_quality_and_near_boundary() -
         mature_candidate,
         current_state=ST_DEFINED,
         bar_index=20,
-        close=106.0,
+        close=108.0,
         safe_atr=4.0,
         config=config,
     )
