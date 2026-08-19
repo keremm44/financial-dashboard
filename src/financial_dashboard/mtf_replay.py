@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from .data.engine_input import EngineInputBatch, prepare_engine_input
 from .data.parquet_store import ParquetOHLCVStore
-from .engines.market_structure import MarketStructureEngine
+from .engines.market_structure_engine import MarketStructureEngine
 from .engines.models import EngineResult
 
 
