@@ -55,7 +55,10 @@ def _ascending_triangle_bars(*, include_breakout: bool = False) -> list[dict]:
     for index in range(24 if include_breakout else 21):
         lower_boundary = 96.8 + 0.4 * index
         high = 108.0 + 0.01 * index
-        low = lower_boundary + 0.50
+        # Keep ordinary lows comfortably above the intended rising support pivots,
+        # so bars 8 and 16 are actual centered pivot lows rather than merely points
+        # on the conceptual support line.
+        low = lower_boundary + 2.0
         if index in {4, 12}:
             high = 110.0
         if index == 8:
