@@ -13,6 +13,7 @@ from .mtf_story_models import (
     TriggerState,
     role_for_timeframe,
 )
+from .mtf_story_normalizer import MTFStoryNormalizationError, normalize_timeframe_evidence
 from .pattern_compression_engine import PatternCompressionEngine
 
 __all__ = [
@@ -28,4 +29,6 @@ __all__ = [
     "StoryConflict",
     "MTFStoryResult",
     "role_for_timeframe",
+    "MTFStoryNormalizationError",
+    "normalize_timeframe_evidence",
 ]
