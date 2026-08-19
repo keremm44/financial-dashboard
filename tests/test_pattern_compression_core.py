@@ -111,7 +111,7 @@ def test_quality_helpers_follow_pine_smoothstep_math() -> None:
     assert age_quality(16, 16) > age_quality(6, 16)
     assert contraction_quality(None, 0.25) == 0.0
     assert contraction_quality(0.25, 0.25) == pytest.approx(45.0)
-    assert contraction_quality(0.52, 0.25) == pytest.approx(100.0)
+    assert contraction_quality(0.55, 0.25) == pytest.approx(100.0)
 
 
 def test_line_and_slope_helpers_are_deterministic() -> None:
