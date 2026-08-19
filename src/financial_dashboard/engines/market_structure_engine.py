@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import pandas as pd
 
-from .market_structure import MarketStructureConfig, MarketStructureEngine as _SwingCoreEngine
-from .market_structure_runtime import MarketStructureRuntime
+from .market_structure import MarketStructureConfig, MarketStructureEngine as _SwingCoreEngine, SIDE_HIGH, SIDE_LOW, SwingPoint
+from .market_structure_runtime_bridge import MarketStructureRuntime
 from .market_structure_state import BreakConfig
 from .models import Direction, EngineResult
 
@@ -38,6 +39,28 @@ class MarketStructureEngine(_SwingCoreEngine):
         runtime_lock = self._runtime.locks_candidate(incoming.scope, candidate) if hasattr(self, "_runtime") else False
         return super()._candidate_update(candidate, incoming, locked_by_break=locked_by_break or runtime_lock)
 
+    def _commit_provisional(self, scope_state, snapshot: SwingPoint, confirm_bar: int, evidence: str, quality_floor: float) -> SwingPoint:
+        if not snapshot.valid:
+            return SwingPoint()
+        previous_same = self._last_historical(scope_state.swings, snapshot.side)
+        previous_opposite = self._last_historical(scope_state.swings, SIDE_LOW if snapshot.side == SIDE_HIGH else SIDE_HIGH)
+        confirmed = self._promote(snapshot, previous_same, previous_opposite, confirm_bar)
+        confirmed = replace(
+            confirmed,
+            evidence_text=evidence,
+            quality=max(confirmed.quality or 0.0, quality_floor),
+        )
+        scope_state.swings.append(confirmed)
+        if confirmed.side == SIDE_HIGH:
+            scope_state.last_confirmed_high_identity = confirmed.identity
+            if scope_state.high_candidate.valid and scope_state.high_candidate.identity == confirmed.identity and scope_state.high_candidate.source_bar == confirmed.source_bar:
+                scope_state.high_candidate = SwingPoint()
+        else:
+            scope_state.last_confirmed_low_identity = confirmed.identity
+            if scope_state.low_candidate.valid and scope_state.low_candidate.identity == confirmed.identity and scope_state.low_candidate.source_bar == confirmed.source_bar:
+                scope_state.low_candidate = SwingPoint()
+        return confirmed
+
     def update(self, bar: pd.Series | dict[str, Any]) -> EngineResult | None:
         row = dict(bar) if isinstance(bar, dict) else bar.to_dict()
         if not bool(row.get("is_closed", True)):
@@ -66,6 +89,9 @@ class MarketStructureEngine(_SwingCoreEngine):
                 low=clean["low"],
                 close=clean["close"],
                 safe_atr=safe_atr,
+                commit_provisional=lambda snapshot, confirm_bar, evidence, quality_floor: self._commit_provisional(
+                    self._external, snapshot, confirm_bar, evidence, quality_floor
+                ),
             )
         )
         structure_events.extend(
@@ -80,6 +106,9 @@ class MarketStructureEngine(_SwingCoreEngine):
                 low=clean["low"],
                 close=clean["close"],
                 safe_atr=safe_atr,
+                commit_provisional=lambda snapshot, confirm_bar, evidence, quality_floor: self._commit_provisional(
+                    self._internal, snapshot, confirm_bar, evidence, quality_floor
+                ),
             )
         )
 
