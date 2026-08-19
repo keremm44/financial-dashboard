@@ -25,7 +25,7 @@ from .pattern_compression_core import (
     is_pennant,
     line_price,
 )
-from .pattern_compression_geometry import PatternGeometryAnalysis
+from .pattern_compression_geometry import PatternGeometryAnalysis, pine_round_int
 
 
 def depth_quality(depth: float | None) -> float:
@@ -38,6 +38,10 @@ def duration_quality(duration_ratio: float | None) -> float:
 
 def is_specialized(pattern_type: str) -> bool:
     return is_flag(pattern_type) or is_pennant(pattern_type)
+
+
+def inclined_pennant_max_duration(max_consolidation_bars: int) -> int:
+    return pine_round_int(float(max_consolidation_bars) * 0.85)
 
 
 class PatternPoleEvaluator:
@@ -377,7 +381,7 @@ class SpecializedPatternEvaluator:
             and 0.06 <= bear_depth <= 0.70 and bear_height_ratio <= 0.46 and bear_duration_ratio <= 2.80
             and formed_duration <= self.profile.max_consolidation_bars and consolidation_efficiency < bear_eff + 0.08
         )
-        max_inclined_duration = int(round(float(self.profile.max_consolidation_bars) * 0.85))
+        max_inclined_duration = inclined_pennant_max_duration(self.profile.max_consolidation_bars)
         bull_inclined_base = bool(
             bull_inclined_pennant and bull_linked and bull_depth is not None and bull_height_ratio is not None and bull_duration_ratio is not None
             and bull_pole.quality >= self.profile.min_pole_quality + 10.0
