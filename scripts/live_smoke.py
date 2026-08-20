@@ -9,7 +9,7 @@ from financial_dashboard.data.engine_input import EngineInputError, prepare_engi
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.data.pipeline import MarketDataPipeline
 from financial_dashboard.data.tvdatafeed_provider import TvDatafeedProvider
-from financial_dashboard.engines import MarketStructureEngine, PatternCompressionEngine
+from financial_dashboard.engines import LiquidityEngine, MarketStructureEngine, PatternCompressionEngine
 
 
 TZ = ZoneInfo("Europe/Istanbul")
@@ -95,6 +95,15 @@ def main() -> int:
     print(f"results={len(pattern_results)}")
     print(f"snapshot={pattern.snapshot()}")
     print(f"export={pattern.export_contract}")
+
+    liquidity = LiquidityEngine()
+    liquidity_results = liquidity.replay(batch.frame)
+    print("\n[liquidity 1h]")
+    print(f"results={len(liquidity_results)}")
+    print(f"snapshot={liquidity.snapshot()}")
+    print(f"export={liquidity.export_contract}")
+    active_pools = [pool for pool in liquidity.pools if pool.state.value not in {"CONSUMED", "INVALIDATED"}]
+    print(f"pools_total={len(liquidity.pools)} active={len(active_pools)}")
 
     print("\nSMOKE_OK")
     return 0
