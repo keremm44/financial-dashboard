@@ -14,9 +14,13 @@ from .schema import CANONICAL_COLUMNS, canonicalize_ohlcv
 class GapFillReport:
     expected_closed_slots: int
     tv_bars: int
+    yahoo_bars: int
+    yahoo_overlap_with_tv: int
+    yahoo_missing_slot_candidates: int
     yahoo_filled: int
     unresolved_gaps: int
     fallback_ratio: float
+    unresolved_timestamps: tuple[pd.Timestamp, ...] = ()
 
 
 class HybridBist5mProvider(MarketDataProvider):
@@ -39,7 +43,7 @@ class HybridBist5mProvider(MarketDataProvider):
         self.primary = primary
         self.fallback = fallback
         self.session = session or BistEquitySession()
-        self.last_gap_report = GapFillReport(0, 0, 0, 0, 0.0)
+        self.last_gap_report = GapFillReport(0, 0, 0, 0, 0, 0, 0, 0.0, ())
 
     def _ts(self, value: datetime) -> pd.Timestamp:
         ts = pd.Timestamp(value)
@@ -114,6 +118,10 @@ class HybridBist5mProvider(MarketDataProvider):
             )
 
         primary_ts = set(pd.to_datetime(primary["timestamp"])) if not primary.empty else set()
+        fallback_ts = set(pd.to_datetime(fallback["timestamp"])) if not fallback.empty else set()
+        yahoo_overlap = len(primary_ts.intersection(fallback_ts))
+        yahoo_missing_candidates = len(fallback_ts.difference(primary_ts))
+
         accepted_rows: list[pd.Series] = []
         if not fallback.empty:
             for _, row in fallback.iterrows():
@@ -135,7 +143,9 @@ class HybridBist5mProvider(MarketDataProvider):
         )
         merged = pd.concat([primary, accepted_frame], ignore_index=True)
         if merged.empty:
-            self.last_gap_report = GapFillReport(0, 0, 0, 0, 0.0)
+            self.last_gap_report = GapFillReport(
+                0, 0, len(fallback), yahoo_overlap, yahoo_missing_candidates, 0, 0, 0.0, ()
+            )
             return canonicalize_ohlcv(
                 pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"]),
                 symbol=symbol,
@@ -155,16 +165,21 @@ class HybridBist5mProvider(MarketDataProvider):
         )
         merged_ts = set(pd.to_datetime(merged["timestamp"]))
         expected_set = set(expected)
-        unresolved = len(expected_set.difference(merged_ts))
+        unresolved_set = expected_set.difference(merged_ts)
+        unresolved_timestamps = tuple(sorted(unresolved_set))
         yahoo_filled = int((merged["source"] == "YAHOO_FALLBACK").sum())
         tv_bars = int(len(merged) - yahoo_filled)
         denominator = max(1, tv_bars + yahoo_filled)
         self.last_gap_report = GapFillReport(
             expected_closed_slots=len(expected),
             tv_bars=tv_bars,
+            yahoo_bars=int(len(fallback)),
+            yahoo_overlap_with_tv=yahoo_overlap,
+            yahoo_missing_slot_candidates=yahoo_missing_candidates,
             yahoo_filled=yahoo_filled,
-            unresolved_gaps=unresolved,
+            unresolved_gaps=len(unresolved_timestamps),
             fallback_ratio=yahoo_filled / denominator,
+            unresolved_timestamps=unresolved_timestamps,
         )
         return canonicalize_ohlcv(
             merged,
