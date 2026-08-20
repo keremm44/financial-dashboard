@@ -129,6 +129,16 @@ class TechnicalEvidencePacket:
     levels: tuple[NormalizedLevel, ...] = ()
 
     def __post_init__(self) -> None:
+        packet_timeframe = self.timeframe.strip().lower()
+        wrong_evidence_timeframes = sorted(
+            item.id for item in self.evidence if item.timeframe.strip().lower() != packet_timeframe
+        )
+        wrong_level_timeframes = sorted(
+            level.id for level in self.levels if level.timeframe.strip().lower() != packet_timeframe
+        )
+        if wrong_evidence_timeframes or wrong_level_timeframes:
+            raise ValueError("packet cannot contain evidence or levels from another timeframe")
+
         evidence_ids = [item.id for item in self.evidence]
         if len(evidence_ids) != len(set(evidence_ids)):
             raise ValueError("duplicate technical evidence id")
