@@ -137,7 +137,8 @@ def test_mtf_story_is_derived_but_not_discarded():
 
     assert item.provenance_type is ProvenanceType.DERIVED
     assert item.role is EvidenceRole.CONTEXT
-    assert item.strength == 84.0
+    assert item.quality == 84.0
+    assert item.strength is None
     assert item.raw_export["confidence"] == 0.78
 
 
@@ -219,7 +220,9 @@ def test_support_resistance_adapter_keeps_zones_and_break_reference():
     assert item.direction is EvidenceDirection.BULL
     assert item.role is EvidenceRole.LOCATION
     break_level = next(level for level in packet.levels if level.level_type == "BREAK_BOUNDARY")
-    assert break_level.source_bar == 118
+    assert break_level.source_bar is None
+    assert break_level.raw_metadata["break_confirmed_index"] == 118
+    assert break_level.raw_metadata["source_bar_status"] == "UNKNOWN_ORIGIN"
     assert break_level.price == 110.0
 
 
