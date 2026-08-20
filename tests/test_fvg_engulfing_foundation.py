@@ -74,7 +74,7 @@ def test_minimum_tick_must_be_positive() -> None:
 
 
 def test_final_public_surface_keeps_tur1_formation_contract_and_adds_lifecycle_facade() -> None:
-    assert FvgEngulfingEngine.__module__ == "financial_dashboard.engines.fvg_engulfing_final"
+    assert FvgEngulfingEngine.__module__ == "financial_dashboard.engines.fvg_engulfing"
     assert FvgFormation.__name__ == "FvgFormation"
     assert EngulfingFormation.__name__ == "EngulfingFormation"
     assert FormationSnapshot.__name__ == "FormationSnapshot"
