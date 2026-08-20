@@ -34,6 +34,7 @@ class SupportResistanceConfig:
     max_range_height_atr: float = 8.0
     max_net_progress_ratio: float = 0.35
     min_range_quality: float = 50.0
+    range_identity_min_score: float = 0.58
     break_buffer_atr: float = 0.07
     min_tick: float = 0.01
 
@@ -50,6 +51,7 @@ class ConfirmedPivot:
 @dataclass(frozen=True, slots=True)
 class RangeSnapshot:
     valid: bool = False
+    identity: int = 0
     state: RangeState = RangeState.INSUFFICIENT
     known_index: int | None = None
     start_index: int | None = None
@@ -70,12 +72,14 @@ class RangeSnapshot:
     upper_close_violations: int = 0
     lower_close_violations: int = 0
     boundary_stability: float = 0.0
+    identity_score: float = 0.0
     quality: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
 class SupportResistanceExport:
     state: str | None = None
+    range_identity: int | None = None
     upper_center: float | None = None
     upper_top: float | None = None
     upper_bottom: float | None = None
@@ -84,6 +88,8 @@ class SupportResistanceExport:
     lower_bottom: float | None = None
     mid_price: float | None = None
     quality: float | None = None
+    boundary_stability: float | None = None
+    identity_score: float | None = None
     upper_touches: int = 0
     lower_touches: int = 0
     upper_close_violations: int = 0
@@ -135,6 +141,34 @@ def _pair_overlap_score(a: dict[str, Any], b: dict[str, Any], min_tick: float) -
     return _clamp100((overlap / union) * 70.0 + (body_overlap / body_union) * 30.0)
 
 
+def _interval_overlap_ratio(low_a: float, high_a: float, low_b: float, high_b: float, min_tick: float) -> float:
+    intersection = max(0.0, min(high_a, high_b) - max(low_a, low_b))
+    union = max(max(high_a, high_b) - min(low_a, low_b), min_tick)
+    return max(0.0, min(1.0, intersection / union))
+
+
+def _identity_score(previous: RangeSnapshot, upper: float, lower: float, half: float, start: int, now: int, min_tick: float) -> float:
+    if not previous.valid or previous.upper_top is None or previous.upper_bottom is None or previous.lower_top is None or previous.lower_bottom is None:
+        return 0.0
+    upper_overlap = _interval_overlap_ratio(previous.upper_bottom, previous.upper_top, upper - half, upper + half, min_tick)
+    lower_overlap = _interval_overlap_ratio(previous.lower_bottom, previous.lower_top, lower - half, lower + half, min_tick)
+    candidate_mid = (upper + lower) * 0.5
+    previous_mid = previous.mid_price if previous.mid_price is not None else candidate_mid
+    height_ref = max(abs(upper - lower), previous.height or 0.0, min_tick)
+    mid_similarity = max(0.0, min(1.0, 1.0 - abs(previous_mid - candidate_mid) / height_ref))
+    time_overlap = 1.0 if previous.start_index is not None and start <= now and previous.start_index <= now else 0.0
+    # Pine geometry identity weights renormalized after removing Wyckoff event linkage.
+    return upper_overlap * 0.316 + lower_overlap * 0.316 + mid_similarity * 0.263 + time_overlap * 0.105
+
+
+def _boundary_blend_for_state(state: RangeState) -> float:
+    if state in {RangeState.CANDIDATE, RangeState.GEOMETRY}:
+        return 0.35
+    if state == RangeState.DEFINED:
+        return 0.08
+    return 0.0
+
+
 class SupportResistanceRangeEngine(BaseEngine):
     """Wyckoff-derived range geometry only; no phase/climax/story semantics."""
 
@@ -145,6 +179,7 @@ class SupportResistanceRangeEngine(BaseEngine):
         self._low_pivots: list[ConfirmedPivot] = []
         self._snapshot: EngineResult | None = None
         self._range = RangeSnapshot()
+        self._next_range_identity = 1
         self.export_contract = SupportResistanceExport()
 
     def _reset(self) -> None:
@@ -153,6 +188,7 @@ class SupportResistanceRangeEngine(BaseEngine):
         self._low_pivots = []
         self._snapshot = None
         self._range = RangeSnapshot()
+        self._next_range_identity = 1
         self.export_contract = SupportResistanceExport()
 
     def _confirm_new_pivot(self) -> None:
@@ -196,24 +232,42 @@ class SupportResistanceRangeEngine(BaseEngine):
         if len(highs) < 2 or len(lows) < 2:
             return RangeSnapshot()
 
-        upper = float(median([p.price for p in highs]))
-        lower = float(median([p.price for p in lows]))
-        if upper <= lower:
+        raw_upper = float(median([p.price for p in highs]))
+        raw_lower = float(median([p.price for p in lows]))
+        if raw_upper <= raw_lower:
             return RangeSnapshot()
 
+        now = len(self._rows) - 1
         atr = _atr(self._rows, min_tick=self.config.min_tick)
         half = max(self.config.min_tick * 3.0, atr * self.config.zone_tolerance_atr)
+        raw_start = max(min(p.origin_index for p in highs), min(p.origin_index for p in lows))
+        raw_start = max(raw_start, now - self.config.max_range_scan)
+        previous = self._range
+        identity_score = _identity_score(previous, raw_upper, raw_lower, half, raw_start, now, self.config.min_tick)
+        same_identity = previous.valid and identity_score >= self.config.range_identity_min_score
+
+        if same_identity and previous.upper_center is not None and previous.lower_center is not None:
+            blend = _boundary_blend_for_state(previous.state)
+            upper = previous.upper_center * (1.0 - blend) + raw_upper * blend
+            lower = previous.lower_center * (1.0 - blend) + raw_lower * blend
+            start = previous.start_index if previous.start_index is not None else raw_start
+            identity = previous.identity
+        else:
+            upper = raw_upper
+            lower = raw_lower
+            start = raw_start
+            identity = self._next_range_identity
+            self._next_range_identity += 1
+
         upper_top, upper_bottom = upper + half, upper - half
         lower_top, lower_bottom = lower + half, lower - half
-        start = max(min(p.origin_index for p in highs), min(p.origin_index for p in lows))
-        start = max(start, len(self._rows) - 1 - self.config.max_range_scan)
-        duration = len(self._rows) - 1 - start
+        duration = now - start
         height = upper - lower
         height_atr = height / max(atr, self.config.min_tick)
 
         upper_touches, first_up, last_up = self._touch_count(highs, upper, half, start)
         lower_touches, first_dn, last_dn = self._touch_count(lows, lower, half, start)
-        internal = sum(1 for p in self._high_pivots + self._low_pivots if start <= p.origin_index <= len(self._rows) - 1 and lower_bottom <= p.price <= upper_top)
+        internal = sum(1 for p in self._high_pivots + self._low_pivots if start <= p.origin_index <= now and lower_bottom <= p.price <= upper_top)
 
         scan = self._rows[start:]
         overlaps = [_pair_overlap_score(scan[i - 1], scan[i], self.config.min_tick) for i in range(1, len(scan))]
@@ -241,14 +295,12 @@ class SupportResistanceRangeEngine(BaseEngine):
         else:
             height_q = _clamp100((self.config.max_range_height_atr * 1.5 - height_atr) / (self.config.max_range_height_atr * 0.5) * 100.0)
 
-        previous = self._range
-        if previous.valid and previous.upper_center is not None and previous.lower_center is not None:
-            shift = (abs(previous.upper_center - upper) + abs(previous.lower_center - lower)) / max(atr, self.config.min_tick)
-            stability_q = _clamp100(100.0 - shift * 42.0 - (upper_viol + lower_viol) * 5.0)
+        if same_identity and previous.upper_center is not None and previous.lower_center is not None:
+            raw_shift_atr = (abs(previous.upper_center - raw_upper) + abs(previous.lower_center - raw_lower)) / max(atr, self.config.min_tick)
+            stability_q = _clamp100(100.0 - raw_shift_atr * 42.0 - (upper_viol + lower_viol) * 5.0)
         else:
             stability_q = _clamp100(70.0 - (upper_viol + lower_viol) * 5.0)
 
-        # Pine range-quality families, renormalized after intentionally removing Wyckoff phase context.
         quality = _clamp100(
             touch_q * 0.22
             + distribution_q * 0.11
@@ -283,8 +335,9 @@ class SupportResistanceRangeEngine(BaseEngine):
 
         return RangeSnapshot(
             valid=basic,
+            identity=identity,
             state=state,
-            known_index=len(self._rows) - 1,
+            known_index=now,
             start_index=start,
             upper_center=upper,
             upper_top=upper_top,
@@ -303,6 +356,7 @@ class SupportResistanceRangeEngine(BaseEngine):
             upper_close_violations=upper_viol,
             lower_close_violations=lower_viol,
             boundary_stability=stability_q,
+            identity_score=identity_score,
             quality=quality,
         )
 
@@ -319,6 +373,8 @@ class SupportResistanceRangeEngine(BaseEngine):
             if value is not None:
                 levels[key] = float(value)
         reasons = (
+            f"range_identity={r.identity}",
+            f"identity_score={r.identity_score:.3f}",
             f"touches={r.upper_touches}/{r.lower_touches}",
             f"overlap={r.overlap_score:.2f}",
             f"progress={r.net_progress_ratio:.3f}",
@@ -338,6 +394,7 @@ class SupportResistanceRangeEngine(BaseEngine):
         )
         self.export_contract = SupportResistanceExport(
             state=r.state.value if r.valid else None,
+            range_identity=r.identity if r.valid else None,
             upper_center=r.upper_center,
             upper_top=r.upper_top,
             upper_bottom=r.upper_bottom,
@@ -346,6 +403,8 @@ class SupportResistanceRangeEngine(BaseEngine):
             lower_bottom=r.lower_bottom,
             mid_price=r.mid_price,
             quality=r.quality if r.valid else None,
+            boundary_stability=r.boundary_stability if r.valid else None,
+            identity_score=r.identity_score if r.valid else None,
             upper_touches=r.upper_touches,
             lower_touches=r.lower_touches,
             upper_close_violations=r.upper_close_violations,
