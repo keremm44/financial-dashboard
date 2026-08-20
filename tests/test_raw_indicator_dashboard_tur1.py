@@ -49,7 +49,6 @@ def _frame(count: int = 140) -> pd.DataFrame:
 def test_pine_style_ema_starts_at_first_finite_source() -> None:
     values = np.array([1.0, 2.0, 3.0, 4.0])
     result = _ema(values, 3)
-    # alpha=.5: 1, 1.5, 2.25, 3.125
     assert result.tolist() == pytest.approx([1.0, 1.5, 2.25, 3.125])
 
 
@@ -131,8 +130,7 @@ def test_stateful_trend_marks_dominant_single_step_pending() -> None:
 
 
 def test_volume_quality_becomes_adequate_with_usable_varying_volume() -> None:
-    engine = RawIndicatorDashboardEngine()
-    result = engine.replay(_frame())[-1]
+    result = RawIndicatorDashboardEngine().replay(_frame())[-1]
     assert result.volume_quality == VolumeQuality.ADEQUATE
     assert result.volume_calculable is True
     assert result.volume_reliable is True
@@ -145,9 +143,9 @@ def test_missing_volume_never_fabricates_flow_evidence() -> None:
     result = RawIndicatorDashboardEngine().replay(frame)[-1]
     assert result.volume_quality == VolumeQuality.MISSING
     assert result.volume_calculable is False
-    assert result.indicators["CMF"].valid is False
+    assert not result.indicators["CMF"].valid
     assert result.indicators["CMF"].evidence is None
-    assert result.indicators["OBV"].valid is False
+    assert not result.indicators["OBV"].valid
     assert result.indicators["OBV"].evidence is None
 
 
@@ -185,8 +183,7 @@ def test_timing_evidence_is_relative_to_065_capacity() -> None:
 
 def test_momentum_raw_formula_is_close_minus_close_n() -> None:
     frame = _frame()
-    engine = RawIndicatorDashboardEngine(RawIndicatorConfig(momentum_length=10))
-    result = engine.replay(frame)[-1]
+    result = RawIndicatorDashboardEngine(RawIndicatorConfig(momentum_length=10)).replay(frame)[-1]
     expected = frame.iloc[-1]["close"] - frame.iloc[-11]["close"]
     assert result.indicators["MOMENTUM"].value == pytest.approx(expected)
 
@@ -227,8 +224,7 @@ def test_source_gap_does_not_mutate_confirmed_snapshot() -> None:
 
 def test_replay_equals_incremental_final_snapshot() -> None:
     frame = _frame(120)
-    replay_engine = RawIndicatorDashboardEngine()
-    replay_final = replay_engine.replay(frame)[-1]
+    replay_final = RawIndicatorDashboardEngine().replay(frame)[-1]
 
     incremental = RawIndicatorDashboardEngine()
     for row in frame.to_dict("records"):
@@ -249,5 +245,5 @@ def test_future_tail_cannot_change_historical_snapshot() -> None:
 def test_warmup_is_explicit_not_fake_zero_evidence() -> None:
     result = RawIndicatorDashboardEngine().replay(_frame(8))[-1]
     assert result.data_quality == RawDataQuality.WARMUP
-    assert result.indicators["RSI"].valid is False
+    assert not result.indicators["RSI"].valid
     assert result.indicators["RSI"].evidence is None
