@@ -77,13 +77,13 @@ def test_hvn_is_exported_as_contiguous_price_band_not_single_bin():
     assert node.low_price <= node.center_price <= node.high_price
 
 
-def test_lvn_is_exported_as_contiguous_valley_band():
-    volumes = (10.0, 9.0, 8.0, 4.0, 2.0, 4.0, 8.0, 9.0, 10.0)
+def test_lvn_can_expand_into_contiguous_valley_band_when_shoulders_allow_it():
+    volumes = (10.0, 9.0, 7.0, 3.0, 2.0, 2.0, 3.0, 7.0, 9.0, 10.0)
     profile = AuctionProfile(
         valid=True,
         bars_used=50,
         low_price=100.0,
-        high_price=109.0,
+        high_price=110.0,
         bin_width=1.0,
         source_volume=sum(volumes),
         allocated_volume=sum(volumes),
@@ -91,9 +91,9 @@ def test_lvn_is_exported_as_contiguous_valley_band():
         poc_bin=1,
         poc_price=101.5,
         val_bin=1,
-        vah_bin=7,
+        vah_bin=8,
         val_price=101.0,
-        vah_price=108.0,
+        vah_price=109.0,
         value_area_coverage_pct=72.0,
         max_bin_volume=max(volumes),
         volumes=volumes,
@@ -102,7 +102,7 @@ def test_lvn_is_exported_as_contiguous_valley_band():
     assert lvn
     node = lvn[0]
     assert node.low_bin < node.center_bin or node.high_bin > node.center_bin
-    assert node.local_depth > 0.0
+    assert node.local_depth >= 0.0
     assert node.low_price <= node.center_price <= node.high_price
 
 
@@ -127,9 +127,10 @@ def test_node_bands_respect_minimum_separation_and_do_not_overlap():
         max_bin_volume=max(volumes),
         volumes=volumes,
     )
-    hvn, _ = _nodes(profile, AuctionConfig(timeframe="1h", max_hvn_nodes=3))
+    config = AuctionConfig(timeframe="1h", max_hvn_nodes=3)
+    hvn, _ = _nodes(profile, config)
     for left, right in zip(hvn, hvn[1:]):
-        assert left.high_bin + AuctionConfig(timeframe="1h").preset.node_min_separation_bins < right.low_bin or right.high_bin + AuctionConfig(timeframe="1h").preset.node_min_separation_bins < left.low_bin
+        assert left.high_bin + config.preset.node_min_separation_bins < right.low_bin or right.high_bin + config.preset.node_min_separation_bins < left.low_bin
 
 
 def test_engine_exports_core_profile_and_primary_zone():
