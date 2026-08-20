@@ -38,9 +38,10 @@ def test_migration_step_requires_value_center_plus_boundary_agreement():
     assert poc_dir == 1
     assert value_dir == 1
 
-    # Only VAH expands. Center movement stays below threshold and VAL is unchanged,
-    # therefore one boundary alone must not be called migration.
-    one_boundary = _profile(poc=100.0, val=98.0, vah=102.2, bin_width=0.10)
+    # Only VAH expands a little. VAH itself clears its boundary threshold, but
+    # the resulting value-center displacement remains below the center threshold.
+    # One boundary vote alone therefore must not become value migration.
+    one_boundary = _profile(poc=100.0, val=98.0, vah=102.1, bin_width=0.10)
     _, value_dir, *_ = _migration_step(one_boundary, older, config, atr=1.0)
     assert value_dir == 0
 
