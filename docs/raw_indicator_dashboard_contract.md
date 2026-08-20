@@ -23,6 +23,7 @@ Tur-1 ports only the raw-indicator/evidence half of the Pine source:
 - stateful trend classification with pending/hysteresis
 - raw validity
 - ten signed evidence values plus relative-evidence normalization
+- raw evidence counts and weighted net-evidence diagnostic
 
 The following are intentionally not implemented in Tur-1:
 
@@ -59,15 +60,21 @@ Trend output contains:
 
 A dominant one-bar reversal may set visible direction to zero while the previously confirmed direction remains in state memory. The previous direction is only replaced by a confirmed opposite direction or cleared when neither confirmation, pending evidence, nor hold conditions remain.
 
+CMF and OBV are not eligible for the stateful trend engine while volume is not calculable. In those periods their confirmed direction memory is reset rather than allowed to leak across invalid source periods.
+
 ## Evidence contract
 
 Evidence strength is:
 
 `direction × state factor × (60% consistency + 40% movement strength) × zone modifier × trust`
 
-Standard evidence maximum is 1.00. Stochastic and Stochastic RSI are timing evidence and have a raw maximum of 0.65; their relative evidence is normalized back to -1..+1.
+For the source v2.3.7 raw ten-evidence layer, each valid raw indicator calls this function with `trust=1.0`. Standard evidence maximum is 1.00. Stochastic and Stochastic RSI are timing evidence and have a raw maximum of 0.65; their relative evidence is normalized back to -1..+1.
 
-CMF and OBV evidence are gated by calculable volume and scaled by volume trust. Missing volume is never fabricated.
+CMF and OBV raw evidence is gated by calculable volume but is **not** multiplied by volume trust. Volume trust instead scales their effective contribution weights in the weighted net-evidence diagnostic and, in Tur-2, in the FLOW/family decision layer. This avoids applying the same volume-confidence penalty twice. Missing volume is never fabricated.
+
+## Replay / performance contract
+
+Batch replay computes the causal source arrays and state histories once, then projects confirmed/open/source-gap snapshots in original row order. It must remain equivalent to bar-by-bar incremental execution. Open and source-incomplete rows cannot enter indicator history.
 
 ## No-lookahead / data-quality contract
 
