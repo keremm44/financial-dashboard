@@ -12,7 +12,7 @@ from financial_dashboard.engines import (
     StabilTrendEngine,
     WeeklyTrendState,
 )
-from financial_dashboard.engines.stabil_trend_engine import _atr, _confirmed_pivots
+from financial_dashboard.engines.stabil_trend_engine import _confirmed_pivots
 from financial_dashboard.engines.stabil_trend_runtime import _daily_snapshot_runtime, _h4_snapshot_runtime
 
 
@@ -31,6 +31,27 @@ def _frame(n: int, freq: str, *, start: str, base: float = 100.0, step: float = 
         h = max(o, c) + 0.65
         l = min(o, c) - 0.65
         rows.append({"timestamp": ts, "open": o, "high": h, "low": l, "close": c, "volume": volume, "is_closed": True, "is_complete": True})
+        price = c
+    return pd.DataFrame(rows)
+
+
+def _quiet_h4(n: int = 55) -> pd.DataFrame:
+    rows = []
+    times = pd.date_range("2026-05-01", periods=n, freq="4h", tz=TZ)
+    price = 100.0
+    for i, ts in enumerate(times):
+        o = price
+        c = o + (0.05 if i % 2 == 0 else -0.04)
+        rows.append({
+            "timestamp": ts,
+            "open": o,
+            "high": max(o, c) + 0.30,
+            "low": min(o, c) - 0.30,
+            "close": c,
+            "volume": 1000.0,
+            "is_closed": True,
+            "is_complete": True,
+        })
         price = c
     return pd.DataFrame(rows)
 
@@ -78,7 +99,6 @@ def test_pivot_is_unknown_until_right_span_has_closed() -> None:
         {"timestamp": pd.Timestamp("2026-01-01", tz=TZ) + pd.Timedelta(days=i), "open": 10.0, "high": h, "low": 8.0, "close": 9.0, "volume": 1000.0, "is_closed": True, "is_complete": True}
         for i, h in enumerate([10.0, 11.0, 15.0, 12.0, 11.0, 10.0])
     ])
-    # Short ATR only for this isolated known-time contract test.
     atr = [1.0] * len(frame)
     prefix_highs, _ = _confirmed_pivots(frame.iloc[:4].reset_index(drop=True), 2, atr[:4])
     assert prefix_highs == []
@@ -92,37 +112,33 @@ def test_pivot_is_unknown_until_right_span_has_closed() -> None:
 def test_daily_pullback_origin_and_reference_atr_freeze_after_start() -> None:
     cfg = _small_cfg()
     daily = _frame(42, "1D", start="2026-01-01", step=0.28)
-    # Build a clear pullback after the structure/readiness window.
-    for i, drop in zip(range(35, 42), [0.5, 1.2, 1.8, 2.3, 2.6, 2.9, 3.1]):
-        prior = float(daily.loc[34, "close"])
+    prior = float(daily.loc[34, "close"])
+    for i, drop in zip(range(35, 39), [0.35, 0.70, 0.95, 1.10]):
         c = prior - drop
-        daily.loc[i, ["open", "high", "low", "close", "volume"]] = [c + 0.2, c + 0.6, c - 0.6, c, 900.0]
-    # The weekly context only maps the already-computed daily raw state; it must not mutate the frozen origin.
-    snap_1 = _daily_snapshot_runtime(daily.iloc[:39].reset_index(drop=True), WeeklyTrendState.UP_STABLE, cfg)
-    snap_2 = _daily_snapshot_runtime(daily.iloc[:41].reset_index(drop=True), WeeklyTrendState.UP_STABLE, cfg)
-    if snap_1.pullback_start_index is None:
-        pytest.skip("synthetic geometry did not satisfy the strict Pine structure-quality gate")
+        daily.loc[i, ["open", "high", "low", "close", "volume"]] = [c + 0.15, c + 0.55, c - 0.55, c, 900.0]
+
+    snap_1 = _daily_snapshot_runtime(daily.iloc[:37].reset_index(drop=True), WeeklyTrendState.UP_STABLE, cfg)
+    snap_2 = _daily_snapshot_runtime(daily.iloc[:39].reset_index(drop=True), WeeklyTrendState.UP_STABLE, cfg)
+    assert snap_1.pullback_start_index is not None
     assert snap_2.pullback_start_index == snap_1.pullback_start_index
     assert snap_2.pullback_origin_high == pytest.approx(snap_1.pullback_origin_high)
     assert snap_2.pullback_reference_atr == pytest.approx(snap_1.pullback_reference_atr)
-    assert snap_2.pullback_bars >= snap_1.pullback_bars
+    assert snap_2.pullback_bars > snap_1.pullback_bars
 
 
 def test_h4_displacement_freezes_event_reference_and_can_fail_only_later() -> None:
     cfg = _small_cfg()
-    h4 = _frame(55, "4h", start="2026-05-01", step=0.03, volume=1000.0)
-    # Large bullish displacement after readiness.
+    h4 = _quiet_h4()
     i = 50
     prev = float(h4.loc[i - 1, "close"])
     h4.loc[i, ["open", "high", "low", "close", "volume"]] = [prev, prev + 4.4, prev - 0.2, prev + 4.1, 2500.0]
     candidate = _h4_snapshot_runtime(h4.iloc[: i + 1].reset_index(drop=True), cfg)
-    assert candidate.lifecycle in {H4Lifecycle.DISPLACEMENT_ACTIVE, H4Lifecycle.BUYERS_EMERGING}
+    assert candidate.lifecycle == H4Lifecycle.DISPLACEMENT_ACTIVE
     assert candidate.event_index == i
     frozen_low = candidate.event_low
     frozen_mid = candidate.event_mid
     assert frozen_low is not None and frozen_mid is not None
 
-    # The next confirmed bar breaks below the frozen event low: failure is known only now.
     j = i + 1
     h4.loc[j, ["open", "high", "low", "close", "volume"]] = [frozen_low + 0.3, frozen_low + 0.5, frozen_low - 1.0, frozen_low - 0.6, 1200.0]
     failed = _h4_snapshot_runtime(h4.iloc[: j + 1].reset_index(drop=True), cfg)
