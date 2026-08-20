@@ -40,7 +40,8 @@ from .stabil_trend_engine import (
     WeeklyTrendSnapshot,
     WeeklyTrendState,
 )
-from .stabil_trend_final import StabilMainState, StabilReason, StabilTrendEngine, StabilTrendExport
+from .stabil_trend_final import StabilMainState, StabilReason, StabilTrendExport
+from .stabil_trend_public import StabilTrendEngine
 from .support_resistance_engine import (
     ConfirmedPivot,
     RangeSnapshot,
