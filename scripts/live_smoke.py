@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from financial_dashboard.data.engine_input import EngineInputError, prepare_engine_input
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.data.pipeline import MarketDataPipeline
+from financial_dashboard.data.resampler import ResamplePolicy, resample_ohlcv
 from financial_dashboard.data.tvdatafeed_provider import TvDatafeedProvider
 from financial_dashboard.engines import (
     AuctionConfig,
@@ -15,6 +16,7 @@ from financial_dashboard.engines import (
     LiquidityEngine,
     MarketStructureEngine,
     PatternCompressionEngine,
+    StabilTrendEngine,
     SupportResistanceRangeEngine,
     VolumeParticipationEngine,
 )
@@ -135,6 +137,35 @@ def main() -> int:
     print(f"core_export={participation.export_contract}")
     print(f"lifecycle_export={participation.lifecycle_export}")
     print(f"final_export={participation.final_export}")
+
+    if "4h" in result.derived and "1d" in result.derived and not result.derived["4h"].empty and not result.derived["1d"].empty:
+        try:
+            h4_batch = prepare_engine_input(result.derived["4h"])
+            daily_batch = prepare_engine_input(result.derived["1d"])
+            weekly = resample_ohlcv(
+                daily_batch.frame,
+                ResamplePolicy(
+                    target_timeframe="1w",
+                    rule="W-MON",
+                    expected_base_bars=5,
+                    closed="left",
+                    label="left",
+                ),
+            )
+            stabil = StabilTrendEngine()
+            stabil_export = stabil.analyze(weekly, daily_batch.frame, h4_batch.frame)
+            print("\n[stabil-trend W/D/H4]")
+            print(f"weekly={_summary(weekly)}")
+            print(f"daily_safe={_summary(daily_batch.frame)}")
+            print(f"h4_safe={_summary(h4_batch.frame)}")
+            print(f"export={stabil_export}")
+            print(f"engine_result={stabil.engine_result()}")
+        except EngineInputError as exc:
+            print("\n[stabil-trend W/D/H4]")
+            print(f"unavailable={exc}")
+    else:
+        print("\n[stabil-trend W/D/H4]")
+        print("unavailable=4h or 1d derived frame missing")
 
     print("\nSMOKE_OK")
     return 0
