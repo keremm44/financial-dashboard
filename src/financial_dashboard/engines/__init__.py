@@ -1,5 +1,6 @@
 """Stateful analysis-engine interfaces and shared result models."""
 
+from .auction_engine import AuctionConfig, AuctionExport, AuctionVolumeProfileEngine
 from .liquidity_engine import LiquidityEngine, LiquidityExport
 from .liquidity_models import LiquidityConfig, LiquidityPool, LiquidityPoolState, LiquiditySide, LiquidityTouch
 from .market_structure_engine import MarketStructureEngine
@@ -35,6 +36,9 @@ __all__ = [
     "LiquidityPoolState",
     "LiquiditySide",
     "LiquidityTouch",
+    "AuctionVolumeProfileEngine",
+    "AuctionConfig",
+    "AuctionExport",
     "TimeframeRole",
     "RawTimeframeEvidence",
     "TimeframeStoryState",
