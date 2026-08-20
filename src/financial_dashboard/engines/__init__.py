@@ -33,6 +33,30 @@ from .support_resistance_engine import (
     SupportResistanceExport,
     SupportResistanceRangeEngine,
 )
+from .volume_participation_engine import (
+    EffortResultClass,
+    ParticipationExport,
+    ParticipationState,
+    VolumeLevel,
+    VolumeParticipationConfig,
+    VolumeParticipationMetrics,
+)
+from .volume_participation_lifecycle import (
+    AbsorptionEvent,
+    AbsorptionSide,
+    AbsorptionStage,
+    BreakParticipationEvent,
+    BreakStage,
+    ConfirmedParticipationPivot,
+    LifecycleStage,
+    ParticipationLifecycleConfig,
+    ParticipationLifecycleExport,
+)
+from .volume_participation_final import (
+    FinalParticipationState,
+    UnifiedParticipationExport,
+    VolumeParticipationEngine,
+)
 
 __all__ = [
     "MarketStructureEngine",
@@ -53,6 +77,24 @@ __all__ = [
     "RangeState",
     "RangeSnapshot",
     "ConfirmedPivot",
+    "VolumeParticipationEngine",
+    "VolumeParticipationConfig",
+    "VolumeParticipationMetrics",
+    "ParticipationExport",
+    "ParticipationState",
+    "VolumeLevel",
+    "EffortResultClass",
+    "ParticipationLifecycleConfig",
+    "ParticipationLifecycleExport",
+    "LifecycleStage",
+    "AbsorptionSide",
+    "AbsorptionStage",
+    "AbsorptionEvent",
+    "BreakStage",
+    "BreakParticipationEvent",
+    "ConfirmedParticipationPivot",
+    "FinalParticipationState",
+    "UnifiedParticipationExport",
     "TimeframeRole",
     "RawTimeframeEvidence",
     "TimeframeStoryState",

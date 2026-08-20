@@ -15,6 +15,8 @@ from financial_dashboard.engines import (
     LiquidityEngine,
     MarketStructureEngine,
     PatternCompressionEngine,
+    SupportResistanceRangeEngine,
+    VolumeParticipationEngine,
 )
 
 
@@ -117,6 +119,22 @@ def main() -> int:
     print(f"results={len(auction_results)}")
     print(f"snapshot={auction.snapshot()}")
     print(f"export={auction.export_contract}")
+
+    support_resistance = SupportResistanceRangeEngine()
+    support_results = support_resistance.replay(batch.frame)
+    print("\n[support-resistance-range 1h]")
+    print(f"results={len(support_results)}")
+    print(f"snapshot={support_resistance.snapshot()}")
+    print(f"export={support_resistance.export_contract}")
+
+    participation = VolumeParticipationEngine()
+    participation_results = participation.replay(batch.frame)
+    print("\n[volume-participation-absorption 1h]")
+    print(f"results={len(participation_results)}")
+    print(f"snapshot={participation.snapshot()}")
+    print(f"core_export={participation.export_contract}")
+    print(f"lifecycle_export={participation.lifecycle_export}")
+    print(f"final_export={participation.final_export}")
 
     print("\nSMOKE_OK")
     return 0
