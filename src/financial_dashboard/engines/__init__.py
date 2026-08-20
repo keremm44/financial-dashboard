@@ -63,8 +63,16 @@ from .volatility_bands_fib_engine import (
     DataQualityStatus,
     VolatilityBandsConfig,
     VolatilityBandsExport,
-    VolatilityBandsFibEngine,
     VolatilityState,
+)
+from .volatility_bands_fib_final import (
+    CoherenceState,
+    DirectionBias,
+    FibonacciState,
+    StructureFibAlignment,
+    StructureState,
+    VolatilityBandsFibEngine,
+    VolatilityBandsFibFinalExport,
 )
 
 __all__ = [
@@ -107,10 +115,16 @@ __all__ = [
     "VolatilityBandsFibEngine",
     "VolatilityBandsConfig",
     "VolatilityBandsExport",
+    "VolatilityBandsFibFinalExport",
     "VolatilityState",
     "BandState",
     "BandAgreement",
     "DataQualityStatus",
+    "StructureState",
+    "FibonacciState",
+    "StructureFibAlignment",
+    "DirectionBias",
+    "CoherenceState",
     "TimeframeRole",
     "RawTimeframeEvidence",
     "TimeframeStoryState",
