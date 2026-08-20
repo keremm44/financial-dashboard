@@ -1,5 +1,6 @@
 """Lossless Technical Evidence adapter layer between deterministic engines and decisions."""
 
+from .bundle_policy import build_technical_evidence_bundle
 from .policy import (
     adapt_auction,
     adapt_fvg_engulfing,
@@ -46,7 +47,6 @@ from .tur2 import (
     SemanticEvidenceSummary,
     SemanticRoleSummary,
     TechnicalEvidenceBundle,
-    build_technical_evidence_bundle,
     independence_group_for,
     link_visible_dependencies,
     validate_dependency_graph,
