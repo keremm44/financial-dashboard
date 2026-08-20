@@ -18,7 +18,7 @@ from financial_dashboard.engines.volatility_bands_fib_final import VolatilityBan
 from financial_dashboard.engines.volume_participation_final import UnifiedParticipationExport
 
 from . import adapters as _raw
-from .models import EvidenceContext, EvidenceDirection, TechnicalEvidencePacket
+from .models import EvidenceContext, EvidenceDirection, ProvenanceType, TechnicalEvidencePacket
 
 
 def _replace_items(packet: TechnicalEvidencePacket, mapper) -> TechnicalEvidencePacket:
@@ -90,7 +90,8 @@ def adapt_volume_participation(
     *,
     source_quality: Any = None,
 ) -> TechnicalEvidencePacket:
-    return _raw.adapt_volume_participation(export, context, source_quality=source_quality)
+    packet = _raw.adapt_volume_participation(export, context, source_quality=source_quality)
+    return _replace_items(packet, lambda item: replace(item, provenance_type=ProvenanceType.AGGREGATED))
 
 
 def adapt_stabil(
@@ -100,7 +101,10 @@ def adapt_stabil(
     source_quality: Any = None,
 ) -> TechnicalEvidencePacket:
     packet = _raw.adapt_stabil(export, context, source_quality=source_quality)
-    return _replace_items(packet, lambda item: replace(item, quality=None))
+    return _replace_items(
+        packet,
+        lambda item: replace(item, quality=None, provenance_type=ProvenanceType.AGGREGATED),
+    )
 
 
 def adapt_volatility(
@@ -143,7 +147,8 @@ def adapt_ham(
     *,
     source_quality: Any = None,
 ) -> TechnicalEvidencePacket:
-    return _raw.adapt_ham(export, context, source_quality=source_quality)
+    packet = _raw.adapt_ham(export, context, source_quality=source_quality)
+    return _replace_items(packet, lambda item: replace(item, provenance_type=ProvenanceType.AGGREGATED))
 
 
 def merge_packets(context: EvidenceContext, packets):
