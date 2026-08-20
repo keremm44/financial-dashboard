@@ -44,7 +44,7 @@ def _cfg() -> VolumeParticipationConfig:
         progress_lookback=3,
         minimum_nonzero_volume_share=0.5,
         minimum_directional_share=0.0,
-        minimum_capital_pressure=-1.0,
+        minimum_capital_pressure=0.13,
         participation_minimum_evidence=3,
         participation_confirmation_bars=2,
         confirmation_minimum_rvol=0.0,
@@ -97,10 +97,7 @@ def test_conflict_has_priority_over_confirmed_absorption() -> None:
     engine.replay(_base())
     metrics = engine.metrics_history[-1]
     engine._absorption = AbsorptionEvent(side=AbsorptionSide.UPPER, stage=AbsorptionStage.CONFIRMED)
-    # Force the exact directional-proxy heavy opposition family.
-    metrics = metrics.__class__(**{
-        field: getattr(metrics, field) for field in metrics.__dataclass_fields__
-    })
+    metrics = metrics.__class__(**{field: getattr(metrics, field) for field in metrics.__dataclass_fields__})
     object.__setattr__(metrics, "up_evidence_count", engine.config.participation_minimum_evidence)
     object.__setattr__(metrics, "down_evidence_count", engine.config.participation_minimum_evidence)
     object.__setattr__(metrics, "directional_value_pressure_5", 0.0)
@@ -121,7 +118,6 @@ def test_supported_break_has_priority_over_confirmed_participation() -> None:
         frozen_atr=1.0,
         frozen_buffer=0.08,
     )
-    # Opposite confirmed participation + supported break is conflict by Pine priority.
     assert engine._resolve_final(metrics, False) == FinalParticipationState.CONFLICT
 
 
