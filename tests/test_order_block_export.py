@@ -51,6 +51,19 @@ def _bar(*, closed: bool = True, complete: bool = True) -> dict:
     }
 
 
+def _seq_bar(i: int, o: float, h: float, l: float, c: float) -> dict:
+    return {
+        "timestamp": pd.Timestamp("2026-01-02 10:00", tz=TZ) + pd.Timedelta(minutes=5 * i),
+        "open": o,
+        "high": h,
+        "low": l,
+        "close": c,
+        "volume": 1000.0,
+        "is_closed": True,
+        "is_complete": True,
+    }
+
+
 def test_export_uses_active_remaining_zone_and_keeps_sides_independent() -> None:
     engine = OrderBlockEngine()
     engine._records = [
@@ -139,6 +152,43 @@ def test_closed_complete_bar_refreshes_empty_export_and_quality() -> None:
 
     assert engine.export == OrderBlockExport()
     assert engine.last_data_quality == OrderBlockDataQuality.OK
+
+
+def test_real_lifecycle_confirmation_creates_export_then_fill_updates_active_zone() -> None:
+    engine = OrderBlockEngine()
+    engine.update(_seq_bar(0, 102.0, 110.0, 100.0, 99.0))
+    engine.update(_seq_bar(1, 99.0, 111.0, 100.5, 106.0))
+    engine.update(_seq_bar(2, 110.5, 112.0, 110.02, 111.0))
+
+    assert engine.export.bull == OrderBlockSideExport(
+        state=1.0, top=110.0, bottom=100.0, fill=0.0, source_bar=0.0
+    )
+
+    engine.update(_seq_bar(3, 108.0, 109.0, 105.0, 106.0))
+
+    assert engine.export.bull.state == 1.0
+    assert engine.export.bull.top == 105.0
+    assert engine.export.bull.bottom == 100.0
+    assert engine.export.bull.fill == pytest.approx(0.50)
+    assert engine.export.bull.source_bar == 0.0
+
+
+def test_replay_and_incremental_finish_with_same_export_snapshot() -> None:
+    rows = [
+        _seq_bar(0, 102.0, 110.0, 100.0, 99.0),
+        _seq_bar(1, 99.0, 111.0, 100.5, 106.0),
+        _seq_bar(2, 110.5, 112.0, 110.02, 111.0),
+        _seq_bar(3, 108.0, 109.0, 105.0, 106.0),
+    ]
+    replay = OrderBlockEngine()
+    replay.replay(pd.DataFrame(rows))
+
+    incremental = OrderBlockEngine()
+    for row in rows:
+        incremental.update(row)
+
+    assert replay.export == incremental.export
+    assert replay.records == incremental.records
 
 
 def test_public_engine_points_to_final_order_block_facade() -> None:
