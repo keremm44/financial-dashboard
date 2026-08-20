@@ -450,9 +450,17 @@ def _reaction(rows: list[dict[str, Any]], config: AuctionConfig, atr: float) -> 
     if reject_down:
         return AuctionReaction("REJECT_DOWN", 1, ref.val_price, 0, down_exc / atr, down_reentry / atr)
     touch = max(ref.bin_width * 0.20, config.min_tick * 2.0)
-    if current["high"] >= ref.vah_price - touch:
+    test_up = current["high"] >= ref.vah_price - touch
+    test_down = current["low"] <= ref.val_price + touch
+    if test_up and test_down:
+        up_near = abs(current["close"] - ref.vah_price)
+        down_near = abs(current["close"] - ref.val_price)
+        if up_near <= down_near:
+            return AuctionReaction("TEST_UP", 0, ref.vah_price)
+        return AuctionReaction("TEST_DOWN", 0, ref.val_price)
+    if test_up:
         return AuctionReaction("TEST_UP", 0, ref.vah_price)
-    if current["low"] <= ref.val_price + touch:
+    if test_down:
         return AuctionReaction("TEST_DOWN", 0, ref.val_price)
     return AuctionReaction("INSIDE_VALUE", 0)
 
