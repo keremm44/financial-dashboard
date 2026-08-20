@@ -71,9 +71,9 @@ from .volatility_bands_fib_final import (
     FibonacciState,
     StructureFibAlignment,
     StructureState,
-    VolatilityBandsFibEngine,
     VolatilityBandsFibFinalExport,
 )
+from .volatility_bands_fib import VolatilityBandsFibEngine
 
 __all__ = [
     "MarketStructureEngine",
