@@ -85,6 +85,9 @@ def test_range_foundation_builds_structured_support_and_resistance_bands() -> No
     assert export.lower_touches >= 2
     assert export.quality is not None
     assert export.boundary_stability is not None
+    assert export.price_location is not None
+    assert export.nearest_support_low is not None
+    assert export.nearest_resistance_high is not None
 
 
 def test_same_range_keeps_identity_and_damps_boundary_drift() -> None:
@@ -142,6 +145,34 @@ def test_first_close_break_is_candidate_and_only_next_confirmed_bar_can_confirm(
     assert engine.export_contract.break_confirmed_index == 81
     assert engine.export_contract.break_boundary == frozen_boundary
     assert engine.export_contract.break_buffer == frozen_buffer
+
+
+def test_confirmed_up_break_archives_resistance_as_role_support_and_resets_epoch() -> None:
+    engine, _ = _mature_engine()
+    upper = engine.export_contract.upper_top
+    assert upper is not None
+
+    candidate = engine.update(_bar(80, o=upper - 0.5, h=upper + 8.0, l=upper - 1.0, c=upper + 7.0))
+    assert candidate is not None and candidate.state == RangeState.BREAK_CANDIDATE.value
+    old_identity = engine.export_contract.range_identity
+    old_upper_bottom = candidate.levels["upper_bottom"]
+    old_upper_top = candidate.levels["upper_top"]
+
+    confirmed = engine.update(_bar(81, o=upper + 7.0, h=upper + 9.0, l=upper + 5.0, c=upper + 8.0))
+    assert confirmed is not None and confirmed.state == RangeState.BREAK_CONFIRMED.value
+    export = engine.export_contract
+    assert export.role_reversal_support_low == old_upper_bottom
+    assert export.role_reversal_support_high == old_upper_top
+    assert export.nearest_support_low == old_upper_bottom
+    assert export.nearest_support_high == old_upper_top
+
+    # Old pre-break pivots are before the new epoch and cannot instantly reconstruct the same range.
+    post = engine.update(_bar(82, o=upper + 8.0, h=upper + 9.0, l=upper + 6.0, c=upper + 7.5))
+    assert post is not None
+    assert engine.export_contract.range_identity is None
+    assert engine.export_contract.role_reversal_support_low == old_upper_bottom
+    assert engine.export_contract.role_reversal_support_high == old_upper_top
+    assert engine.export_contract.range_identity != old_identity
 
 
 def test_break_candidate_return_inside_fails_instead_of_confirming() -> None:
