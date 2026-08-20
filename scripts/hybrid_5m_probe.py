@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
+import warnings
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -34,13 +37,25 @@ def main() -> int:
                 TvDatafeedProvider(max_bars=5000),
                 YahooFinanceIntradayProvider(),
             )
-            frame = hybrid.get_ohlcv(symbol, "5m", start, end)
+            # Third-party providers can emit non-actionable warnings/no-login chatter.
+            # Keep the probe output audit-friendly while preserving raised exceptions.
+            sink = io.StringIO()
+            with warnings.catch_warnings(), contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                warnings.simplefilter("ignore")
+                frame = hybrid.get_ohlcv(symbol, "5m", start, end)
+
             report = hybrid.last_gap_report
             print(
-                f"{symbol}: total={len(frame)} tv={report.tv_bars} "
+                f"{symbol}: total={len(frame)} tv={report.tv_bars} yahoo={report.yahoo_bars} "
+                f"yahoo_overlap={report.yahoo_overlap_with_tv} "
+                f"yahoo_missing_candidates={report.yahoo_missing_slot_candidates} "
                 f"yahoo_filled={report.yahoo_filled} unresolved={report.unresolved_gaps} "
                 f"fallback_ratio={report.fallback_ratio:.4%} expected_closed={report.expected_closed_slots}"
             )
+            if report.unresolved_timestamps:
+                unresolved_text = ", ".join(str(ts) for ts in report.unresolved_timestamps[:12])
+                suffix = " ..." if len(report.unresolved_timestamps) > 12 else ""
+                print(f"  unresolved_timestamps={unresolved_text}{suffix}")
             if not frame.empty:
                 print(
                     f"  first={frame.iloc[0]['timestamp']} last={frame.iloc[-1]['timestamp']} "
