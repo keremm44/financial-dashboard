@@ -116,6 +116,15 @@ class SupportResistanceExport:
     break_confirmed_index: int | None = None
     break_boundary: float | None = None
     break_buffer: float | None = None
+    price_location: str | None = None
+    nearest_support_low: float | None = None
+    nearest_support_high: float | None = None
+    nearest_resistance_low: float | None = None
+    nearest_resistance_high: float | None = None
+    role_reversal_support_low: float | None = None
+    role_reversal_support_high: float | None = None
+    role_reversal_resistance_low: float | None = None
+    role_reversal_resistance_high: float | None = None
 
 
 def _clamp100(value: float) -> float:
@@ -206,6 +215,9 @@ class SupportResistanceRangeEngine(BaseEngine):
         self._snapshot: EngineResult | None = None
         self._range = RangeSnapshot()
         self._next_range_identity = 1
+        self._range_epoch_start = 0
+        self._role_support: tuple[float, float] | None = None
+        self._role_resistance: tuple[float, float] | None = None
         self.export_contract = SupportResistanceExport()
 
     def _reset(self) -> None:
@@ -215,6 +227,9 @@ class SupportResistanceRangeEngine(BaseEngine):
         self._snapshot = None
         self._range = RangeSnapshot()
         self._next_range_identity = 1
+        self._range_epoch_start = 0
+        self._role_support = None
+        self._role_resistance = None
         self.export_contract = SupportResistanceExport()
 
     def _confirm_new_pivot(self) -> None:
@@ -235,7 +250,7 @@ class SupportResistanceRangeEngine(BaseEngine):
         if not self._rows:
             return []
         now = len(self._rows) - 1
-        floor = max(0, now - self.config.max_range_scan)
+        floor = max(self._range_epoch_start, now - self.config.max_range_scan)
         return [p for p in pivots if p.origin_index >= floor and p.known_index <= now][-self.config.search_pivots :]
 
     def _touch_count(self, pivots: list[ConfirmedPivot], center: float, half_width: float, start: int) -> tuple[int, int | None, int | None]:
@@ -265,7 +280,7 @@ class SupportResistanceRangeEngine(BaseEngine):
         now = len(self._rows) - 1
         atr = _atr(self._rows, min_tick=self.config.min_tick)
         half = max(self.config.min_tick * 3.0, atr * self.config.zone_tolerance_atr)
-        raw_start = max(min(p.origin_index for p in highs), min(p.origin_index for p in lows))
+        raw_start = max(min(p.origin_index for p in highs), min(p.origin_index for p in lows), self._range_epoch_start)
         raw_start = max(raw_start, now - self.config.max_range_scan)
         previous = self._range
         identity_score = _identity_score(previous, raw_upper, raw_lower, half, raw_start, now, self.config.min_tick)
@@ -320,7 +335,6 @@ class SupportResistanceRangeEngine(BaseEngine):
             stability_q = _clamp100(100.0 - raw_shift_atr * 42.0 - (upper_viol + lower_viol) * 5.0)
         else:
             stability_q = _clamp100(70.0 - (upper_viol + lower_viol) * 5.0)
-        # Geometry-only renormalization of Pine families. Balance remains an independent family.
         quality = _clamp100(
             touch_q * 0.20 + distribution_q * 0.105 + duration_q * 0.105 + overlap * 0.16
             + progress_q * 0.16 + stability_q * 0.13 + height_q * 0.085 + balance_q * 0.055
@@ -397,6 +411,11 @@ class SupportResistanceRangeEngine(BaseEngine):
             mid = prev.mid_price if prev.mid_price is not None else geometry.mid_price
             strong_opposite = age >= 1 and mid is not None and ((prev.break_direction == 1 and close < mid - buffer) or (prev.break_direction == -1 and close > mid + buffer))
             if age >= 1 and age <= self.config.breakout_confirm_window and accepted:
+                if prev.break_direction == 1 and prev.upper_bottom is not None and prev.frozen_upper_top is not None:
+                    self._role_support = (prev.upper_bottom, prev.frozen_upper_top)
+                elif prev.break_direction == -1 and prev.frozen_lower_bottom is not None and prev.lower_top is not None:
+                    self._role_resistance = (prev.frozen_lower_bottom, prev.lower_top)
+                self._range_epoch_start = now
                 return replace(prev, state=RangeState.BREAK_CONFIRMED, known_index=now, break_confirmed_index=now, last_state_change_index=now)
             if returned_inside or strong_opposite or age > self.config.breakout_confirm_window:
                 return replace(prev, state=RangeState.BREAK_FAILED, known_index=now, last_state_change_index=now)
@@ -464,21 +483,68 @@ class SupportResistanceRangeEngine(BaseEngine):
 
         return replace(geometry, state=state, last_state_change_index=last_change)
 
+    def _level_context(self, close: float) -> tuple[str, tuple[float, float] | None, tuple[float, float] | None]:
+        r = self._range
+        location = "NO_ACTIVE_RANGE"
+        if r.valid and r.upper_top is not None and r.upper_bottom is not None and r.lower_top is not None and r.lower_bottom is not None:
+            if close > r.upper_top:
+                location = "ABOVE_RANGE"
+            elif close >= r.upper_bottom:
+                location = "UPPER_ZONE"
+            elif close > r.lower_top:
+                location = "INSIDE_RANGE"
+            elif close >= r.lower_bottom:
+                location = "LOWER_ZONE"
+            else:
+                location = "BELOW_RANGE"
+
+        supports: list[tuple[float, float]] = []
+        resistances: list[tuple[float, float]] = []
+        if r.valid and r.lower_bottom is not None and r.lower_top is not None and close >= r.lower_bottom:
+            supports.append((r.lower_bottom, r.lower_top))
+        if r.valid and r.upper_bottom is not None and r.upper_top is not None and close <= r.upper_top:
+            resistances.append((r.upper_bottom, r.upper_top))
+        if self._role_support is not None and close >= self._role_support[0]:
+            supports.append(self._role_support)
+        if self._role_resistance is not None and close <= self._role_resistance[1]:
+            resistances.append(self._role_resistance)
+
+        def distance(zone: tuple[float, float]) -> float:
+            low, high = zone
+            if low <= close <= high:
+                return 0.0
+            return min(abs(close - low), abs(close - high))
+
+        nearest_support = min(supports, key=distance) if supports else None
+        nearest_resistance = min(resistances, key=distance) if resistances else None
+        return location, nearest_support, nearest_resistance
+
     def _publish(self, timestamp: Any) -> EngineResult:
         r = self._range
         direction = Direction.NEUTRAL
         if r.state == RangeState.BREAK_CONFIRMED:
             direction = Direction.UP if r.break_direction == 1 else Direction.DOWN if r.break_direction == -1 else Direction.NEUTRAL
+        close = float(self._rows[-1]["close"]) if self._rows else 0.0
+        location, nearest_support, nearest_resistance = self._level_context(close)
         levels: dict[str, float] = {}
         for key in ("upper_center", "upper_top", "upper_bottom", "lower_center", "lower_top", "lower_bottom", "mid_price", "break_boundary"):
             value = getattr(r, key)
             if value is not None:
                 levels[key] = float(value)
+        if nearest_support is not None:
+            levels["nearest_support_low"], levels["nearest_support_high"] = nearest_support
+        if nearest_resistance is not None:
+            levels["nearest_resistance_low"], levels["nearest_resistance_high"] = nearest_resistance
+        if self._role_support is not None:
+            levels["role_reversal_support_low"], levels["role_reversal_support_high"] = self._role_support
+        if self._role_resistance is not None:
+            levels["role_reversal_resistance_low"], levels["role_reversal_resistance_high"] = self._role_resistance
         reasons = (
             f"range_identity={r.identity}", f"identity_score={r.identity_score:.3f}",
             f"touches={r.upper_touches}/{r.lower_touches}", f"overlap={r.overlap_score:.2f}",
             f"progress={r.net_progress_ratio:.3f}", f"violations={r.upper_close_violations}/{r.lower_close_violations}",
-        ) if r.valid else ("insufficient_confirmed_range_geometry",)
+            f"price_location={location}",
+        ) if r.valid else ("insufficient_confirmed_range_geometry", f"price_location={location}")
         events: tuple[str, ...] = ()
         if r.valid:
             events = (r.state.value,)
@@ -500,7 +566,15 @@ class SupportResistanceRangeEngine(BaseEngine):
             upper_close_violations=r.upper_close_violations, lower_close_violations=r.lower_close_violations,
             break_direction=r.break_direction, break_candidate_index=r.break_candidate_index,
             break_confirmed_index=r.break_confirmed_index, break_boundary=r.break_boundary,
-            break_buffer=r.break_frozen_buffer,
+            break_buffer=r.break_frozen_buffer, price_location=location,
+            nearest_support_low=nearest_support[0] if nearest_support else None,
+            nearest_support_high=nearest_support[1] if nearest_support else None,
+            nearest_resistance_low=nearest_resistance[0] if nearest_resistance else None,
+            nearest_resistance_high=nearest_resistance[1] if nearest_resistance else None,
+            role_reversal_support_low=self._role_support[0] if self._role_support else None,
+            role_reversal_support_high=self._role_support[1] if self._role_support else None,
+            role_reversal_resistance_low=self._role_resistance[0] if self._role_resistance else None,
+            role_reversal_resistance_high=self._role_resistance[1] if self._role_resistance else None,
         )
         self._snapshot = result
         return result
