@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from financial_dashboard.engines.fvg_engulfing_engine import FvgEngulfingEngine
 from financial_dashboard.engines.fvg_engulfing_models import (
@@ -79,9 +80,9 @@ def test_bullish_active_fvg_freezes_source_geometry_at_formation() -> None:
     assert formation.direction is FvgDirection.BULLISH
     assert formation.state is FvgState.ACTIVE
     assert formation.formation_index == 102
-    assert formation.lower_boundary == 100.5
-    assert formation.upper_boundary == 100.8
-    assert formation.gap_size == 0.3
+    assert formation.lower_boundary == pytest.approx(100.5)
+    assert formation.upper_boundary == pytest.approx(100.8)
+    assert formation.gap_size == pytest.approx(0.3)
     assert formation.formation_atr > 0.0
     assert formation.quality >= 55.0
     assert formation.evidence_count >= 7
@@ -94,9 +95,9 @@ def test_bearish_active_fvg_uses_mirrored_three_bar_geometry() -> None:
     formation = engine.fvg_formations[-1]
     assert formation.direction is FvgDirection.BEARISH
     assert formation.state is FvgState.ACTIVE
-    assert formation.lower_boundary == 99.2
-    assert formation.upper_boundary == 99.5
-    assert formation.gap_size == 0.3
+    assert formation.lower_boundary == pytest.approx(99.2)
+    assert formation.upper_boundary == pytest.approx(99.5)
+    assert formation.gap_size == pytest.approx(0.3)
     assert formation.quality >= 55.0
 
 
@@ -117,9 +118,9 @@ def test_bullish_engulfing_freezes_original_swallowed_body_zone() -> None:
     formation = engine.engulfing_formations[-1]
     assert formation.direction is EngulfingDirection.BULLISH
     assert formation.state is EngulfingState.ACTIVE
-    assert formation.lower_boundary == 100.0
-    assert formation.upper_boundary == 100.5
-    assert formation.body_size == 0.5
+    assert formation.lower_boundary == pytest.approx(100.0)
+    assert formation.upper_boundary == pytest.approx(100.5)
+    assert formation.body_size == pytest.approx(0.5)
     assert formation.quality > 0.0
 
 
@@ -130,9 +131,9 @@ def test_bearish_engulfing_freezes_original_swallowed_body_zone() -> None:
     formation = engine.engulfing_formations[-1]
     assert formation.direction is EngulfingDirection.BEARISH
     assert formation.state is EngulfingState.ACTIVE
-    assert formation.lower_boundary == 99.5
-    assert formation.upper_boundary == 100.0
-    assert formation.body_size == 0.5
+    assert formation.lower_boundary == pytest.approx(99.5)
+    assert formation.upper_boundary == pytest.approx(100.0)
+    assert formation.body_size == pytest.approx(0.5)
 
 
 def test_open_bar_does_not_enter_history_or_mutate_confirmed_formations() -> None:
