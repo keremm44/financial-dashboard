@@ -94,6 +94,33 @@ class EODHDProvider(MarketDataProvider):
         )
         return f"{self.config.base_url.rstrip('/')}/eod/{self._ticker(symbol)}?{query}"
 
+    @staticmethod
+    def _http_error_detail(exc: HTTPError) -> str:
+        """Read a short provider error body without ever including the request URL/token."""
+        try:
+            raw = exc.read()
+        except Exception:
+            return ""
+        if not raw:
+            return ""
+        try:
+            text = raw.decode("utf-8", errors="replace").strip()
+        except Exception:
+            return ""
+        if not text:
+            return ""
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            detail = text
+        else:
+            if isinstance(payload, dict):
+                detail = str(payload.get("message") or payload.get("error") or payload.get("errors") or payload)
+            else:
+                detail = str(payload)
+        detail = detail.replace(self.api_token, "<redacted>")
+        return " ".join(detail.split())[:300]
+
     def _request(self, url: str) -> object:
         last_error: Exception | None = None
         for attempt in range(self.config.max_attempts):
@@ -103,7 +130,9 @@ class EODHDProvider(MarketDataProvider):
                 last_error = exc
                 retryable = exc.code == 429 or 500 <= exc.code < 600
                 if not retryable or attempt + 1 >= self.config.max_attempts:
-                    raise EODHDError(f"EODHD HTTP error {exc.code}") from exc
+                    detail = self._http_error_detail(exc)
+                    suffix = f": {detail}" if detail else ""
+                    raise EODHDError(f"EODHD HTTP error {exc.code}{suffix}") from exc
             except (URLError, TimeoutError, OSError) as exc:
                 last_error = exc
                 if attempt + 1 >= self.config.max_attempts:
