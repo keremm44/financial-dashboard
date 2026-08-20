@@ -51,6 +51,10 @@ from .volume_participation_lifecycle import (
     LifecycleStage,
     ParticipationLifecycleConfig,
     ParticipationLifecycleExport,
+)
+from .volume_participation_final import (
+    FinalParticipationState,
+    UnifiedParticipationExport,
     VolumeParticipationEngine,
 )
 
@@ -89,6 +93,8 @@ __all__ = [
     "BreakStage",
     "BreakParticipationEvent",
     "ConfirmedParticipationPivot",
+    "FinalParticipationState",
+    "UnifiedParticipationExport",
     "TimeframeRole",
     "RawTimeframeEvidence",
     "TimeframeStoryState",
