@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from financial_dashboard.engines.auction_engine import AuctionConfig, AuctionVolumeProfileEngine, build_profile
+from financial_dashboard.engines.auction_engine import AuctionConfig, AuctionProfile, AuctionVolumeProfileEngine, _nodes, build_profile
 from financial_dashboard.engines.models import Direction
 
 
@@ -45,6 +45,91 @@ def test_profile_preserves_source_volume_and_builds_value_area():
     assert profile.allocation_error_pct == pytest.approx(0.0, abs=1e-8)
     assert profile.val_price < profile.poc_price < profile.vah_price
     assert profile.value_area_coverage_pct >= config.value_area_percent
+
+
+def test_hvn_is_exported_as_contiguous_price_band_not_single_bin():
+    volumes = (1.0, 2.0, 4.0, 8.0, 10.0, 9.0, 8.0, 3.0, 2.0, 1.0)
+    profile = AuctionProfile(
+        valid=True,
+        bars_used=50,
+        low_price=100.0,
+        high_price=110.0,
+        bin_width=1.0,
+        source_volume=sum(volumes),
+        allocated_volume=sum(volumes),
+        allocation_error_pct=0.0,
+        poc_bin=4,
+        poc_price=104.5,
+        val_bin=2,
+        vah_bin=7,
+        val_price=102.0,
+        vah_price=108.0,
+        value_area_coverage_pct=72.0,
+        max_bin_volume=max(volumes),
+        volumes=volumes,
+    )
+    hvn, _ = _nodes(profile, AuctionConfig(timeframe="1h"))
+    assert hvn
+    node = hvn[0]
+    assert node.low_bin < node.center_bin or node.high_bin > node.center_bin
+    assert node.low_price == pytest.approx(100.0 + node.low_bin)
+    assert node.high_price == pytest.approx(100.0 + node.high_bin + 1.0)
+    assert node.low_price <= node.center_price <= node.high_price
+
+
+def test_lvn_is_exported_as_contiguous_valley_band():
+    volumes = (10.0, 9.0, 8.0, 4.0, 2.0, 4.0, 8.0, 9.0, 10.0)
+    profile = AuctionProfile(
+        valid=True,
+        bars_used=50,
+        low_price=100.0,
+        high_price=109.0,
+        bin_width=1.0,
+        source_volume=sum(volumes),
+        allocated_volume=sum(volumes),
+        allocation_error_pct=0.0,
+        poc_bin=1,
+        poc_price=101.5,
+        val_bin=1,
+        vah_bin=7,
+        val_price=101.0,
+        vah_price=108.0,
+        value_area_coverage_pct=72.0,
+        max_bin_volume=max(volumes),
+        volumes=volumes,
+    )
+    _, lvn = _nodes(profile, AuctionConfig(timeframe="1h"))
+    assert lvn
+    node = lvn[0]
+    assert node.low_bin < node.center_bin or node.high_bin > node.center_bin
+    assert node.local_depth > 0.0
+    assert node.low_price <= node.center_price <= node.high_price
+
+
+def test_node_bands_respect_minimum_separation_and_do_not_overlap():
+    volumes = (1.0, 8.0, 10.0, 8.0, 1.0, 8.0, 10.0, 8.0, 1.0, 1.0, 1.0, 1.0)
+    profile = AuctionProfile(
+        valid=True,
+        bars_used=50,
+        low_price=100.0,
+        high_price=112.0,
+        bin_width=1.0,
+        source_volume=sum(volumes),
+        allocated_volume=sum(volumes),
+        allocation_error_pct=0.0,
+        poc_bin=2,
+        poc_price=102.5,
+        val_bin=1,
+        vah_bin=8,
+        val_price=101.0,
+        vah_price=109.0,
+        value_area_coverage_pct=72.0,
+        max_bin_volume=max(volumes),
+        volumes=volumes,
+    )
+    hvn, _ = _nodes(profile, AuctionConfig(timeframe="1h", max_hvn_nodes=3))
+    for left, right in zip(hvn, hvn[1:]):
+        assert left.high_bin + AuctionConfig(timeframe="1h").preset.node_min_separation_bins < right.low_bin or right.high_bin + AuctionConfig(timeframe="1h").preset.node_min_separation_bins < left.low_bin
 
 
 def test_engine_exports_core_profile_and_primary_zone():
