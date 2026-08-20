@@ -80,6 +80,20 @@ def test_provider_filters_requested_window() -> None:
     assert result["timestamp"].dt.strftime("%H:%M").tolist() == ["10:05", "10:10"]
 
 
+def test_provider_volume_status_reflects_returned_window_not_raw_history() -> None:
+    provider = TvDatafeedProvider(client=_Client(_raw()), interval_enum=_Intervals)
+
+    result = provider.get_ohlcv(
+        "THYAO",
+        "5m",
+        datetime.fromisoformat("2026-07-01T10:00:00+03:00"),
+        datetime.fromisoformat("2026-07-01T11:00:00+03:00"),
+    )
+
+    assert result.empty
+    assert provider.last_volume_status == "UNAVAILABLE"
+
+
 @pytest.mark.parametrize(
     ("volumes", "expected"),
     [

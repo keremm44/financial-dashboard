@@ -44,9 +44,9 @@ class TvDatafeedProvider(MarketDataProvider):
     """Thin tvDatafeed adapter that keeps TradingView-specific behavior at the boundary.
 
     The adapter does not trust volume availability silently. `last_volume_status` is
-    updated after every fetch as VALID, PARTIAL or UNAVAILABLE. The returned frame
-    itself stays on the canonical OHLCV contract so analysis engines remain provider
-    agnostic.
+    updated after every fetch as VALID, PARTIAL or UNAVAILABLE for the frame actually
+    returned to the caller. The returned frame itself stays on the canonical OHLCV
+    contract so analysis engines remain provider agnostic.
     """
 
     source = "tvdatafeed"
@@ -165,13 +165,14 @@ class TvDatafeedProvider(MarketDataProvider):
         work["timestamp"] = self._normalize_timestamp(work["timestamp"])
         if "volume" not in work.columns:
             work["volume"] = 0.0
-        self.last_volume_status = self._volume_status(work["volume"])
 
         start_ts = pd.Timestamp(start)
         end_ts = pd.Timestamp(end)
         start_ts = start_ts.tz_localize(self.timezone) if start_ts.tzinfo is None else start_ts.tz_convert(self.timezone)
         end_ts = end_ts.tz_localize(self.timezone) if end_ts.tzinfo is None else end_ts.tz_convert(self.timezone)
         work = work[(work["timestamp"] >= start_ts) & (work["timestamp"] <= end_ts)].copy()
+        self.last_volume_status = self._volume_status(work["volume"])
+
         work["symbol"] = symbol
         work["timeframe"] = timeframe
         work["source"] = self.source
