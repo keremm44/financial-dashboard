@@ -1,6 +1,6 @@
 """Lossless Technical Evidence adapter layer between deterministic engines and decisions."""
 
-from .adapters import (
+from .policy import (
     adapt_auction,
     adapt_fvg_engulfing,
     adapt_ham,
