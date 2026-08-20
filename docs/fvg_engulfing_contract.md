@@ -1,84 +1,65 @@
-# FVG + Engulfing source contract
+# FVG + Engulfing final source contract
 
 Authoritative source: `ARGENT_FVG_Engulfing_v0.3.8_FINAL_EXPORT.pine`.
 
 ## Production boundary
 
-The source explicitly limits production scope to FVG and Engulfing zones plus their lifecycles. General candle-direction/story logic, continuation/rejection/compression/shock outputs, dashboard, combined quality, and story-label layers are not part of this engine contract.
+Production output is limited to FVG and Engulfing zones plus their lifecycles. Internal continuation/rejection/shock calculations are retained only where the source uses them as detector/lifecycle evidence; they are not exposed as standalone production signals. Dashboard, combined quality and story-label layers are excluded.
 
-The engine supports only:
-
-- 2h
-- 4h
-- 1d
-
-No unsupported timeframe is silently coerced.
+Supported timeframes are exactly `2h`, `4h`, and `1d`. Unsupported timeframes are never silently coerced.
 
 ## Exact source states
 
-### FVG
+FVG: `NONE=1`, `CANDIDATE=2`, `ACTIVE=3`, `FIRST_TEST=4`, `PARTIAL_FILL=5`, `DEEP_TEST=6`, `FULL_FILL=7`, `REACTION=8`, `FAILED_REACTION=9`, `INVALID=10`, `SUPERSEDED=11`.
 
-- NONE = 1
-- CANDIDATE = 2
-- ACTIVE = 3
-- FIRST_TEST = 4
-- PARTIAL_FILL = 5
-- DEEP_TEST = 6
-- FULL_FILL = 7
-- REACTION = 8
-- FAILED_REACTION = 9
-- INVALID = 10
-- SUPERSEDED = 11
+Engulfing: `NONE=0`, `ACTIVE=1`, `FIRST_TEST=2`, `PARTIAL_RETRACE=3`, `CONTINUATION_CONFIRMED=4`, `WEAKENED=5`, `INVALID=6`, `EXPIRED=7`.
 
-Direction: NONE=0, BULLISH=+1, BEARISH=-1.
+Directions are `NONE=0`, `BULLISH=+1`, `BEARISH=-1`.
 
-### Engulfing
+## Tur-1 — detector + immutable formation events
 
-- NONE = 0
-- ACTIVE = 1
-- FIRST_TEST = 2
-- PARTIAL_RETRACE = 3
-- CONTINUATION_CONFIRMED = 4
-- WEAKENED = 5
-- INVALID = 6
-- EXPIRED = 7
+Completed:
 
-Direction: NONE=0, BULLISH=+1, BEARISH=-1.
+- Pine-style ATR/RMA and private flow/local-context prerequisites
+- sensitivity profiles `Hassas / Dengeli / Seçici`
+- bullish/bearish three-bar FVG geometry
+- source middle-candle formation ATR
+- gap size/gap-ATR, displacement, progress, efficiency and opening-gap defense
+- source evidence count and frozen formation quality
+- candidate vs active FVG formation gates
+- bullish/bearish Engulfing detection, gap/micro-candle/context protection
+- frozen swallowed-body zone and Engulfing quality
+- immutable formation events
+- closed/complete-bar advancement, warmup/source-gap audit separation
+- replay == incremental and future-tail invariance
 
-## Two-tour implementation plan
+## Tur-2 — lifecycle + takeover + export
 
-### Tur-1 — detector + formation foundation
+Completed:
 
-- source-faithful shared OHLC/ATR/context metrics used by FVG/Engulfing only
-- sensitivity profiles: Hassas / Dengeli / Seçici
-- supported-timeframe guard
-- bullish/bearish FVG candidate and formation geometry
-- FVG formation quality and frozen formation references
-- bullish/bearish Engulfing detection and swallowed-body zone geometry
-- Engulfing formation quality and frozen formation references
-- closed/complete-bar advancement only
-- warmup/source-gap audit separated from indicator evidence
-- focused detector parity tests
-- replay == incremental and future-tail invariance for formation events
+- FVG candidate promotion and same-bar promotion+first-test preservation
+- wick/close fill memory and `FIRST_TEST / PARTIAL_FILL / DEEP_TEST`
+- frozen formation-ATR invalidation buffer and profile close-count invalidation
+- age invalidation, full fill, reaction, failed reaction
+- FVG takeover by candidate replacement / quality / age / meaningful distance
+- replaced FVG recorded as `SUPERSEDED`
+- Engulfing first test, retrace, continuation confirmation, weakened grace and expiry
+- same-direction Engulfing quality takeover
+- independent bullish/bearish terminal-event memory
+- continuation-candidate candle-family parity for FVG embedded alignment without double counting
+- `ARGENT Export Contract v1` represented as four directional side records / 24 source ports
+- bearish state/event sign inversion
+- FVG TOP/BOTTOM expose only the still-unfilled region
+- Engulfing TOP/BOTTOM preserve original swallowed-body region
+- QUALITY remains frozen formation quality, never probability
+- EVENT exists only on the matching most-recent closed snapshot index
+- open/source-incomplete bars cannot overwrite confirmed lifecycle export
+- final replay == incremental lifecycle/export parity
 
-### Tur-2 — lifecycle + takeover + export
+## Closed-bar source order
 
-- bullish/bearish FVG lifecycle through test/fill/reaction/failure/invalidation/superseded
-- FVG takeover rules and frozen references
-- bullish/bearish Engulfing lifecycle through test/retrace/continuation/weakened/invalid/expired
-- directional terminal-event memory so same-bar bull/bear terminal events cannot overwrite each other
-- source `ARGENT Export Contract v1`
-- 24 hidden export ports
-- FVG TOP/BOTTOM = still-unfilled active region
-- Engulfing TOP/BOTTOM = original swallowed-body zone
-- FILL / RETRACE / QUALITY / STATE / EVENT ports
-- open/source-incomplete bars freeze the confirmed snapshot
-- final lifecycle replay parity and full-suite CI
+For each confirmed source-complete bar, existing FVG/Engulfing records are updated first. Terminal state/event memory is written before a same-bar new formation is evaluated for takeover. This preserves the Pine lifecycle ordering and prevents a newly detected zone from retroactively participating in the prior record's test/fill logic.
 
-## Export contract facts
+## Data quality
 
-The v0.3.8 export adapter adds no detector math. FVG and Engulfing exports are independent of visual fallback/recent boxes. Formation QUALITY is a frozen heuristic quality value, not probability. Directional EVENT ports are visible only for the most recent closed snapshot bar.
-
-## Data-quality boundary
-
-Python may expose audit metadata (`OK`, `WARMUP`, `INCOMPLETE_BAR`, `SOURCE_GAP`, `UNSUPPORTED_TIMEFRAME`) but these statuses are not indicator evidence and must not alter source math. Missing bars are never fabricated.
+Python audit metadata (`OK`, `WARMUP`, `INCOMPLETE_BAR`, `SOURCE_GAP`, `UNSUPPORTED_TIMEFRAME`) is separate from indicator evidence. Missing bars are never fabricated. Open or incomplete bars do not advance confirmed lifecycle state or overwrite the last confirmed export snapshot.
