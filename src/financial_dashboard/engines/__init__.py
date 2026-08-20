@@ -25,6 +25,22 @@ from .mtf_story_replay import replay_story_results
 from .mtf_story_state_machine import MTFStoryStateMachine
 from .mtf_story_trigger import MTFStoryTriggerError, classify_trigger
 from .pattern_compression_engine import PatternCompressionEngine
+from .stabil_trend_engine import (
+    ConfirmedStabilPivot,
+    DailyRawState,
+    DailyTrendSnapshot,
+    DailyTrendState,
+    GapState,
+    H4EvidenceStatus,
+    H4Lifecycle,
+    H4TrendSnapshot,
+    H4TrendState,
+    StabilTrendConfig,
+    StabilTrendContext,
+    WeeklyTrendSnapshot,
+    WeeklyTrendState,
+)
+from .stabil_trend_runtime import StabilTrendEngine
 from .support_resistance_engine import (
     ConfirmedPivot,
     RangeSnapshot,
@@ -95,6 +111,20 @@ __all__ = [
     "ConfirmedParticipationPivot",
     "FinalParticipationState",
     "UnifiedParticipationExport",
+    "StabilTrendEngine",
+    "StabilTrendConfig",
+    "StabilTrendContext",
+    "WeeklyTrendState",
+    "WeeklyTrendSnapshot",
+    "DailyRawState",
+    "DailyTrendState",
+    "DailyTrendSnapshot",
+    "GapState",
+    "H4TrendState",
+    "H4Lifecycle",
+    "H4EvidenceStatus",
+    "H4TrendSnapshot",
+    "ConfirmedStabilPivot",
     "TimeframeRole",
     "RawTimeframeEvidence",
     "TimeframeStoryState",
