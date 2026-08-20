@@ -62,7 +62,7 @@ def test_confirmed_pivot_is_known_only_after_right_side_length() -> None:
         row["high"] = 101.0 + i * 0.1
         row["low"] = 99.0 - i * 0.05
     engine._rows[4]["high"] = 120.0
-    engine._rows[4]["low"] = 98.5
+    engine._rows[4]["low"] = 99.5
     high, low = engine._detect_confirmed_pivots([2.0] * 9)
     assert high is not None
     assert high.source_index == 4
