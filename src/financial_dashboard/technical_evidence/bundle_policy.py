@@ -21,13 +21,13 @@ def build_technical_evidence_bundle(
     as_of_timestamp: Any | None = None,
     as_of_known_bars: Mapping[str, int] | None = None,
 ) -> TechnicalEvidenceBundle:
-    """Public Tur-2 bundle gate.
+    """Strict public Tur-2 bundle gate.
 
-    Multiple engine adapter packets for the same timeframe are allowed only when
-    they represent the exact same snapshot (same known_bar and timestamp). They
-    are losslessly coalesced before Tur-2 enrichment. Different snapshots for the
-    same timeframe are rejected so old and current states cannot coexist as if
-    both were current evidence.
+    Separate engine adapter packets for the same timeframe are allowed only when
+    they represent the same snapshot (same known_bar and timestamp). They are
+    losslessly coalesced before Tur-2 enrichment. Different snapshots for the
+    same timeframe are rejected so historical and current states cannot coexist
+    as if both were current evidence.
     """
 
     packet_tuple = _coalesce_same_snapshot_packets(tuple(packets))
@@ -39,7 +39,7 @@ def build_technical_evidence_bundle(
         as_of_timestamp=as_of_timestamp,
         as_of_known_bars=normalized_as_of_bars,
     )
-    return _remove_inferred_level_freshness(bundle)
+    return _sanitize_inferred_level_freshness(bundle)
 
 
 def _coalesce_same_snapshot_packets(
@@ -111,21 +111,41 @@ def _validate_packet_as_of(
                 )
 
 
-def _remove_inferred_level_freshness(bundle: TechnicalEvidenceBundle) -> TechnicalEvidenceBundle:
-    """A level needs its own causal source_bar to receive numeric freshness.
+def _sanitize_inferred_level_freshness(bundle: TechnicalEvidenceBundle) -> TechnicalEvidenceBundle:
+    """Keep only causally defensible level freshness.
 
-    The Tur-2 core historically allowed a level without an origin anchor to
-    inherit freshness from referencing evidence. That is useful presentation
-    metadata but it is not a valid level age. The public contract is stricter:
-    no source_bar means UNKNOWN freshness.
+    A level with its own source_bar is always safe. For an unanchored level, the
+    core may inherit freshness from referencing evidence. The public policy keeps
+    that inheritance only when every usable source anchor comes from the same
+    upstream engine and resolves to one identical source_bar. Otherwise the level
+    freshness remains UNKNOWN rather than borrowing age from unrelated evidence.
     """
 
-    unanchored = {level.id for level in bundle.levels if level.source_bar is None}
-    if not unanchored:
+    evidence_by_level: dict[str, list[TechnicalEvidenceItem]] = {}
+    for item in bundle.evidence:
+        for level_id in item.level_refs:
+            evidence_by_level.setdefault(level_id, []).append(item)
+
+    unsafe: set[str] = set()
+    for level in bundle.levels:
+        if level.source_bar is not None:
+            continue
+        anchors = [
+            item
+            for item in evidence_by_level.get(level.id, ())
+            if item.source_engine == level.source_engine
+            and item.source_bar is not None
+            and item.freshness is not None
+        ]
+        source_bars = {int(item.source_bar) for item in anchors if item.source_bar is not None}
+        if not anchors or len(source_bars) != 1:
+            unsafe.add(level.id)
+
+    if not unsafe:
         return bundle
 
     levels = tuple(
-        replace(level, freshness=None) if level.id in unanchored else level
+        replace(level, freshness=None) if level.id in unsafe else level
         for level in bundle.levels
     )
     freshness = tuple(
@@ -138,7 +158,7 @@ def _remove_inferred_level_freshness(bundle: TechnicalEvidenceBundle) -> Technic
             anchor="UNKNOWN",
             horizon_bars=None,
         )
-        if record.target_kind == "LEVEL" and record.target_id in unanchored
+        if record.target_kind == "LEVEL" and record.target_id in unsafe
         else record
         for record in bundle.freshness
     )
