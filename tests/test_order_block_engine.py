@@ -109,9 +109,11 @@ def test_candidate_expires_after_own_imbalance_window() -> None:
     engine.update(_bar(0, 102, 110, 100, 99))
     engine.update(_bar(1, 99, 111, 100.5, 106))
     engine.update(_bar(2, 106, 109, 105, 107))  # no gap, last eligible index for source=0
-    assert len(engine.records) == 1
+    assert any(r.source_index == 0 and r.bullish for r in engine.records)
     engine.update(_bar(3, 107, 109, 105, 106))
-    assert engine.records == ()
+    assert not any(r.source_index == 0 and r.bullish for r in engine.records)
+    # The same bar can legitimately create a new independent bearish A/B candidate.
+    assert any(r.source_index == 2 and not r.bullish for r in engine.records)
 
 
 def test_new_b_source_is_not_retroactively_updated_on_creation_bar() -> None:
