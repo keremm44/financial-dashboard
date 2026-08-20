@@ -1,6 +1,21 @@
 """Stateful analysis-engine interfaces and shared result models."""
 
 from .auction_engine import AuctionConfig, AuctionExport, AuctionVolumeProfileEngine
+from .fvg_engulfing_engine import (
+    EngulfingFormation,
+    FormationSnapshot,
+    FvgEngulfingEngine,
+    FvgFormation,
+)
+from .fvg_engulfing_models import (
+    EngulfingDirection,
+    EngulfingState,
+    FvgDirection,
+    FvgEngulfingConfig,
+    FvgEngulfingDataQuality,
+    FvgState,
+    SensitivityProfile,
+)
 from .liquidity_engine import LiquidityEngine, LiquidityExport
 from .liquidity_models import LiquidityConfig, LiquidityPool, LiquidityPoolState, LiquiditySide, LiquidityTouch
 from .market_structure_engine import MarketStructureEngine
@@ -91,6 +106,17 @@ __all__ = [
     "OrderBlockExport",
     "OrderBlockSideExport",
     "OrderBlockDataQuality",
+    "FvgEngulfingEngine",
+    "FvgEngulfingConfig",
+    "FvgEngulfingDataQuality",
+    "FvgFormation",
+    "EngulfingFormation",
+    "FormationSnapshot",
+    "FvgDirection",
+    "FvgState",
+    "EngulfingDirection",
+    "EngulfingState",
+    "SensitivityProfile",
     "LiquidityEngine",
     "LiquidityExport",
     "LiquidityConfig",
