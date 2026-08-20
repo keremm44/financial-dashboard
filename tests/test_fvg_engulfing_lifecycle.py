@@ -103,7 +103,7 @@ def test_bullish_fvg_full_fill_is_terminal_and_directional_event_is_kept() -> No
 
 
 def test_fvg_close_invalidation_uses_frozen_formation_buffer_and_profile_count() -> None:
-    engine = FvgEngulfingEngine(FvgEngulfingConfig(sensitivity="Dengeli"))
+    engine = FvgEngulfingEngine(FvgEngulfingConfig())
     engine._bull_fvg = _fvg()
     bad = _m(close=99.0, low=98.5, high=101.0, candle_bullish=False, candle_bearish=True, net_progress_atr=-0.5, buy_continuation_candidate=False, buy_continuation_confirmed=False)
     engine._update_fvg_record(True, 101, bad)
