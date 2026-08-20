@@ -57,6 +57,23 @@ from .volume_participation_final import (
     UnifiedParticipationExport,
     VolumeParticipationEngine,
 )
+from .volatility_bands_fib_engine import (
+    BandAgreement,
+    BandState,
+    DataQualityStatus,
+    VolatilityBandsConfig,
+    VolatilityBandsExport,
+    VolatilityState,
+)
+from .volatility_bands_fib_final import (
+    CoherenceState,
+    DirectionBias,
+    FibonacciState,
+    StructureFibAlignment,
+    StructureState,
+    VolatilityBandsFibFinalExport,
+)
+from .volatility_bands_fib import VolatilityBandsFibEngine
 
 __all__ = [
     "MarketStructureEngine",
@@ -95,6 +112,19 @@ __all__ = [
     "ConfirmedParticipationPivot",
     "FinalParticipationState",
     "UnifiedParticipationExport",
+    "VolatilityBandsFibEngine",
+    "VolatilityBandsConfig",
+    "VolatilityBandsExport",
+    "VolatilityBandsFibFinalExport",
+    "VolatilityState",
+    "BandState",
+    "BandAgreement",
+    "DataQualityStatus",
+    "StructureState",
+    "FibonacciState",
+    "StructureFibAlignment",
+    "DirectionBias",
+    "CoherenceState",
     "TimeframeRole",
     "RawTimeframeEvidence",
     "TimeframeStoryState",
