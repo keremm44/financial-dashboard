@@ -35,6 +35,26 @@ def _frame(n: int, freq: str, *, start: str, base: float = 100.0, step: float = 
     return pd.DataFrame(rows)
 
 
+def _daily_up_structure(n: int = 50) -> pd.DataFrame:
+    rows = []
+    times = pd.date_range("2026-01-01", periods=n, freq="1D", tz=TZ)
+    for i, ts in enumerate(times):
+        # Six-bar rising wave: with pivot span=2 it creates unique alternating
+        # highs/lows every six bars, while each same-side pivot is >4 bars apart.
+        c = 100.0 + 0.22 * i + 1.8 * math.sin(2.0 * math.pi * i / 6.0)
+        rows.append({
+            "timestamp": ts,
+            "open": c - 0.05,
+            "high": c + 0.35,
+            "low": c - 0.35,
+            "close": c,
+            "volume": 1000.0,
+            "is_closed": True,
+            "is_complete": True,
+        })
+    return pd.DataFrame(rows)
+
+
 def _quiet_h4(n: int = 55) -> pd.DataFrame:
     rows = []
     times = pd.date_range("2026-05-01", periods=n, freq="4h", tz=TZ)
@@ -111,15 +131,27 @@ def test_pivot_is_unknown_until_right_span_has_closed() -> None:
 
 def test_daily_pullback_origin_and_reference_atr_freeze_after_start() -> None:
     cfg = _small_cfg()
-    daily = _frame(42, "1D", start="2026-01-01", step=0.28)
-    prior = float(daily.loc[34, "close"])
-    for i, drop in zip(range(35, 39), [0.35, 0.70, 0.95, 1.10]):
-        c = prior - drop
-        daily.loc[i, ["open", "high", "low", "close", "volume"]] = [c + 0.15, c + 0.55, c - 0.55, c, 900.0]
+    daily = _daily_up_structure()
 
-    snap_1 = _daily_snapshot_runtime(daily.iloc[:37].reset_index(drop=True), WeeklyTrendState.UP_STABLE, cfg)
-    snap_2 = _daily_snapshot_runtime(daily.iloc[:39].reset_index(drop=True), WeeklyTrendState.UP_STABLE, cfg)
+    # At 44 the latest confirmed sequence is H32-L34-H38-L40 and therefore
+    # already satisfies order, alternation, spacing, excursion and freshness.
+    pre = _daily_snapshot_runtime(daily.iloc[:45].reset_index(drop=True), WeeklyTrendState.UP_STABLE, cfg)
+    assert pre.data_ready
+    assert pre.structure_usable
+    assert pre.structure_quality
+
+    # Start a moderate pullback after the last local high. Keep it safely above
+    # the frozen structural support floor so only pullback depth evolves.
+    anchor = float(daily.loc[44, "close"])
+    for i, drop in zip(range(45, 49), [1.00, 1.25, 1.45, 1.60]):
+        c = anchor - drop
+        daily.loc[i, ["open", "high", "low", "close", "volume"]] = [c + 0.08, c + 0.30, c - 0.30, c, 900.0]
+
+    snap_1 = _daily_snapshot_runtime(daily.iloc[:46].reset_index(drop=True), WeeklyTrendState.UP_STABLE, cfg)
+    snap_2 = _daily_snapshot_runtime(daily.iloc[:49].reset_index(drop=True), WeeklyTrendState.UP_STABLE, cfg)
     assert snap_1.pullback_start_index is not None
+    assert snap_1.support_held
+    assert snap_2.support_held
     assert snap_2.pullback_start_index == snap_1.pullback_start_index
     assert snap_2.pullback_origin_high == pytest.approx(snap_1.pullback_origin_high)
     assert snap_2.pullback_reference_atr == pytest.approx(snap_1.pullback_reference_atr)
