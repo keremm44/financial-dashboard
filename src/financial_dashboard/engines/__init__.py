@@ -6,10 +6,10 @@ from .fvg_engulfing_engine import (
     FormationSnapshot,
     FvgFormation,
 )
+from .fvg_engulfing import FvgEngulfingEngine
 from .fvg_engulfing_final import (
     EngulfingLifecycleRecord,
     EngulfingSideExport,
-    FvgEngulfingEngine,
     FvgEngulfingExport,
     FvgLifecycleRecord,
     FvgSideExport,
