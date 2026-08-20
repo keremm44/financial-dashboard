@@ -130,7 +130,7 @@ def test_first_close_break_is_candidate_and_only_next_confirmed_bar_can_confirm(
     frozen_boundary = engine.export_contract.break_boundary
     frozen_buffer = engine.export_contract.break_buffer
     candidate_index = engine.export_contract.break_candidate_index
-    assert frozen_boundary == upper
+    assert frozen_boundary == candidate.levels["upper_top"]
     assert frozen_buffer is not None and frozen_buffer > 0
     assert candidate_index == 80
 
