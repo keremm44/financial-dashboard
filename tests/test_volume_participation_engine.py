@@ -7,6 +7,7 @@ import pytest
 
 from financial_dashboard.engines import ParticipationState, VolumeParticipationConfig, VolumeParticipationEngine
 from financial_dashboard.engines.models import Direction
+from financial_dashboard.engines.volume_participation_engine import VolumeParticipationEngine as CoreVolumeParticipationEngine
 
 
 def _bar(i: int, *, o: float, h: float, l: float, c: float, v: float, closed: bool = True, complete: bool = True) -> dict:
@@ -135,7 +136,7 @@ def test_effort_result_uses_same_three_bar_window() -> None:
 
 def test_candidate_is_neutral_and_only_next_candidate_bar_can_confirm() -> None:
     cfg = _candidate_config()
-    engine = VolumeParticipationEngine(cfg)
+    engine = CoreVolumeParticipationEngine(cfg)
     engine.replay(_flat_frame())
 
     first = engine.update(_bar(35, o=100.0, h=102.5, l=99.9, c=102.3, v=2400.0))
