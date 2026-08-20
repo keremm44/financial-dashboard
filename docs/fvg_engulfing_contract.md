@@ -46,7 +46,7 @@ Completed:
 - Engulfing first test, retrace, continuation confirmation, weakened grace and expiry
 - same-direction Engulfing quality takeover
 - independent bullish/bearish terminal-event memory
-- continuation-candidate candle-family parity for FVG embedded alignment without double counting
+- continuation-candidate candle-family parity for FVG embedded alignment, including add/no-double-count/remove regressions
 - `ARGENT Export Contract v1` represented as four directional side records / 24 source ports
 - bearish state/event sign inversion
 - FVG TOP/BOTTOM expose only the still-unfilled region
