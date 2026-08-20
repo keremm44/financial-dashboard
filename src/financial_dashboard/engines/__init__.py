@@ -24,6 +24,7 @@ from .mtf_story_normalizer import MTFStoryNormalizationError, normalize_timefram
 from .mtf_story_replay import replay_story_results
 from .mtf_story_state_machine import MTFStoryStateMachine
 from .mtf_story_trigger import MTFStoryTriggerError, classify_trigger
+from .order_block_engine import OrderBlockConfig, OrderBlockEngine, OrderBlockRecord
 from .pattern_compression_engine import PatternCompressionEngine
 from .support_resistance_engine import (
     ConfirmedPivot,
@@ -78,6 +79,9 @@ from .volatility_bands_fib import VolatilityBandsFibEngine
 __all__ = [
     "MarketStructureEngine",
     "PatternCompressionEngine",
+    "OrderBlockEngine",
+    "OrderBlockConfig",
+    "OrderBlockRecord",
     "LiquidityEngine",
     "LiquidityExport",
     "LiquidityConfig",
