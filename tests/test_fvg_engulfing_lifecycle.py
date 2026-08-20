@@ -12,6 +12,7 @@ from financial_dashboard.engines import (
     FvgEngulfingEngine,
     FvgLifecycleRecord,
     FvgState,
+    SensitivityProfile,
 )
 from financial_dashboard.engines.fvg_engulfing_final import _LifecycleMetrics
 
@@ -102,13 +103,11 @@ def test_bullish_fvg_full_fill_is_terminal_and_directional_event_is_kept() -> No
     assert engine._bull_fvg_event == (101, FvgState.FULL_FILL)
 
 
-def test_fvg_close_invalidation_uses_frozen_formation_buffer_and_profile_count() -> None:
-    engine = FvgEngulfingEngine(FvgEngulfingConfig())
+def test_fvg_close_invalidation_uses_frozen_formation_buffer_and_source_priority() -> None:
+    engine = FvgEngulfingEngine(FvgEngulfingConfig(sensitivity=SensitivityProfile.SENSITIVE))
     engine._bull_fvg = _fvg()
     bad = _m(close=99.0, low=98.5, high=101.0, candle_bullish=False, candle_bearish=True, net_progress_atr=-0.5, buy_continuation_candidate=False, buy_continuation_confirmed=False)
     engine._update_fvg_record(True, 101, bad)
-    assert engine.active_bullish_fvg is not None
-    engine._update_fvg_record(True, 102, bad)
     assert engine.active_bullish_fvg is None
     assert engine.completed_fvg[-1].state is FvgState.INVALID
     assert engine.completed_fvg[-1].invalid_reason == "Kapanışla geçersizlik"
