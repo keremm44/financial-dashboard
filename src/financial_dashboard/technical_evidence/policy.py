@@ -52,8 +52,7 @@ def adapt_mtf_story(
     *,
     source_quality: Any = None,
 ) -> TechnicalEvidencePacket:
-    packet = _raw.adapt_mtf_story(result, context, source_quality=source_quality)
-    return _replace_items(packet, lambda item: replace(item, strength=None))
+    return _raw.adapt_mtf_story(result, context, source_quality=source_quality)
 
 
 def adapt_liquidity(
