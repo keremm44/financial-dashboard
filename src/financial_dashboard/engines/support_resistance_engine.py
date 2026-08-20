@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from statistics import median
 from typing import Any
@@ -16,8 +16,14 @@ class RangeState(StrEnum):
     CANDIDATE = "RANGE_CANDIDATE"
     GEOMETRY = "RANGE_GEOMETRY"
     DEFINED = "RANGE_DEFINED"
-    BREAK_UP = "RANGE_BREAK_UP"
-    BREAK_DOWN = "RANGE_BREAK_DOWN"
+    STABILIZING = "RANGE_STABILIZING"
+    ACTIVE = "RANGE_ACTIVE"
+    WEAK = "RANGE_WEAK"
+    BREAK_ATTEMPT = "RANGE_BREAK_ATTEMPT"
+    BREAK_CANDIDATE = "RANGE_BREAK_CANDIDATE"
+    BREAK_CONFIRMED = "RANGE_BREAK_CONFIRMED"
+    BREAK_FAILED = "RANGE_BREAK_FAILED"
+    INVALID = "RANGE_INVALID"
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +42,7 @@ class SupportResistanceConfig:
     min_range_quality: float = 50.0
     range_identity_min_score: float = 0.58
     break_buffer_atr: float = 0.07
+    breakout_confirm_window: int = 2
     min_tick: float = 0.01
 
 
@@ -55,6 +62,7 @@ class RangeSnapshot:
     state: RangeState = RangeState.INSUFFICIENT
     known_index: int | None = None
     start_index: int | None = None
+    last_state_change_index: int | None = None
     upper_center: float | None = None
     upper_top: float | None = None
     upper_bottom: float | None = None
@@ -74,6 +82,15 @@ class RangeSnapshot:
     boundary_stability: float = 0.0
     identity_score: float = 0.0
     quality: float = 0.0
+    break_direction: int = 0
+    break_candidate_index: int | None = None
+    break_confirmed_index: int | None = None
+    break_boundary: float | None = None
+    frozen_upper_top: float | None = None
+    frozen_lower_bottom: float | None = None
+    break_reference_atr: float | None = None
+    break_frozen_buffer: float | None = None
+    break_return_state: RangeState | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +111,11 @@ class SupportResistanceExport:
     lower_touches: int = 0
     upper_close_violations: int = 0
     lower_close_violations: int = 0
+    break_direction: int = 0
+    break_candidate_index: int | None = None
+    break_confirmed_index: int | None = None
+    break_boundary: float | None = None
+    break_buffer: float | None = None
 
 
 def _clamp100(value: float) -> float:
@@ -157,7 +179,6 @@ def _identity_score(previous: RangeSnapshot, upper: float, lower: float, half: f
     height_ref = max(abs(upper - lower), previous.height or 0.0, min_tick)
     mid_similarity = max(0.0, min(1.0, 1.0 - abs(previous_mid - candidate_mid) / height_ref))
     time_overlap = 1.0 if previous.start_index is not None and start <= now and previous.start_index <= now else 0.0
-    # Pine geometry identity weights renormalized after removing Wyckoff event linkage.
     return upper_overlap * 0.316 + lower_overlap * 0.316 + mid_similarity * 0.263 + time_overlap * 0.105
 
 
@@ -166,7 +187,12 @@ def _boundary_blend_for_state(state: RangeState) -> float:
         return 0.35
     if state == RangeState.DEFINED:
         return 0.08
+    if state == RangeState.STABILIZING:
+        return 0.04
     return 0.0
+
+
+_NORMAL_MATURE_STATES = {RangeState.DEFINED, RangeState.STABILIZING, RangeState.ACTIVE, RangeState.WEAK, RangeState.BREAK_ATTEMPT}
 
 
 class SupportResistanceRangeEngine(BaseEngine):
@@ -210,8 +236,7 @@ class SupportResistanceRangeEngine(BaseEngine):
             return []
         now = len(self._rows) - 1
         floor = max(0, now - self.config.max_range_scan)
-        values = [p for p in pivots if p.origin_index >= floor and p.known_index <= now]
-        return values[-self.config.search_pivots :]
+        return [p for p in pivots if p.origin_index >= floor and p.known_index <= now][-self.config.search_pivots :]
 
     def _touch_count(self, pivots: list[ConfirmedPivot], center: float, half_width: float, start: int) -> tuple[int, int | None, int | None]:
         count = 0
@@ -226,7 +251,7 @@ class SupportResistanceRangeEngine(BaseEngine):
                 last = pivot.origin_index
         return count, first, last
 
-    def _build_range(self) -> RangeSnapshot:
+    def _build_geometry(self) -> RangeSnapshot:
         highs = self._recent(self._high_pivots)
         lows = self._recent(self._low_pivots)
         if len(highs) < 2 or len(lows) < 2:
@@ -244,7 +269,8 @@ class SupportResistanceRangeEngine(BaseEngine):
         raw_start = max(raw_start, now - self.config.max_range_scan)
         previous = self._range
         identity_score = _identity_score(previous, raw_upper, raw_lower, half, raw_start, now, self.config.min_tick)
-        same_identity = previous.valid and identity_score >= self.config.range_identity_min_score
+        terminal_previous = previous.state in {RangeState.BREAK_CONFIRMED, RangeState.INVALID}
+        same_identity = previous.valid and not terminal_previous and identity_score >= self.config.range_identity_min_score
 
         if same_identity and previous.upper_center is not None and previous.lower_center is not None:
             blend = _boundary_blend_for_state(previous.state)
@@ -253,9 +279,7 @@ class SupportResistanceRangeEngine(BaseEngine):
             start = previous.start_index if previous.start_index is not None else raw_start
             identity = previous.identity
         else:
-            upper = raw_upper
-            lower = raw_lower
-            start = raw_start
+            upper, lower, start = raw_upper, raw_lower, raw_start
             identity = self._next_range_identity
             self._next_range_identity += 1
 
@@ -264,7 +288,6 @@ class SupportResistanceRangeEngine(BaseEngine):
         duration = now - start
         height = upper - lower
         height_atr = height / max(atr, self.config.min_tick)
-
         upper_touches, first_up, last_up = self._touch_count(highs, upper, half, start)
         lower_touches, first_dn, last_dn = self._touch_count(lows, lower, half, start)
         internal = sum(1 for p in self._high_pivots + self._low_pivots if start <= p.origin_index <= now and lower_bottom <= p.price <= upper_top)
@@ -276,13 +299,11 @@ class SupportResistanceRangeEngine(BaseEngine):
         lower_viol = sum(1 for r in scan if float(r["close"]) < lower_bottom)
         start_close = float(scan[0]["close"]) if scan else float(self._rows[-1]["close"])
         progress = abs(float(self._rows[-1]["close"]) - start_close) / max(height, self.config.min_tick)
-
         progress_q = _clamp100((1.0 - progress / max(self.config.max_net_progress_ratio, 0.05)) * 100.0)
         pivot_balance = min(upper_touches, lower_touches) / max(upper_touches, lower_touches, 1)
         swing_balance = 100.0 if internal >= 4 else internal * 25.0
         balance_q = _clamp100(pivot_balance * 70.0 + swing_balance * 0.30)
         touch_q = _clamp100((min(upper_touches, self.config.min_upper_touches + 1) + min(lower_touches, self.config.min_lower_touches + 1)) / float(self.config.min_upper_touches + self.config.min_lower_touches + 2) * 100.0)
-
         first_touch_values = [v for v in (first_up, first_dn) if v is not None]
         last_touch_values = [v for v in (last_up, last_dn) if v is not None]
         touch_span = ((max(last_touch_values) - min(first_touch_values)) / duration) if first_touch_values and last_touch_values and duration > 0 else 0.0
@@ -294,121 +315,192 @@ class SupportResistanceRangeEngine(BaseEngine):
             height_q = _clamp100(height_atr / self.config.min_range_height_atr * 100.0)
         else:
             height_q = _clamp100((self.config.max_range_height_atr * 1.5 - height_atr) / (self.config.max_range_height_atr * 0.5) * 100.0)
-
         if same_identity and previous.upper_center is not None and previous.lower_center is not None:
             raw_shift_atr = (abs(previous.upper_center - raw_upper) + abs(previous.lower_center - raw_lower)) / max(atr, self.config.min_tick)
             stability_q = _clamp100(100.0 - raw_shift_atr * 42.0 - (upper_viol + lower_viol) * 5.0)
         else:
             stability_q = _clamp100(70.0 - (upper_viol + lower_viol) * 5.0)
-
+        # Geometry-only renormalization of Pine families. Balance remains an independent family.
         quality = _clamp100(
-            touch_q * 0.22
-            + distribution_q * 0.11
-            + duration_q * 0.11
-            + overlap * 0.17
-            + progress_q * 0.17
-            + stability_q * 0.13
-            + height_q * 0.09
+            touch_q * 0.20 + distribution_q * 0.105 + duration_q * 0.105 + overlap * 0.16
+            + progress_q * 0.16 + stability_q * 0.13 + height_q * 0.085 + balance_q * 0.055
         )
-
         basic = height_atr >= self.config.min_range_height_atr * 0.45 and height_atr <= self.config.max_range_height_atr * 1.50 and internal >= 1
         hard = height_atr >= self.config.min_range_height_atr * 0.70 and height_atr <= self.config.max_range_height_atr * 1.25 and internal >= 2
         defined = (
-            duration >= self.config.min_range_age
-            and upper_touches >= self.config.min_upper_touches
+            duration >= self.config.min_range_age and upper_touches >= self.config.min_upper_touches
             and lower_touches >= self.config.min_lower_touches
             and self.config.min_range_height_atr <= height_atr <= self.config.max_range_height_atr
-            and progress <= self.config.max_net_progress_ratio
-            and overlap >= 28.0
-            and internal >= 4
-            and upper_viol + lower_viol <= 2
-            and quality >= self.config.min_range_quality
+            and progress <= self.config.max_net_progress_ratio and overlap >= 28.0 and internal >= 4
+            and upper_viol + lower_viol <= 2 and quality >= self.config.min_range_quality
         )
-
         state = RangeState.CANDIDATE if not hard else RangeState.DEFINED if defined else RangeState.GEOMETRY
-        last_close = float(self._rows[-1]["close"])
-        buffer = max(atr * self.config.break_buffer_atr, self.config.min_tick * 2.0)
-        if defined and last_close > upper_top + buffer:
-            state = RangeState.BREAK_UP
-        elif defined and last_close < lower_bottom - buffer:
-            state = RangeState.BREAK_DOWN
-
+        last_change = previous.last_state_change_index if same_identity else now
+        if same_identity and previous.state in {RangeState.DEFINED, RangeState.STABILIZING, RangeState.ACTIVE, RangeState.WEAK, RangeState.BREAK_ATTEMPT, RangeState.BREAK_FAILED}:
+            state = previous.state
         return RangeSnapshot(
-            valid=basic,
-            identity=identity,
-            state=state,
-            known_index=now,
-            start_index=start,
-            upper_center=upper,
-            upper_top=upper_top,
-            upper_bottom=upper_bottom,
-            lower_center=lower,
-            lower_top=lower_top,
-            lower_bottom=lower_bottom,
-            mid_price=(upper + lower) * 0.5,
-            height=height,
-            height_atr=height_atr,
-            upper_touches=upper_touches,
-            lower_touches=lower_touches,
-            internal_swings=internal,
-            overlap_score=overlap,
-            net_progress_ratio=progress,
-            upper_close_violations=upper_viol,
-            lower_close_violations=lower_viol,
-            boundary_stability=stability_q,
-            identity_score=identity_score,
-            quality=quality,
+            valid=basic, identity=identity, state=state, known_index=now, start_index=start,
+            last_state_change_index=last_change, upper_center=upper, upper_top=upper_top, upper_bottom=upper_bottom,
+            lower_center=lower, lower_top=lower_top, lower_bottom=lower_bottom, mid_price=(upper + lower) * 0.5,
+            height=height, height_atr=height_atr, upper_touches=upper_touches, lower_touches=lower_touches,
+            internal_swings=internal, overlap_score=overlap, net_progress_ratio=progress,
+            upper_close_violations=upper_viol, lower_close_violations=lower_viol,
+            boundary_stability=stability_q, identity_score=identity_score, quality=quality,
+            break_direction=previous.break_direction if same_identity else 0,
+            break_candidate_index=previous.break_candidate_index if same_identity else None,
+            break_confirmed_index=previous.break_confirmed_index if same_identity else None,
+            break_boundary=previous.break_boundary if same_identity else None,
+            frozen_upper_top=previous.frozen_upper_top if same_identity else None,
+            frozen_lower_bottom=previous.frozen_lower_bottom if same_identity else None,
+            break_reference_atr=previous.break_reference_atr if same_identity else None,
+            break_frozen_buffer=previous.break_frozen_buffer if same_identity else None,
+            break_return_state=previous.break_return_state if same_identity else None,
         )
+
+    def _advance_lifecycle(self, geometry: RangeSnapshot) -> RangeSnapshot:
+        if not geometry.valid:
+            return geometry
+        now = len(self._rows) - 1
+        prev = self._range
+        same = prev.valid and prev.identity == geometry.identity
+        state = geometry.state
+        last_change = geometry.last_state_change_index if geometry.last_state_change_index is not None else now
+
+        if same and prev.state == RangeState.BREAK_CONFIRMED:
+            return prev
+
+        if same and prev.state == RangeState.BREAK_FAILED:
+            geometry_ok = geometry.height_atr is not None and self.config.min_range_height_atr * 0.45 <= geometry.height_atr <= self.config.max_range_height_atr * 1.50
+            return replace(
+                geometry,
+                state=prev.break_return_state if geometry_ok and prev.break_return_state in _NORMAL_MATURE_STATES else RangeState.INVALID,
+                last_state_change_index=now,
+                break_direction=0,
+                break_candidate_index=None,
+                break_confirmed_index=None,
+                break_boundary=None,
+                frozen_upper_top=None,
+                frozen_lower_bottom=None,
+                break_reference_atr=None,
+                break_frozen_buffer=None,
+                break_return_state=None,
+            )
+
+        if same and prev.state == RangeState.BREAK_CANDIDATE:
+            frozen_upper = prev.frozen_upper_top if prev.frozen_upper_top is not None else prev.break_boundary
+            frozen_lower = prev.frozen_lower_bottom if prev.frozen_lower_bottom is not None else prev.break_boundary
+            buffer = prev.break_frozen_buffer or self.config.min_tick
+            age = now - (prev.break_candidate_index if prev.break_candidate_index is not None else now)
+            close = float(self._rows[-1]["close"])
+            accepted = (prev.break_direction == 1 and frozen_upper is not None and close > frozen_upper + buffer) or (prev.break_direction == -1 and frozen_lower is not None and close < frozen_lower - buffer)
+            returned_inside = age >= 1 and ((prev.break_direction == 1 and frozen_upper is not None and close <= frozen_upper) or (prev.break_direction == -1 and frozen_lower is not None and close >= frozen_lower))
+            mid = prev.mid_price if prev.mid_price is not None else geometry.mid_price
+            strong_opposite = age >= 1 and mid is not None and ((prev.break_direction == 1 and close < mid - buffer) or (prev.break_direction == -1 and close > mid + buffer))
+            if age >= 1 and age <= self.config.breakout_confirm_window and accepted:
+                return replace(prev, state=RangeState.BREAK_CONFIRMED, known_index=now, break_confirmed_index=now, last_state_change_index=now)
+            if returned_inside or strong_opposite or age > self.config.breakout_confirm_window:
+                return replace(prev, state=RangeState.BREAK_FAILED, known_index=now, last_state_change_index=now)
+            return replace(prev, known_index=now)
+
+        if state == RangeState.DEFINED and same:
+            age = now - (prev.last_state_change_index if prev.last_state_change_index is not None else now)
+            permanent_violation = geometry.upper_close_violations + geometry.lower_close_violations > 2
+            if prev.state == RangeState.DEFINED and age >= self.config.min_touch_gap and geometry.boundary_stability >= 52 and not permanent_violation:
+                state, last_change = RangeState.STABILIZING, now
+            elif prev.state == RangeState.STABILIZING and geometry.boundary_stability >= 58 and geometry.quality >= self.config.min_range_quality and geometry.upper_touches >= self.config.min_upper_touches and geometry.lower_touches >= self.config.min_lower_touches and geometry.net_progress_ratio <= self.config.max_net_progress_ratio and not permanent_violation:
+                state, last_change = RangeState.ACTIVE, now
+            elif prev.state in {RangeState.ACTIVE, RangeState.WEAK, RangeState.BREAK_ATTEMPT}:
+                state = prev.state
+
+        if state in _NORMAL_MATURE_STATES:
+            close = float(self._rows[-1]["close"])
+            high = float(self._rows[-1]["high"])
+            low = float(self._rows[-1]["low"])
+            upper = geometry.upper_top
+            lower = geometry.lower_bottom
+            if upper is not None and lower is not None:
+                atr = _atr(self._rows, min_tick=self.config.min_tick)
+                buffer = max(atr * self.config.break_buffer_atr, self.config.min_tick)
+                close_inside = lower <= close <= upper
+                upward_wick = high > upper and close <= upper
+                downward_wick = low < lower and close >= lower
+                upward_break = close > upper + buffer
+                downward_break = close < lower - buffer
+                if upward_break or downward_break:
+                    direction = 1 if upward_break and not downward_break else -1 if downward_break and not upward_break else (1 if geometry.mid_price is not None and close >= geometry.mid_price else -1)
+                    return replace(
+                        geometry,
+                        state=RangeState.BREAK_CANDIDATE,
+                        last_state_change_index=now,
+                        break_direction=direction,
+                        break_candidate_index=now,
+                        break_confirmed_index=None,
+                        break_boundary=upper if direction == 1 else lower,
+                        frozen_upper_top=upper,
+                        frozen_lower_bottom=lower,
+                        break_reference_atr=atr,
+                        break_frozen_buffer=buffer,
+                        break_return_state=prev.state if same and prev.state in _NORMAL_MATURE_STATES else state,
+                    )
+                if upward_wick or downward_wick:
+                    direction = 1 if upward_wick and not downward_wick else -1 if downward_wick and not upward_wick else (1 if geometry.mid_price is not None and close >= geometry.mid_price else -1)
+                    return replace(geometry, state=RangeState.BREAK_ATTEMPT, last_state_change_index=now, break_direction=direction, break_return_state=state)
+                if same and prev.state == RangeState.BREAK_ATTEMPT and close_inside:
+                    state = prev.break_return_state if prev.break_return_state in _NORMAL_MATURE_STATES else RangeState.WEAK
+                    last_change = now
+
+            weak_evidence = 0
+            weak_evidence += int(geometry.boundary_stability < 48)
+            weak_evidence += int(geometry.quality < self.config.min_range_quality)
+            weak_evidence += int(geometry.net_progress_ratio > self.config.max_net_progress_ratio)
+            weak_evidence += int(geometry.upper_close_violations + geometry.lower_close_violations >= 2)
+            weak_evidence += int(geometry.overlap_score < 24)
+            if state == RangeState.ACTIVE and weak_evidence >= 2:
+                state, last_change = RangeState.WEAK, now
+            elif state == RangeState.WEAK:
+                recovered = geometry.quality >= self.config.min_range_quality and geometry.boundary_stability >= 58 and geometry.net_progress_ratio <= self.config.max_net_progress_ratio and geometry.overlap_score >= 28 and geometry.lower_bottom is not None and geometry.upper_top is not None and geometry.lower_bottom <= float(self._rows[-1]["close"]) <= geometry.upper_top
+                if recovered:
+                    state, last_change = RangeState.ACTIVE, now
+
+        return replace(geometry, state=state, last_state_change_index=last_change)
 
     def _publish(self, timestamp: Any) -> EngineResult:
         r = self._range
         direction = Direction.NEUTRAL
-        if r.state == RangeState.BREAK_UP:
-            direction = Direction.UP
-        elif r.state == RangeState.BREAK_DOWN:
-            direction = Direction.DOWN
+        if r.state == RangeState.BREAK_CONFIRMED:
+            direction = Direction.UP if r.break_direction == 1 else Direction.DOWN if r.break_direction == -1 else Direction.NEUTRAL
         levels: dict[str, float] = {}
-        for key in ("upper_center", "upper_top", "upper_bottom", "lower_center", "lower_top", "lower_bottom", "mid_price"):
+        for key in ("upper_center", "upper_top", "upper_bottom", "lower_center", "lower_top", "lower_bottom", "mid_price", "break_boundary"):
             value = getattr(r, key)
             if value is not None:
                 levels[key] = float(value)
         reasons = (
-            f"range_identity={r.identity}",
-            f"identity_score={r.identity_score:.3f}",
-            f"touches={r.upper_touches}/{r.lower_touches}",
-            f"overlap={r.overlap_score:.2f}",
-            f"progress={r.net_progress_ratio:.3f}",
-            f"violations={r.upper_close_violations}/{r.lower_close_violations}",
+            f"range_identity={r.identity}", f"identity_score={r.identity_score:.3f}",
+            f"touches={r.upper_touches}/{r.lower_touches}", f"overlap={r.overlap_score:.2f}",
+            f"progress={r.net_progress_ratio:.3f}", f"violations={r.upper_close_violations}/{r.lower_close_violations}",
         ) if r.valid else ("insufficient_confirmed_range_geometry",)
+        events: tuple[str, ...] = ()
+        if r.valid:
+            events = (r.state.value,)
+            if r.break_direction:
+                events += (("BREAK_UP" if r.break_direction == 1 else "BREAK_DOWN"),)
         result = EngineResult(
-            engine="support_resistance_range",
-            state=r.state.value,
-            timestamp=timestamp,
-            direction=direction,
-            score=r.quality if r.valid else None,
-            quality=r.quality if r.valid else None,
-            levels=levels,
-            events=(r.state.value,) if r.valid else (),
-            reasons=reasons,
-            is_confirmed=True,
+            engine="support_resistance_range", state=r.state.value, timestamp=timestamp,
+            direction=direction, score=r.quality if r.valid else None, quality=r.quality if r.valid else None,
+            levels=levels, events=events, reasons=reasons, is_confirmed=True,
         )
         self.export_contract = SupportResistanceExport(
-            state=r.state.value if r.valid else None,
-            range_identity=r.identity if r.valid else None,
-            upper_center=r.upper_center,
-            upper_top=r.upper_top,
-            upper_bottom=r.upper_bottom,
-            lower_center=r.lower_center,
-            lower_top=r.lower_top,
-            lower_bottom=r.lower_bottom,
-            mid_price=r.mid_price,
-            quality=r.quality if r.valid else None,
+            state=r.state.value if r.valid else None, range_identity=r.identity if r.valid else None,
+            upper_center=r.upper_center, upper_top=r.upper_top, upper_bottom=r.upper_bottom,
+            lower_center=r.lower_center, lower_top=r.lower_top, lower_bottom=r.lower_bottom,
+            mid_price=r.mid_price, quality=r.quality if r.valid else None,
             boundary_stability=r.boundary_stability if r.valid else None,
             identity_score=r.identity_score if r.valid else None,
-            upper_touches=r.upper_touches,
-            lower_touches=r.lower_touches,
-            upper_close_violations=r.upper_close_violations,
-            lower_close_violations=r.lower_close_violations,
+            upper_touches=r.upper_touches, lower_touches=r.lower_touches,
+            upper_close_violations=r.upper_close_violations, lower_close_violations=r.lower_close_violations,
+            break_direction=r.break_direction, break_candidate_index=r.break_candidate_index,
+            break_confirmed_index=r.break_confirmed_index, break_boundary=r.break_boundary,
+            break_buffer=r.break_frozen_buffer,
         )
         self._snapshot = result
         return result
@@ -419,7 +511,8 @@ class SupportResistanceRangeEngine(BaseEngine):
             return self._snapshot
         self._rows.append(row)
         self._confirm_new_pivot()
-        self._range = self._build_range()
+        geometry = self._build_geometry()
+        self._range = self._advance_lifecycle(geometry)
         return self._publish(row.get("timestamp"))
 
     def replay(self, frame: pd.DataFrame) -> list[EngineResult]:
