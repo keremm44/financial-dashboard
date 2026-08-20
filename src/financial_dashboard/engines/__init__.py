@@ -25,6 +25,14 @@ from .mtf_story_replay import replay_story_results
 from .mtf_story_state_machine import MTFStoryStateMachine
 from .mtf_story_trigger import MTFStoryTriggerError, classify_trigger
 from .pattern_compression_engine import PatternCompressionEngine
+from .support_resistance_engine import (
+    ConfirmedPivot,
+    RangeSnapshot,
+    RangeState,
+    SupportResistanceConfig,
+    SupportResistanceExport,
+    SupportResistanceRangeEngine,
+)
 
 __all__ = [
     "MarketStructureEngine",
@@ -39,6 +47,12 @@ __all__ = [
     "AuctionVolumeProfileEngine",
     "AuctionConfig",
     "AuctionExport",
+    "SupportResistanceRangeEngine",
+    "SupportResistanceConfig",
+    "SupportResistanceExport",
+    "RangeState",
+    "RangeSnapshot",
+    "ConfirmedPivot",
     "TimeframeRole",
     "RawTimeframeEvidence",
     "TimeframeStoryState",
