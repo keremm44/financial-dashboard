@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import StrEnum
+from enum import Enum, StrEnum
 from hashlib import sha256
 import json
 from typing import Any, Mapping
@@ -73,7 +73,7 @@ class NormalizedLevel:
     source_bar: int | None = None
     known_bar: int | None = None
     timestamp: Any | None = None
-    state: str | int | None = None
+    state: str | int | float | None = None
     raw_metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -81,6 +81,8 @@ class NormalizedLevel:
             raise ValueError("normalized level requires price or zone bounds")
         if self.lower is not None and self.upper is not None and self.lower > self.upper:
             raise ValueError("normalized level lower cannot exceed upper")
+        if self.source_bar is not None and self.known_bar is not None and self.source_bar > self.known_bar:
+            raise ValueError("level source_bar cannot be after known_bar")
         _validate_unit_interval("freshness", self.freshness)
         _validate_score("quality", self.quality)
 
@@ -105,7 +107,7 @@ class TechnicalEvidenceItem:
     level_refs: tuple[str, ...] = ()
     provenance_type: ProvenanceType = ProvenanceType.ROOT
     depends_on: tuple[str, ...] = ()
-    source_state: str | int | None = None
+    source_state: str | int | float | None = None
     raw_export: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -137,6 +139,11 @@ class TechnicalEvidencePacket:
         dangling = sorted({ref for item in self.evidence for ref in item.level_refs if ref not in valid_levels})
         if dangling:
             raise ValueError(f"dangling normalized level references: {dangling}")
+        if self.known_bar is not None:
+            future_items = [item.id for item in self.evidence if item.known_bar is not None and item.known_bar > self.known_bar]
+            future_levels = [level.id for level in self.levels if level.known_bar is not None and level.known_bar > self.known_bar]
+            if future_items or future_levels:
+                raise ValueError("packet cannot contain evidence known in the future")
 
     def level_by_id(self, level_id: str) -> NormalizedLevel | None:
         return next((level for level in self.levels if level.id == level_id), None)
@@ -156,15 +163,18 @@ class EvidenceContext:
 
     @property
     def can_advance(self) -> bool:
-        return self.is_closed and self.is_complete
+        canonical, _ = normalize_data_quality(self.source_data_quality)
+        blocked = {
+            EvidenceDataQuality.INCOMPLETE_BAR,
+            EvidenceDataQuality.SOURCE_GAP,
+            EvidenceDataQuality.DATA_INVALID,
+            EvidenceDataQuality.UNSUPPORTED_TIMEFRAME,
+        }
+        return self.is_closed and self.is_complete and canonical not in blocked
 
 
 class TechnicalEvidenceBuilder:
-    """Small state guard for confirmed TEL packets.
-
-    Tur-1 deliberately contains no decision logic. The builder only freezes the
-    last confirmed packet when the current source bar is open or incomplete.
-    """
+    """Confirmed-packet guard with no analysis or decision authority."""
 
     def __init__(self) -> None:
         self._snapshot: TechnicalEvidencePacket | None = None
@@ -261,17 +271,7 @@ def make_level_id(
     lower: float | None,
     upper: float | None,
 ) -> str:
-    return _stable_id(
-        "level",
-        source_engine,
-        level_type,
-        timeframe,
-        source_bar,
-        known_bar,
-        price,
-        lower,
-        upper,
-    )
+    return _stable_id("level", source_engine, level_type, timeframe, source_bar, known_bar, price, lower, upper)
 
 
 def make_evidence_id(
@@ -283,15 +283,7 @@ def make_evidence_id(
     known_bar: int | None,
     timestamp: Any | None,
 ) -> str:
-    return _stable_id(
-        "evidence",
-        source_engine,
-        evidence_type,
-        timeframe,
-        source_bar,
-        known_bar,
-        _timestamp_text(timestamp),
-    )
+    return _stable_id("evidence", source_engine, evidence_type, timeframe, source_bar, known_bar, _timestamp_text(timestamp))
 
 
 def plain_payload(value: Any) -> Any:
@@ -299,19 +291,14 @@ def plain_payload(value: Any) -> Any:
         return value
     if isinstance(value, datetime):
         return value.isoformat()
-    if hasattr(value, "value") and value.__class__.__module__ == "enum":
+    if isinstance(value, Enum):
         return plain_payload(value.value)
     if hasattr(value, "__dataclass_fields__"):
-        return {
-            name: plain_payload(getattr(value, name))
-            for name in value.__dataclass_fields__
-        }
+        return {name: plain_payload(getattr(value, name)) for name in value.__dataclass_fields__}
     if isinstance(value, Mapping):
         return {str(key): plain_payload(item) for key, item in value.items()}
     if isinstance(value, (list, tuple, set)):
         return [plain_payload(item) for item in value]
-    if hasattr(value, "value"):
-        return plain_payload(value.value)
     return str(value)
 
 
