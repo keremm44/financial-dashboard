@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 import pandas as pd
 
@@ -70,6 +70,12 @@ class AuctionNode:
     high_price: float
     score: float
     center_bin: int
+    low_bin: int
+    high_bin: int
+    volume_ratio: float = 0.0
+    mean_ratio: float = 0.0
+    local_depth: float = 0.0
+    inside_value_area: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,21 +289,27 @@ def build_profile(rows: list[dict[str, Any]], config: AuctionConfig) -> AuctionP
     )
 
 
+def _bands_overlap_or_near(low_a: int, high_a: int, low_b: int, high_b: int, min_sep: int) -> bool:
+    return low_a <= high_b + min_sep and high_a >= low_b - min_sep
+
+
 def _nodes(profile: AuctionProfile, config: AuctionConfig) -> tuple[tuple[AuctionNode, ...], tuple[AuctionNode, ...]]:
     if not profile.valid or len(profile.volumes) < 5 or profile.bin_width is None or profile.low_price is None:
         return (), ()
     raw = list(profile.volumes)
-    smooth = []
+    smooth: list[float] = []
     for i, center in enumerate(raw):
         left = raw[i - 1] if i > 0 else center
         right = raw[i + 1] if i < len(raw) - 1 else center
         smooth.append((left + 2.0 * center + right) / 4.0)
+
     max_s = max(smooth)
     mean_s = sum(smooth) / len(smooth)
     p = config.preset
+    edge_guard = max(2, round(len(smooth) * 0.06))
     hvn_candidates: list[tuple[float, int]] = []
     lvn_candidates: list[tuple[float, int]] = []
-    edge_guard = max(2, round(len(smooth) * 0.06))
+
     for i in range(1, len(smooth) - 1):
         left, cur, right = smooth[i - 1], smooth[i], smooth[i + 1]
         if cur >= left and cur >= right and (cur > left or cur > right):
@@ -307,31 +319,99 @@ def _nodes(profile: AuctionProfile, config: AuctionConfig) -> tuple[tuple[Auctio
             if rel >= p.hvn_rel_min and mean_ratio >= p.hvn_mean_mult:
                 score = min(100.0, rel * 55.0 + min(mean_ratio / 2.0, 1.0) * 30.0 + min(prominence / 0.20, 1.0) * 15.0)
                 hvn_candidates.append((score, i))
+
         if edge_guard <= i <= len(smooth) - 1 - edge_guard and cur <= left and cur <= right and (cur < left or cur < right):
             rel = cur / max_s if max_s else 1.0
             mean_ratio = cur / mean_s if mean_s else 1.0
-            shoulder = max((left + right) * 0.5, 1e-10)
-            depth = max(0.0, 1.0 - cur / shoulder)
+            shoulder_avg = max((left + right) * 0.5, 1e-10)
+            depth = max(0.0, 1.0 - cur / shoulder_avg)
             if rel <= p.lvn_rel_max and mean_ratio <= p.lvn_mean_max and depth >= p.lvn_depth_min:
                 score = min(100.0, (1.0 - rel) * 50.0 + min(depth / 0.40, 1.0) * 30.0 + max(0.0, 1.0 - min(mean_ratio, 1.0)) * 20.0)
                 lvn_candidates.append((score, i))
 
-    def select(candidates: list[tuple[float, int]], kind: str, limit: int, avoid: Iterable[int] = ()) -> tuple[AuctionNode, ...]:
+    def hvn_band(center_bin: int) -> tuple[int, int]:
+        peak = smooth[center_bin]
+        shoulder_floor = peak * 0.72
+        low_bin = high_bin = center_bin
+        for step in range(1, 4):
+            idx = center_bin - step
+            if idx >= 0 and smooth[idx] >= shoulder_floor:
+                low_bin = idx
+            else:
+                break
+        for step in range(1, 4):
+            idx = center_bin + step
+            if idx < len(smooth) and smooth[idx] >= shoulder_floor:
+                high_bin = idx
+            else:
+                break
+        return low_bin, high_bin
+
+    def lvn_band(center_bin: int) -> tuple[int, int]:
+        valley = smooth[center_bin]
+        left_shoulder = smooth[center_bin - 1]
+        right_shoulder = smooth[center_bin + 1]
+        shoulder_ref = min(left_shoulder, right_shoulder)
+        valley_ceiling = valley + max(shoulder_ref - valley, 0.0) * 0.55
+        low_bin = high_bin = center_bin
+        for step in range(1, 3):
+            idx = center_bin - step
+            if idx >= edge_guard and smooth[idx] <= valley_ceiling:
+                low_bin = idx
+            else:
+                break
+        for step in range(1, 3):
+            idx = center_bin + step
+            if idx <= len(smooth) - 1 - edge_guard and smooth[idx] <= valley_ceiling:
+                high_bin = idx
+            else:
+                break
+        return low_bin, high_bin
+
+    def make_node(kind: str, score: float, center_bin: int) -> AuctionNode:
+        low_bin, high_bin = hvn_band(center_bin) if kind == "HVN" else lvn_band(center_bin)
+        center_price = profile.low_price + (center_bin + 0.5) * profile.bin_width
+        low_price = profile.low_price + low_bin * profile.bin_width
+        high_price = profile.low_price + (high_bin + 1) * profile.bin_width
+        rel = smooth[center_bin] / max_s if max_s else 0.0
+        mean_ratio = smooth[center_bin] / mean_s if mean_s else 0.0
+        depth = 0.0
+        if kind == "LVN":
+            shoulder_avg = max((smooth[center_bin - 1] + smooth[center_bin + 1]) * 0.5, 1e-10)
+            depth = max(0.0, 1.0 - smooth[center_bin] / shoulder_avg)
+        inside_value = profile.val_bin <= center_bin <= profile.vah_bin
+        return AuctionNode(
+            kind=kind,
+            center_price=center_price,
+            low_price=low_price,
+            high_price=high_price,
+            score=round(score, 2),
+            center_bin=center_bin,
+            low_bin=low_bin,
+            high_bin=high_bin,
+            volume_ratio=rel,
+            mean_ratio=mean_ratio,
+            local_depth=depth,
+            inside_value_area=inside_value,
+        )
+
+    def select(candidates: list[tuple[float, int]], kind: str, limit: int, avoid: tuple[AuctionNode, ...] = ()) -> tuple[AuctionNode, ...]:
         selected: list[AuctionNode] = []
-        blocked = list(avoid)
-        for score, idx in sorted(candidates, reverse=True):
-            if any(abs(idx - other) <= p.node_min_separation_bins for other in blocked):
+        for score, center_bin in sorted(candidates, key=lambda item: (-item[0], item[1])):
+            candidate = make_node(kind, score, center_bin)
+            blocked = any(
+                _bands_overlap_or_near(candidate.low_bin, candidate.high_bin, node.low_bin, node.high_bin, p.node_min_separation_bins)
+                for node in (*avoid, *selected)
+            )
+            if blocked:
                 continue
-            center = profile.low_price + (idx + 0.5) * profile.bin_width
-            node = AuctionNode(kind, center, profile.low_price + idx * profile.bin_width, profile.low_price + (idx + 1) * profile.bin_width, round(score, 2), idx)
-            selected.append(node)
-            blocked.append(idx)
+            selected.append(candidate)
             if len(selected) >= limit:
                 break
         return tuple(selected)
 
     hvn = select(hvn_candidates, "HVN", config.max_hvn_nodes)
-    lvn = select(lvn_candidates, "LVN", config.max_lvn_nodes, (n.center_bin for n in hvn))
+    lvn = select(lvn_candidates, "LVN", config.max_lvn_nodes, hvn)
     return hvn, lvn
 
 
