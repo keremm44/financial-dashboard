@@ -42,7 +42,7 @@ def _replace_items(packet: TechnicalEvidencePacket, mapper) -> TechnicalEvidence
 
 def _timestamps_equal(left: Any, right: Any) -> bool:
     if left is None or right is None:
-        return True
+        return left is None and right is None
     try:
         left_ts = pd.Timestamp(left)
         right_ts = pd.Timestamp(right)
@@ -61,7 +61,7 @@ def _timestamps_equal(left: Any, right: Any) -> bool:
 
 
 def _require_context_timestamp(source_name: str, source_timestamp: Any, context: EvidenceContext) -> None:
-    if source_timestamp is not None and context.timestamp is not None and not _timestamps_equal(source_timestamp, context.timestamp):
+    if not _timestamps_equal(source_timestamp, context.timestamp):
         raise ValueError(f"{source_name} timestamp must match EvidenceContext timestamp")
 
 
@@ -105,6 +105,99 @@ def _rewrite_level_sources(
         for item in packet.evidence
     )
     return replace(packet, evidence=evidence, levels=tuple(levels))
+
+
+def _anchor_liquidity_event(packet: TechnicalEvidencePacket, context: EvidenceContext) -> TechnicalEvidencePacket:
+    """Anchor a sweep/reclaim export to the current confirmed bar.
+
+    LiquidityEngine only populates latest_event_* from directional events observed
+    on the current closed bar, so this is a causal event anchor rather than an
+    inferred formation time.
+    """
+
+    if context.known_bar is None or not any(item.evidence_type == "LIQUIDITY_EVENT" for item in packet.evidence):
+        return packet
+
+    id_map: dict[str, str] = {}
+    levels: list[NormalizedLevel] = []
+    for level in packet.levels:
+        if level.source_engine != "liquidity" or level.level_type != "LATEST_EVENT_LEVEL":
+            levels.append(level)
+            continue
+        new_id = make_level_id(
+            source_engine=level.source_engine,
+            level_type=level.level_type,
+            timeframe=level.timeframe,
+            source_bar=context.known_bar,
+            known_bar=level.known_bar,
+            price=level.price,
+            lower=level.lower,
+            upper=level.upper,
+        )
+        id_map[level.id] = new_id
+        metadata = dict(level.raw_metadata)
+        metadata["event_bar"] = context.known_bar
+        levels.append(
+            replace(
+                level,
+                id=new_id,
+                source_bar=context.known_bar,
+                raw_metadata=metadata,
+            )
+        )
+
+    evidence: list[TechnicalEvidenceItem] = []
+    for item in packet.evidence:
+        refs = tuple(id_map.get(ref, ref) for ref in item.level_refs)
+        if item.evidence_type != "LIQUIDITY_EVENT":
+            evidence.append(replace(item, level_refs=refs))
+            continue
+        evidence.append(
+            replace(
+                item,
+                id=make_evidence_id(
+                    source_engine=item.source_engine,
+                    evidence_type=item.evidence_type,
+                    timeframe=item.timeframe,
+                    source_bar=context.known_bar,
+                    known_bar=item.known_bar,
+                    timestamp=item.timestamp,
+                ),
+                source_bar=context.known_bar,
+                level_refs=refs,
+            )
+        )
+    return replace(packet, evidence=tuple(evidence), levels=tuple(levels))
+
+
+def _anchor_current_fvg_events(packet: TechnicalEvidencePacket, context: EvidenceContext) -> TechnicalEvidencePacket:
+    """Anchor FVG/Engulfing EVENT ports to the current confirmed bar.
+
+    The source facade emits an event only when its stored event index equals the
+    current export index. Active zone formation time remains unknown because the
+    permanent downstream contract does not export it.
+    """
+
+    if context.known_bar is None:
+        return packet
+
+    def anchor(item: TechnicalEvidenceItem) -> TechnicalEvidenceItem:
+        if not item.evidence_type.endswith("_EVENT"):
+            return item
+        return replace(
+            item,
+            id=make_evidence_id(
+                source_engine=item.source_engine,
+                evidence_type=item.evidence_type,
+                timeframe=item.timeframe,
+                source_bar=context.known_bar,
+                known_bar=item.known_bar,
+                timestamp=item.timestamp,
+            ),
+            source_bar=context.known_bar,
+        )
+
+    return _replace_items(packet, anchor)
 
 
 def adapt_market_structure(
@@ -151,6 +244,7 @@ def adapt_liquidity(
 ) -> TechnicalEvidencePacket:
     packet = _raw.adapt_liquidity(export, context, source_quality=source_quality)
     packet = _replace_items(packet, lambda item: replace(item, strength=None))
+    packet = _anchor_liquidity_event(packet, context)
 
     if export.latest_consume_side is None and export.latest_consume_level is None and export.latest_consume_identity is None:
         return packet
@@ -329,7 +423,8 @@ def adapt_fvg_engulfing(
     source_quality: Any = None,
 ) -> TechnicalEvidencePacket:
     packet = _raw.adapt_fvg_engulfing(export, context, source_quality=source_quality)
-    return _replace_items(packet, lambda item: replace(item, strength=None))
+    packet = _replace_items(packet, lambda item: replace(item, strength=None))
+    return _anchor_current_fvg_events(packet, context)
 
 
 def adapt_ham(
@@ -345,6 +440,6 @@ def adapt_ham(
 def merge_packets(context: EvidenceContext, packets) -> TechnicalEvidencePacket:
     packet_tuple = tuple(packets)
     for packet in packet_tuple:
-        if packet.timestamp is not None and context.timestamp is not None and not _timestamps_equal(packet.timestamp, context.timestamp):
+        if not _timestamps_equal(packet.timestamp, context.timestamp):
             raise ValueError("all packets must share EvidenceContext timestamp")
     return _raw.merge_packets(context, packet_tuple)
