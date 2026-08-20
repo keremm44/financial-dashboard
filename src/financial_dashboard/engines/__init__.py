@@ -4,8 +4,15 @@ from .auction_engine import AuctionConfig, AuctionExport, AuctionVolumeProfileEn
 from .fvg_engulfing_engine import (
     EngulfingFormation,
     FormationSnapshot,
-    FvgEngulfingEngine,
     FvgFormation,
+)
+from .fvg_engulfing_final import (
+    EngulfingLifecycleRecord,
+    EngulfingSideExport,
+    FvgEngulfingEngine,
+    FvgEngulfingExport,
+    FvgLifecycleRecord,
+    FvgSideExport,
 )
 from .fvg_engulfing_models import (
     EngulfingDirection,
@@ -112,6 +119,11 @@ __all__ = [
     "FvgFormation",
     "EngulfingFormation",
     "FormationSnapshot",
+    "FvgLifecycleRecord",
+    "EngulfingLifecycleRecord",
+    "FvgEngulfingExport",
+    "FvgSideExport",
+    "EngulfingSideExport",
     "FvgDirection",
     "FvgState",
     "EngulfingDirection",
