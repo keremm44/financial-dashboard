@@ -2,6 +2,12 @@ from __future__ import annotations
 
 import pytest
 
+from financial_dashboard.engines import (
+    EngulfingFormation,
+    FormationSnapshot,
+    FvgEngulfingEngine,
+    FvgFormation,
+)
 from financial_dashboard.engines.fvg_engulfing_models import (
     ATR_LENGTH,
     ENGULFING_DEEP_RETRACE_THRESHOLD,
@@ -65,3 +71,10 @@ def test_central_source_constants_are_frozen() -> None:
 def test_minimum_tick_must_be_positive() -> None:
     with pytest.raises(ValueError):
         FvgEngulfingConfig(minimum_tick=0.0)
+
+
+def test_tur1_public_surface_exposes_only_fvg_engulfing_formation_contract() -> None:
+    assert FvgEngulfingEngine.__module__ == "financial_dashboard.engines.fvg_engulfing_engine"
+    assert FvgFormation.__name__ == "FvgFormation"
+    assert EngulfingFormation.__name__ == "EngulfingFormation"
+    assert FormationSnapshot.__name__ == "FormationSnapshot"
