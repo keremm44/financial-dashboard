@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
-from urllib.error import URLError
+from io import BytesIO
+from urllib.error import HTTPError, URLError
 
 import pandas as pd
 import pytest
@@ -115,6 +116,28 @@ def test_retries_transient_network_failure_without_exposing_token() -> None:
     frame = provider.get_ohlcv("THYAO", "1d", datetime(2026, 8, 17), datetime(2026, 8, 17))
     assert attempts == 3
     assert len(frame) == 1
+
+
+def test_http_error_includes_provider_detail_but_redacts_token() -> None:
+    token = "very-secret-token"
+
+    def transport(url: str, timeout: float) -> object:
+        raise HTTPError(
+            url,
+            404,
+            "Not Found",
+            hdrs=None,
+            fp=BytesIO(b'{"message":"Ticker unavailable for very-secret-token plan"}'),
+        )
+
+    provider = EODHDProvider(token, transport=transport)
+    with pytest.raises(EODHDError) as caught:
+        provider.get_ohlcv("THYAO", "1d", datetime(2026, 8, 17), datetime(2026, 8, 17))
+    message = str(caught.value)
+    assert "404" in message
+    assert "Ticker unavailable" in message
+    assert token not in message
+    assert "<redacted>" in message
 
 
 def test_api_error_payload_is_rejected() -> None:
