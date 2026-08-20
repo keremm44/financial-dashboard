@@ -5,11 +5,7 @@ import math
 import pandas as pd
 import pytest
 
-from financial_dashboard.engines import (
-    ParticipationState,
-    VolumeParticipationConfig,
-    VolumeParticipationEngine,
-)
+from financial_dashboard.engines import ParticipationState, VolumeParticipationConfig, VolumeParticipationEngine
 from financial_dashboard.engines.models import Direction
 
 
@@ -33,20 +29,22 @@ def _steady_frame(n: int = 180, *, volume: float = 1000.0) -> pd.DataFrame:
         drift = 0.08 * math.sin(i / 4.0)
         o = price
         c = price + drift
-        h = max(o, c) + 0.45
-        l = min(o, c) - 0.45
-        rows.append(_bar(i, o=o, h=h, l=l, c=c, v=volume))
+        rows.append(_bar(i, o=o, h=max(o, c) + 0.45, l=min(o, c) - 0.45, c=c, v=volume))
         price = c
     return pd.DataFrame(rows)
 
 
-def _easy_config() -> VolumeParticipationConfig:
+def _flat_frame(n: int = 35, *, volume: float = 1000.0) -> pd.DataFrame:
+    return pd.DataFrame([_bar(i, o=100.0, h=100.5, l=99.5, c=100.0, v=volume) for i in range(n)])
+
+
+def _candidate_config() -> VolumeParticipationConfig:
     return VolumeParticipationConfig(
         minimum_history=30,
         percentile_length=20,
         volume_long_length=20,
         volume_average_length=10,
-        minimum_nonzero_volume_share=0.80,
+        minimum_nonzero_volume_share=0.70,
         rising_rvol=0.80,
         high_rvol=1.10,
         abnormal_rvol=1.50,
@@ -55,30 +53,46 @@ def _easy_config() -> VolumeParticipationConfig:
         abnormal_rtv=1.50,
         minimum_volume_slope=-1.0,
         minimum_capital_slope=-1.0,
-        minimum_capital_pressure=-1.0,
-        minimum_directional_share=0.0,
+        minimum_capital_pressure=0.0,
+        minimum_directional_share=0.10,
         minimum_progress_atr=0.01,
         minimum_efficiency=0.01,
         minimum_body_atr=0.0,
-        up_close_location=0.0,
-        down_close_location=1.0,
+        up_close_location=0.50,
+        down_close_location=0.25,
         maximum_directional_wick_ratio=1.0,
-        minimum_directional_close_share=0.0,
-        participation_minimum_evidence=3,
+        minimum_directional_close_share=0.20,
+        participation_minimum_evidence=5,
         participation_confirmation_bars=2,
         confirmation_minimum_rvol=0.0,
         confirmation_minimum_rtv=0.0,
     )
 
 
+def test_balanced_defaults_match_pine_thresholds() -> None:
+    cfg = VolumeParticipationConfig()
+    assert cfg.minimum_history == 150
+    assert cfg.minimum_nonzero_volume_share == pytest.approx(0.70)
+    assert cfg.rising_rvol == pytest.approx(1.20)
+    assert cfg.high_rvol == pytest.approx(1.50)
+    assert cfg.abnormal_rvol == pytest.approx(2.25)
+    assert cfg.rising_rtv == pytest.approx(1.16)
+    assert cfg.high_rtv == pytest.approx(1.48)
+    assert cfg.abnormal_rtv == pytest.approx(2.20)
+    assert cfg.minimum_directional_share == pytest.approx(0.60)
+    assert cfg.minimum_capital_pressure == pytest.approx(0.13)
+    assert cfg.minimum_progress_atr == pytest.approx(0.45)
+    assert cfg.minimum_efficiency == pytest.approx(0.52)
+    assert cfg.participation_minimum_evidence == 6
+    assert cfg.participation_confirmation_bars == 2
+
+
 def test_default_engine_waits_for_pine_minimum_history() -> None:
     engine = VolumeParticipationEngine()
-    results = engine.replay(_steady_frame(149))
-    assert results[-1] is not None
-    assert results[-1].state in {
-        ParticipationState.PENDING.value,
-        ParticipationState.VOLUME_UNAVAILABLE.value,
-    }
+    result = engine.replay(_steady_frame(149))[-1]
+    assert result is not None
+    assert result.state in {ParticipationState.PENDING.value, ParticipationState.VOLUME_UNAVAILABLE.value}
+    assert result.direction == Direction.NEUTRAL
     assert engine.export_contract.rvol is None
 
 
@@ -104,7 +118,6 @@ def test_rvol_and_rtv_use_current_value_over_rolling_average() -> None:
 def test_effort_result_uses_same_three_bar_window() -> None:
     cfg = VolumeParticipationConfig(minimum_history=30, percentile_length=20, volume_long_length=20, volume_average_length=10)
     frame = _steady_frame(40, volume=1000.0)
-    # Three bars consume high effort but almost cancel their net price progress.
     frame.loc[37, ["open", "high", "low", "close", "volume"]] = [100.0, 103.0, 99.0, 102.0, 2500.0]
     frame.loc[38, ["open", "high", "low", "close", "volume"]] = [102.0, 103.0, 99.5, 100.5, 2500.0]
     frame.loc[39, ["open", "high", "low", "close", "volume"]] = [100.5, 102.0, 99.5, 100.1, 2500.0]
@@ -121,28 +134,24 @@ def test_effort_result_uses_same_three_bar_window() -> None:
 
 
 def test_candidate_is_neutral_and_only_next_candidate_bar_can_confirm() -> None:
-    cfg = _easy_config()
+    cfg = _candidate_config()
     engine = VolumeParticipationEngine(cfg)
-    base = _steady_frame(35, volume=1000.0)
-    engine.replay(base)
+    engine.replay(_flat_frame())
 
-    last = float(base.iloc[-1]["close"])
-    first = engine.update(_bar(35, o=last, h=last + 2.4, l=last - 0.1, c=last + 2.2, v=2400.0))
+    first = engine.update(_bar(35, o=100.0, h=102.5, l=99.9, c=102.3, v=2400.0))
     assert first is not None
+    assert first.state == ParticipationState.UP_CANDIDATE.value
     assert first.direction == Direction.NEUTRAL
-    assert first.state in {ParticipationState.UP_CANDIDATE.value, ParticipationState.NEUTRAL.value}
 
-    second = engine.update(_bar(36, o=last + 2.2, h=last + 4.7, l=last + 2.1, c=last + 4.5, v=2500.0))
+    second = engine.update(_bar(36, o=102.3, h=104.8, l=102.2, c=104.6, v=2500.0))
     assert second is not None
-    if first.state == ParticipationState.UP_CANDIDATE.value:
-        assert second.state == ParticipationState.UP_CONFIRMED.value
-        assert second.direction == Direction.UP
+    assert second.state == ParticipationState.UP_CONFIRMED.value
+    assert second.direction == Direction.UP
 
 
 def test_zero_volume_never_invents_directional_participation() -> None:
-    frame = _steady_frame(180, volume=0.0)
     engine = VolumeParticipationEngine()
-    result = engine.replay(frame)[-1]
+    result = engine.replay(_steady_frame(180, volume=0.0))[-1]
     assert result is not None
     assert result.state == ParticipationState.VOLUME_UNAVAILABLE.value
     assert result.direction == Direction.NEUTRAL
@@ -167,7 +176,6 @@ def test_replay_matches_incremental_and_future_tail_cannot_rewrite_prefix() -> N
 
     replay_engine = VolumeParticipationEngine(cfg)
     replay_results = replay_engine.replay(frame)
-
     incremental = VolumeParticipationEngine(cfg)
     incremental_results = [incremental.update(row) for _, row in frame.iterrows()]
     assert replay_results == incremental_results
