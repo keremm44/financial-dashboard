@@ -57,7 +57,7 @@ def test_pivot_is_visible_only_at_known_index() -> None:
     cfg = _cfg()
     life = ParticipationLifecycleConfig(pivot_length=2, minimum_pivot_range_atr=0.0, minimum_pivot_bar_distance=1)
     frame = _base(12)
-    frame.loc[6, ["high", "low", "open", "close"]] = [105.0, 99.5, 100.0, 100.2]
+    frame.loc[6, ["high", "low", "open", "close"]] = [105.0, 100.0, 100.1, 100.2]
     engine = VolumeParticipationEngine(cfg, life)
     engine.replay(frame.iloc[:8])  # origin=6 exists, but right span is not complete yet
     assert engine.lifecycle_export.last_pivot_high is None
