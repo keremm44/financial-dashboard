@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pandas as pd
 
-from financial_dashboard.engines import SupportResistanceConfig, SupportResistanceRangeEngine
+from financial_dashboard.engines import RangeState, SupportResistanceConfig, SupportResistanceRangeEngine
+from financial_dashboard.engines.models import Direction
 
 
 def _bar(i: int, *, o: float, h: float, l: float, c: float, closed: bool = True, complete: bool = True) -> dict:
@@ -32,6 +33,24 @@ def _range_frame(n: int = 80) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _mature_engine() -> tuple[SupportResistanceRangeEngine, SupportResistanceConfig]:
+    config = SupportResistanceConfig(
+        min_range_age=12,
+        min_range_height_atr=1.0,
+        max_range_height_atr=6.0,
+        min_range_quality=35.0,
+    )
+    engine = SupportResistanceRangeEngine(config)
+    engine.replay(_range_frame(80))
+    assert engine.export_contract.state in {
+        RangeState.DEFINED.value,
+        RangeState.STABILIZING.value,
+        RangeState.ACTIVE.value,
+        RangeState.WEAK.value,
+    }
+    return engine, config
+
+
 def test_pivot_is_known_only_after_right_span_bars_arrive() -> None:
     engine = SupportResistanceRangeEngine(SupportResistanceConfig(pivot_span=2))
     rows = [
@@ -51,16 +70,7 @@ def test_pivot_is_known_only_after_right_span_bars_arrive() -> None:
 
 
 def test_range_foundation_builds_structured_support_and_resistance_bands() -> None:
-    config = SupportResistanceConfig(
-        min_range_age=12,
-        min_range_height_atr=1.0,
-        max_range_height_atr=6.0,
-        min_range_quality=35.0,
-    )
-    engine = SupportResistanceRangeEngine(config)
-    results = engine.replay(_range_frame())
-
-    assert results
+    engine, _ = _mature_engine()
     snap = engine.snapshot()
     export = engine.export_contract
     assert snap is not None
@@ -90,8 +100,6 @@ def test_same_range_keeps_identity_and_damps_boundary_drift() -> None:
     assert before.range_identity is not None
     assert before.upper_center is not None
 
-    # New confirmed highs are slightly higher but still overlap the same resistance zone.
-    # A defined range should preserve identity and move its boundary gradually, not jump to raw 111.
     shifted = [
         (104.0, 107.0, 100.0, 103.0),
         (103.0, 111.0, 102.0, 106.0),
@@ -108,6 +116,63 @@ def test_same_range_keeps_identity_and_damps_boundary_drift() -> None:
     assert before.upper_center <= after.upper_center < 111.0
     assert after.identity_score is not None
     assert after.identity_score >= config.range_identity_min_score
+
+
+def test_first_close_break_is_candidate_and_only_next_confirmed_bar_can_confirm() -> None:
+    engine, _ = _mature_engine()
+    upper = engine.export_contract.upper_top
+    assert upper is not None
+
+    candidate = engine.update(_bar(80, o=upper - 0.5, h=upper + 8.0, l=upper - 1.0, c=upper + 7.0))
+    assert candidate is not None
+    assert candidate.state == RangeState.BREAK_CANDIDATE.value
+    assert candidate.direction == Direction.NEUTRAL
+    frozen_boundary = engine.export_contract.break_boundary
+    frozen_buffer = engine.export_contract.break_buffer
+    candidate_index = engine.export_contract.break_candidate_index
+    assert frozen_boundary == upper
+    assert frozen_buffer is not None and frozen_buffer > 0
+    assert candidate_index == 80
+
+    confirm = engine.update(_bar(81, o=upper + 7.0, h=upper + 9.0, l=upper + 5.0, c=upper + 8.0))
+    assert confirm is not None
+    assert confirm.state == RangeState.BREAK_CONFIRMED.value
+    assert confirm.direction == Direction.UP
+    assert engine.export_contract.break_candidate_index == candidate_index
+    assert engine.export_contract.break_confirmed_index == 81
+    assert engine.export_contract.break_boundary == frozen_boundary
+    assert engine.export_contract.break_buffer == frozen_buffer
+
+
+def test_break_candidate_return_inside_fails_instead_of_confirming() -> None:
+    engine, _ = _mature_engine()
+    upper = engine.export_contract.upper_top
+    assert upper is not None
+
+    candidate = engine.update(_bar(80, o=upper - 0.5, h=upper + 8.0, l=upper - 1.0, c=upper + 7.0))
+    assert candidate is not None and candidate.state == RangeState.BREAK_CANDIDATE.value
+
+    failed = engine.update(_bar(81, o=upper + 2.0, h=upper + 3.0, l=upper - 2.0, c=upper - 0.25))
+    assert failed is not None
+    assert failed.state == RangeState.BREAK_FAILED.value
+    assert failed.direction == Direction.NEUTRAL
+    assert engine.export_contract.break_confirmed_index is None
+
+
+def test_open_or_incomplete_breakout_cannot_create_candidate() -> None:
+    engine, _ = _mature_engine()
+    upper = engine.export_contract.upper_top
+    assert upper is not None
+    before = engine.snapshot()
+    before_export = engine.export_contract
+
+    preview = _bar(80, o=upper, h=upper + 20.0, l=upper - 1.0, c=upper + 18.0, closed=False)
+    assert engine.update(preview) == before
+    assert engine.export_contract == before_export
+
+    incomplete = _bar(81, o=upper, h=upper + 20.0, l=upper - 1.0, c=upper + 18.0, complete=False)
+    assert engine.update(incomplete) == before
+    assert engine.export_contract == before_export
 
 
 def test_open_or_incomplete_bar_cannot_mutate_confirmed_snapshot() -> None:
