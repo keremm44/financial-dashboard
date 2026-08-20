@@ -65,6 +65,7 @@ def test_range_foundation_builds_structured_support_and_resistance_bands() -> No
     export = engine.export_contract
     assert snap is not None
     assert export.state is not None
+    assert export.range_identity is not None
     assert export.upper_center is not None
     assert export.lower_center is not None
     assert export.upper_center > export.lower_center
@@ -73,6 +74,40 @@ def test_range_foundation_builds_structured_support_and_resistance_bands() -> No
     assert export.upper_touches >= 2
     assert export.lower_touches >= 2
     assert export.quality is not None
+    assert export.boundary_stability is not None
+
+
+def test_same_range_keeps_identity_and_damps_boundary_drift() -> None:
+    config = SupportResistanceConfig(
+        min_range_age=12,
+        min_range_height_atr=1.0,
+        max_range_height_atr=6.0,
+        min_range_quality=35.0,
+    )
+    engine = SupportResistanceRangeEngine(config)
+    engine.replay(_range_frame(64))
+    before = engine.export_contract
+    assert before.range_identity is not None
+    assert before.upper_center is not None
+
+    # New confirmed highs are slightly higher but still overlap the same resistance zone.
+    # A defined range should preserve identity and move its boundary gradually, not jump to raw 111.
+    shifted = [
+        (104.0, 107.0, 100.0, 103.0),
+        (103.0, 111.0, 102.0, 106.0),
+        (106.0, 108.0, 103.0, 105.0),
+        (105.0, 107.0, 102.0, 104.0),
+    ]
+    for i in range(64, 92):
+        o, h, l, c = shifted[i % 4]
+        engine.update(_bar(i, o=o, h=h, l=l, c=c))
+
+    after = engine.export_contract
+    assert after.range_identity == before.range_identity
+    assert after.upper_center is not None
+    assert before.upper_center <= after.upper_center < 111.0
+    assert after.identity_score is not None
+    assert after.identity_score >= config.range_identity_min_score
 
 
 def test_open_or_incomplete_bar_cannot_mutate_confirmed_snapshot() -> None:
