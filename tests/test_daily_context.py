@@ -113,4 +113,4 @@ def test_pipeline_caches_daily_derives_weekly_and_uses_incremental_overlap(tmp_p
     assert len(second.daily) == 7
     assert len(second.weekly) == 2
     assert not second.daily["timestamp"].duplicated().any()
-    assert provider.calls[1][0] == pd.Timestamp("2026-08-10 18:10", tz=TZ)
+    assert provider.calls[1][0] == pd.Timestamp("2026-08-10 00:00", tz=TZ)
