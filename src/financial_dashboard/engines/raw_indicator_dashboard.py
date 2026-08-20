@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 from math import ceil, isfinite
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -69,15 +69,19 @@ class RawIndicatorConfig:
     cmf_minimum_move: float = 0.020
     obv_dynamic_multiplier: float = 0.35
     cci_length: int = 20
+    cci_source: str = "hlc3"
     cci_minimum_move: float = 10.0
     rsi_length: int = 14
+    rsi_source: str = "close"
     rsi_minimum_move: float = 1.0
     macd_fast_length: int = 12
     macd_slow_length: int = 26
     macd_signal_length: int = 9
+    macd_source: str = "close"
     macd_displayed_value: str = "MACD"
     macd_dynamic_multiplier: float = 0.35
     momentum_length: int = 10
+    momentum_source: str = "close"
     momentum_dynamic_multiplier: float = 0.35
     atr_length: int = 14
     stochastic_length: int = 14
@@ -89,6 +93,7 @@ class RawIndicatorConfig:
     stoch_rsi_length: int = 14
     stoch_rsi_k_smoothing: int = 3
     stoch_rsi_d_smoothing: int = 3
+    stoch_rsi_source: str = "close"
     stoch_rsi_displayed_value: str = "%K"
     stoch_rsi_minimum_move: float = 3.0
     smi_length: int = 14
@@ -101,6 +106,7 @@ class RawIndicatorConfig:
     context_fast_ema_length: int = 8
     context_slow_ema_length: int = 21
     context_slope_length: int = 5
+    minimum_tick: float = 0.01
     pending_evidence_weight: float = 0.40
 
     weak_evidence_threshold: float = 0.15
@@ -112,10 +118,8 @@ class RawIndicatorConfig:
             raise ValueError("trend_lookback must be >= 3")
         if self.recent_lookback < 1:
             raise ValueError("recent_lookback must be >= 1")
-        if self.macd_fast_length >= self.macd_slow_length:
-            # Pine keeps running but marks MACD invalid. Preserve that behavior by
-            # allowing the config; validation happens in the engine.
-            pass
+        if self.minimum_tick <= 0.0:
+            raise ValueError("minimum_tick must be positive")
         if self.macd_displayed_value not in {"MACD", "Sinyal", "Histogram"}:
             raise ValueError("invalid macd_displayed_value")
         if self.stochastic_displayed_value not in {"%K", "%D"}:
@@ -124,6 +128,9 @@ class RawIndicatorConfig:
             raise ValueError("invalid stoch_rsi_displayed_value")
         if self.smi_displayed_value not in {"Ana SMI", "Sinyal"}:
             raise ValueError("invalid smi_displayed_value")
+        for name in (self.cci_source, self.rsi_source, self.macd_source, self.momentum_source, self.stoch_rsi_source):
+            if name not in {"open", "high", "low", "close", "hl2", "hlc3", "ohlc4"}:
+                raise ValueError(f"unsupported source: {name}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +174,12 @@ class RawIndicatorSnapshot:
     price_context: float | None = None
     price_context_valid: bool = False
     indicators: dict[str, IndicatorEvidence] = field(default_factory=dict)
+    valid_evidence_count: int = 0
+    up_evidence_count: int = 0
+    down_evidence_count: int = 0
+    strong_up_count: int = 0
+    strong_down_count: int = 0
+    net_evidence_score: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +205,12 @@ def _clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
 
 
+def _safe_divide(numerator: np.ndarray, denominator: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    out = np.full(len(numerator), np.nan, dtype=float)
+    np.divide(numerator, denominator, out=out, where=mask)
+    return out
+
+
 def _sma(values: np.ndarray, length: int) -> np.ndarray:
     out = np.full(len(values), np.nan, dtype=float)
     if length <= 0:
@@ -215,23 +234,18 @@ def _sum(values: np.ndarray, length: int) -> np.ndarray:
 
 
 def _ema(values: np.ndarray, length: int) -> np.ndarray:
-    """Pine-style EMA: recursive alpha=2/(length+1), starts at first finite value."""
     out = np.full(len(values), np.nan, dtype=float)
     alpha = 2.0 / (length + 1.0)
     prev = np.nan
     for i, raw in enumerate(values):
         if not np.isfinite(raw):
             continue
-        if not np.isfinite(prev):
-            prev = float(raw)
-        else:
-            prev = alpha * float(raw) + (1.0 - alpha) * prev
+        prev = float(raw) if not np.isfinite(prev) else alpha * float(raw) + (1.0 - alpha) * prev
         out[i] = prev
     return out
 
 
 def _rma(values: np.ndarray, length: int) -> np.ndarray:
-    """Pine ta.rma seed=SMA(length), then alpha=1/length."""
     out = np.full(len(values), np.nan, dtype=float)
     if length <= 0:
         return out
@@ -299,10 +313,7 @@ def _true_range(high: np.ndarray, low: np.ndarray, close: np.ndarray) -> np.ndar
     for i in range(len(close)):
         if not (np.isfinite(high[i]) and np.isfinite(low[i])):
             continue
-        if i == 0 or not np.isfinite(close[i - 1]):
-            out[i] = high[i] - low[i]
-        else:
-            out[i] = max(high[i] - low[i], abs(high[i] - close[i - 1]), abs(low[i] - close[i - 1]))
+        out[i] = high[i] - low[i] if i == 0 or not np.isfinite(close[i - 1]) else max(high[i] - low[i], abs(high[i] - close[i - 1]), abs(low[i] - close[i - 1]))
     return out
 
 
@@ -332,79 +343,46 @@ def _dynamic_threshold(source: np.ndarray, average_length: int, lookback: int, m
         cap_base = previous if np.isfinite(previous) and previous > 0.0 else raw_avg[i]
         capped[i] = min(step[i], cap_base * cap_multiplier) if np.isfinite(cap_base) and cap_base > 0.0 else step[i]
     robust = _ema(capped, average_length)
-    source_scale = _ema(np.abs(source), average_length) if not cumulative else None
+    source_scale = None if cumulative else _ema(np.abs(source), average_length)
     out = np.full(len(source), np.nan, dtype=float)
     for i in range(len(source)):
         if not np.isfinite(robust[i]):
             continue
         threshold = robust[i] * float(lookback) * multiplier
-        floor = 1e-10 if cumulative else (source_scale[i] * 1e-6 if source_scale is not None and np.isfinite(source_scale[i]) else 0.0)
+        floor = 1e-10 if cumulative else source_scale[i] * 1e-6 if source_scale is not None and np.isfinite(source_scale[i]) else 0.0
         out[i] = max(threshold, floor)
     return out
 
 
+def _source_array(name: str, open_: np.ndarray, high: np.ndarray, low: np.ndarray, close: np.ndarray) -> np.ndarray:
+    if name == "open":
+        return open_
+    if name == "high":
+        return high
+    if name == "low":
+        return low
+    if name == "close":
+        return close
+    if name == "hl2":
+        return (high + low) / 2.0
+    if name == "hlc3":
+        return (high + low + close) / 3.0
+    if name == "ohlc4":
+        return (open_ + high + low + close) / 4.0
+    raise ValueError(f"unsupported source: {name}")
+
+
 def _effective_settings(config: RawIndicatorConfig) -> EffectiveTrendSettings:
-    profile = config.profile
-    lookback = {
-        TrendProfile.XAG_30M: 6,
-        TrendProfile.XAG_1H: 6,
-        TrendProfile.XAG_2H: 5,
-        TrendProfile.XAG_4H: 5,
-        TrendProfile.XAG_1D: 5,
-    }.get(profile, config.trend_lookback)
-    recent = {
-        TrendProfile.XAG_30M: 2,
-        TrendProfile.XAG_1H: 3,
-        TrendProfile.XAG_2H: 2,
-        TrendProfile.XAG_4H: 2,
-        TrendProfile.XAG_1D: 2,
-    }.get(profile, config.recent_lookback)
-    minimum_consistency = {
-        TrendProfile.XAG_30M: 66.0,
-        TrendProfile.XAG_1H: 66.0,
-        TrendProfile.XAG_2H: 60.0,
-        TrendProfile.XAG_4H: 60.0,
-        TrendProfile.XAG_1D: 60.0,
-    }.get(profile, config.minimum_consistency)
-    dead_zone = {
-        TrendProfile.XAG_30M: 40.0,
-        TrendProfile.XAG_1H: 40.0,
-        TrendProfile.XAG_2H: 35.0,
-        TrendProfile.XAG_4H: 35.0,
-        TrendProfile.XAG_1D: 30.0,
-    }.get(profile, config.step_dead_zone_percent)
-    hold = {
-        TrendProfile.XAG_30M: 65.0,
-        TrendProfile.XAG_1H: 65.0,
-        TrendProfile.XAG_2H: 65.0,
-        TrendProfile.XAG_4H: 70.0,
-        TrendProfile.XAG_1D: 70.0,
-    }.get(profile, config.hysteresis_hold_percent)
-    spike = {
-        TrendProfile.XAG_30M: 72.0,
-        TrendProfile.XAG_1H: 72.0,
-        TrendProfile.XAG_2H: 70.0,
-        TrendProfile.XAG_4H: 72.0,
-        TrendProfile.XAG_1D: 75.0,
-    }.get(profile, config.spike_dominance)
-    dynamic_length = {
-        TrendProfile.XAG_30M: 24,
-        TrendProfile.XAG_1H: 24,
-        TrendProfile.XAG_2H: 20,
-        TrendProfile.XAG_4H: 20,
-        TrendProfile.XAG_1D: 20,
-    }.get(profile, config.dynamic_threshold_length)
-    cap = 3.5 if profile == TrendProfile.XAG_1D else config.dynamic_step_cap_multiplier if profile == TrendProfile.MANUAL else 3.0
-    return EffectiveTrendSettings(
-        lookback=lookback,
-        recent_lookback=min(recent, lookback),
-        minimum_consistency=minimum_consistency,
-        step_dead_zone_percent=dead_zone,
-        hysteresis_hold_percent=hold,
-        spike_dominance=spike,
-        dynamic_threshold_length=dynamic_length,
-        dynamic_step_cap_multiplier=cap,
-    )
+    p = config.profile
+    lookback = {TrendProfile.XAG_30M: 6, TrendProfile.XAG_1H: 6, TrendProfile.XAG_2H: 5, TrendProfile.XAG_4H: 5, TrendProfile.XAG_1D: 5}.get(p, config.trend_lookback)
+    recent = {TrendProfile.XAG_30M: 2, TrendProfile.XAG_1H: 3, TrendProfile.XAG_2H: 2, TrendProfile.XAG_4H: 2, TrendProfile.XAG_1D: 2}.get(p, config.recent_lookback)
+    consistency = {TrendProfile.XAG_30M: 66.0, TrendProfile.XAG_1H: 66.0, TrendProfile.XAG_2H: 60.0, TrendProfile.XAG_4H: 60.0, TrendProfile.XAG_1D: 60.0}.get(p, config.minimum_consistency)
+    dead_zone = {TrendProfile.XAG_30M: 40.0, TrendProfile.XAG_1H: 40.0, TrendProfile.XAG_2H: 35.0, TrendProfile.XAG_4H: 35.0, TrendProfile.XAG_1D: 30.0}.get(p, config.step_dead_zone_percent)
+    hold = {TrendProfile.XAG_30M: 65.0, TrendProfile.XAG_1H: 65.0, TrendProfile.XAG_2H: 65.0, TrendProfile.XAG_4H: 70.0, TrendProfile.XAG_1D: 70.0}.get(p, config.hysteresis_hold_percent)
+    spike = {TrendProfile.XAG_30M: 72.0, TrendProfile.XAG_1H: 72.0, TrendProfile.XAG_2H: 70.0, TrendProfile.XAG_4H: 72.0, TrendProfile.XAG_1D: 75.0}.get(p, config.spike_dominance)
+    dynamic_length = {TrendProfile.XAG_30M: 24, TrendProfile.XAG_1H: 24, TrendProfile.XAG_2H: 20, TrendProfile.XAG_4H: 20, TrendProfile.XAG_1D: 20}.get(p, config.dynamic_threshold_length)
+    cap = 3.5 if p == TrendProfile.XAG_1D else config.dynamic_step_cap_multiplier if p == TrendProfile.MANUAL else 3.0
+    return EffectiveTrendSettings(lookback, min(recent, lookback), consistency, dead_zone, hold, spike, dynamic_length, cap)
 
 
 def _calculate_trend(source: np.ndarray, index: int, movement_threshold: float, settings: EffectiveTrendSettings, previous_direction: int, filter_spikes: bool) -> _TrendResult:
@@ -432,7 +410,6 @@ def _calculate_trend(source: np.ndarray, index: int, movement_threshold: float, 
     y = window.astype(float)
     denominator = float(len(x)) * float(np.dot(x, x)) - float(x.sum()) ** 2
     slope = (float(len(x)) * float(np.dot(x, y)) - float(x.sum()) * float(y.sum())) / denominator if denominator else 0.0
-
     required = int(ceil(float(lookback) * settings.minimum_consistency / 100.0))
     hold_required = max(1, required - 1)
     recent_bars = min(settings.recent_lookback, lookback)
@@ -448,7 +425,6 @@ def _calculate_trend(source: np.ndarray, index: int, movement_threshold: float, 
     up_spike = filter_spikes and dominant_single and maximum_direction == 1 and net_move > full_threshold and not recent_conflict_rise and up_count < stronger_support
     down_spike = filter_spikes and dominant_single and maximum_direction == -1 and net_move < -full_threshold and not recent_conflict_fall and down_count < stronger_support
     pending = 1 if up_spike else -1 if down_spike else 0
-
     rising_structure = up_count >= required and up_count > down_count and slope > minimum_slope and not recent_conflict_rise
     falling_structure = down_count >= required and down_count > up_count and slope < -minimum_slope and not recent_conflict_fall
     rising_strong = net_move > full_threshold and rising_structure and not up_spike
@@ -464,7 +440,7 @@ def _calculate_trend(source: np.ndarray, index: int, movement_threshold: float, 
         elif rising_strong:
             result, reason = 1, TrendReason.CONFIRMED
         elif pending == -1:
-            result, reason = 0, TrendReason.SPIKE_PENDING
+            reason = TrendReason.SPIKE_PENDING
         elif pending == 1:
             result, reason = 1, TrendReason.SPIKE_PENDING
         elif rising_hold:
@@ -475,7 +451,7 @@ def _calculate_trend(source: np.ndarray, index: int, movement_threshold: float, 
         elif falling_strong:
             result, reason = -1, TrendReason.CONFIRMED
         elif pending == 1:
-            result, reason = 0, TrendReason.SPIKE_PENDING
+            reason = TrendReason.SPIKE_PENDING
         elif pending == -1:
             result, reason = -1, TrendReason.SPIKE_PENDING
         elif falling_hold:
@@ -489,13 +465,13 @@ def _calculate_trend(source: np.ndarray, index: int, movement_threshold: float, 
     if result == 0:
         if pending != 0:
             reason = TrendReason.SPIKE_PENDING
-        elif net_move > 0.0 and recent_conflict_rise or net_move < 0.0 and recent_conflict_fall:
+        elif (net_move > 0.0 and recent_conflict_rise) or (net_move < 0.0 and recent_conflict_fall):
             reason = TrendReason.RECENT_CONFLICT
         elif abs(net_move) <= full_threshold:
             reason = TrendReason.NET_MOVE_LOW
-        elif net_move > 0.0 and (up_count < required or up_count <= down_count) or net_move < 0.0 and (down_count < required or down_count <= up_count):
+        elif (net_move > 0.0 and (up_count < required or up_count <= down_count)) or (net_move < 0.0 and (down_count < required or down_count <= up_count)):
             reason = TrendReason.CONSISTENCY_LOW
-        elif net_move > 0.0 and slope <= minimum_slope or net_move < 0.0 and slope >= -minimum_slope:
+        elif (net_move > 0.0 and slope <= minimum_slope) or (net_move < 0.0 and slope >= -minimum_slope):
             reason = TrendReason.SLOPE_LOW
         elif previous_direction != 0:
             reason = TrendReason.DIRECTION_LOST
@@ -549,15 +525,27 @@ def _evidence_strength(direction: int, pending: int, reason: TrendReason, valid:
 
 
 class RawIndicatorDashboardEngine:
-    """Ham Dashboard v2.3.7 Tur-1: raw indicators, stateful trends and 10 evidence.
+    """Ham Dashboard v2.3.7 Tur-1 raw/evidence engine.
 
-    Family aggregation, quorum, local system decision and Contract v1 exports are
-    intentionally deferred to Tur-2. State only advances on closed, source-complete
-    bars; open or incomplete bars return the last confirmed snapshot unchanged.
+    Family aggregation, quorum, local SYS_* decisions and Contract v1 exports are
+    intentionally Tur-2. Only closed, source-complete bars advance confirmed state.
     """
 
     EVIDENCE_MAX_STANDARD = 1.0
     EVIDENCE_MAX_TIMING = 0.65
+
+    _WEIGHTS = {
+        "PRICE_CONTEXT": 1.50,
+        "MACD": 1.30,
+        "MOMENTUM": 1.30,
+        "RSI": 1.05,
+        "CCI": 0.90,
+        "SMI": 0.80,
+        "CMF": 0.75,
+        "OBV": 0.75,
+        "STOCHASTIC": 0.55,
+        "STOCH_RSI": 0.55,
+    }
 
     def __init__(self, config: RawIndicatorConfig | None = None) -> None:
         self.config = config or RawIndicatorConfig()
@@ -579,45 +567,68 @@ class RawIndicatorDashboardEngine:
     def update(self, bar: pd.Series | dict[str, Any]) -> RawIndicatorSnapshot:
         row = dict(bar)
         if not bool(row.get("is_closed", True)):
-            return RawIndicatorSnapshot(**{**self._snapshot.__dict__, "data_quality": RawDataQuality.INCOMPLETE_BAR}) if hasattr(self._snapshot, "__dict__") else self._replace_quality(RawDataQuality.INCOMPLETE_BAR)
+            return self._with_quality(self._snapshot, RawDataQuality.INCOMPLETE_BAR)
         if not bool(row.get("is_complete", True)):
-            return self._replace_quality(RawDataQuality.SOURCE_GAP)
+            return self._with_quality(self._snapshot, RawDataQuality.SOURCE_GAP)
         self._rows.append(row)
-        self._snapshot = self._compute_latest(pd.DataFrame(self._rows))
+        self._snapshot = self._compute_frame(pd.DataFrame(self._rows))[-1]
         return self._snapshot
 
     def replay(self, frame: pd.DataFrame) -> list[RawIndicatorSnapshot]:
         self.reset()
+        records = frame.to_dict("records")
+        confirmed_rows = [r for r in records if bool(r.get("is_closed", True)) and bool(r.get("is_complete", True))]
+        confirmed = self._compute_frame(pd.DataFrame(confirmed_rows)) if confirmed_rows else []
         results: list[RawIndicatorSnapshot] = []
-        for row in frame.to_dict("records"):
-            results.append(self.update(row))
+        pointer = 0
+        last = RawIndicatorSnapshot()
+        for row in records:
+            if not bool(row.get("is_closed", True)):
+                results.append(self._with_quality(last, RawDataQuality.INCOMPLETE_BAR))
+            elif not bool(row.get("is_complete", True)):
+                results.append(self._with_quality(last, RawDataQuality.SOURCE_GAP))
+            else:
+                last = confirmed[pointer]
+                pointer += 1
+                results.append(last)
+        self._rows = confirmed_rows
+        self._snapshot = last
         return results
 
-    def _replace_quality(self, quality: RawDataQuality) -> RawIndicatorSnapshot:
-        s = self._snapshot
+    @staticmethod
+    def _with_quality(snapshot: RawIndicatorSnapshot, quality: RawDataQuality) -> RawIndicatorSnapshot:
         return RawIndicatorSnapshot(
-            timestamp=s.timestamp,
+            timestamp=snapshot.timestamp,
             data_quality=quality,
-            volume_quality=s.volume_quality,
-            volume_coverage=s.volume_coverage,
-            volume_variation=s.volume_variation,
-            volume_calculable=s.volume_calculable,
-            volume_reliable=s.volume_reliable,
-            volume_trust=s.volume_trust,
-            atr=s.atr,
-            atr_ratio=s.atr_ratio,
-            price_context=s.price_context,
-            price_context_valid=s.price_context_valid,
-            indicators=s.indicators,
+            volume_quality=snapshot.volume_quality,
+            volume_coverage=snapshot.volume_coverage,
+            volume_variation=snapshot.volume_variation,
+            volume_calculable=snapshot.volume_calculable,
+            volume_reliable=snapshot.volume_reliable,
+            volume_trust=snapshot.volume_trust,
+            atr=snapshot.atr,
+            atr_ratio=snapshot.atr_ratio,
+            price_context=snapshot.price_context,
+            price_context_valid=snapshot.price_context_valid,
+            indicators=snapshot.indicators,
+            valid_evidence_count=snapshot.valid_evidence_count,
+            up_evidence_count=snapshot.up_evidence_count,
+            down_evidence_count=snapshot.down_evidence_count,
+            strong_up_count=snapshot.strong_up_count,
+            strong_down_count=snapshot.strong_down_count,
+            net_evidence_score=snapshot.net_evidence_score,
         )
 
-    def _compute_latest(self, frame: pd.DataFrame) -> RawIndicatorSnapshot:
+    def _compute_frame(self, frame: pd.DataFrame) -> list[RawIndicatorSnapshot]:
+        if frame.empty:
+            return []
         for column in ("open", "high", "low", "close", "volume"):
             if column not in frame.columns:
                 raise ValueError(f"missing required column: {column}")
-        n = len(frame)
-        settings = self.effective_settings
+
         cfg = self.config
+        settings = self.effective_settings
+        n = len(frame)
         o = pd.to_numeric(frame["open"], errors="coerce").to_numpy(float)
         h = pd.to_numeric(frame["high"], errors="coerce").to_numpy(float)
         l = pd.to_numeric(frame["low"], errors="coerce").to_numpy(float)
@@ -636,12 +647,13 @@ class RawIndicatorDashboardEngine:
         pair_count = _sum(valid_pair.astype(float), cfg.volume_quality_length)
         meaningful = valid_pair & (np.nan_to_num(change_pct, nan=-1.0) >= cfg.minimum_meaningful_volume_change)
         meaningful_count = _sum(meaningful.astype(float), cfg.volume_quality_length)
-        variation = np.where(np.isfinite(pair_count) & (pair_count > 0.0), meaningful_count / pair_count * 100.0, np.nan)
+        variation_mask = np.isfinite(pair_count) & (pair_count > 0.0) & np.isfinite(meaningful_count)
+        variation = _safe_divide(meaningful_count * 100.0, pair_count, variation_mask)
 
         volume_quality = np.full(n, int(VolumeQuality.WAITING), dtype=int)
         volume_calculable = np.zeros(n, dtype=bool)
         volume_reliable = np.zeros(n, dtype=bool)
-        effective_calc_coverage = min(cfg.minimum_calculable_volume_coverage, cfg.minimum_volume_coverage)
+        effective_calc = min(cfg.minimum_calculable_volume_coverage, cfg.minimum_volume_coverage)
         for i in range(n):
             if not np.isfinite(coverage[i]):
                 q = VolumeQuality.WAITING
@@ -654,39 +666,45 @@ class RawIndicatorDashboardEngine:
             else:
                 q = VolumeQuality.LIMITED
             volume_quality[i] = int(q)
-            volume_calculable[i] = q >= VolumeQuality.LIMITED and np.isfinite(coverage[i]) and coverage[i] >= effective_calc_coverage
+            volume_calculable[i] = q >= VolumeQuality.LIMITED and coverage[i] >= effective_calc
             volume_reliable[i] = q == VolumeQuality.ADEQUATE
 
         candle_range = h - l
-        mfm = np.where(np.isfinite(candle_range) & (candle_range != 0.0), ((c - l) - (h - c)) / candle_range, 0.0)
+        mfm = np.zeros(n, dtype=float)
+        range_mask = np.isfinite(candle_range) & (candle_range != 0.0)
+        np.divide((c - l) - (h - c), candle_range, out=mfm, where=range_mask)
         mfv = mfm * safe_v
         cmf_vsum = _sum(safe_v, cfg.cmf_length)
         cmf_mfsum = _sum(mfv, cfg.cmf_length)
-        cmf = np.where(np.isfinite(cmf_vsum) & (cmf_vsum != 0.0), cmf_mfsum / cmf_vsum, np.nan)
+        cmf_mask = np.isfinite(cmf_vsum) & (cmf_vsum != 0.0) & np.isfinite(cmf_mfsum)
+        cmf = _safe_divide(cmf_mfsum, cmf_vsum, cmf_mask)
 
         signed_v = np.zeros(n, dtype=float)
         for i in range(1, n):
             signed_v[i] = safe_v[i] if c[i] > c[i - 1] else -safe_v[i] if c[i] < c[i - 1] else 0.0
         obv = np.cumsum(signed_v)
         obv_baseline = _ema(obv, settings.dynamic_threshold_length)
-        hlc3 = (h + l + c) / 3.0
-        cci = _cci(hlc3, cfg.cci_length)
-        rsi = _rsi(c, cfg.rsi_length)
 
-        macd_fast = _ema(c, cfg.macd_fast_length)
-        macd_slow = _ema(c, cfg.macd_slow_length)
-        macd_line = macd_fast - macd_slow
+        cci_source = _source_array(cfg.cci_source, o, h, l, c)
+        rsi_source = _source_array(cfg.rsi_source, o, h, l, c)
+        macd_source = _source_array(cfg.macd_source, o, h, l, c)
+        momentum_source = _source_array(cfg.momentum_source, o, h, l, c)
+        srsi_source = _source_array(cfg.stoch_rsi_source, o, h, l, c)
+
+        cci = _cci(cci_source, cfg.cci_length)
+        rsi = _rsi(rsi_source, cfg.rsi_length)
+        macd_line = _ema(macd_source, cfg.macd_fast_length) - _ema(macd_source, cfg.macd_slow_length)
         macd_signal = _ema(macd_line, cfg.macd_signal_length)
         macd_hist = macd_line - macd_signal
         macd = macd_signal if cfg.macd_displayed_value == "Sinyal" else macd_hist if cfg.macd_displayed_value == "Histogram" else macd_line
-
         momentum = np.full(n, np.nan, dtype=float)
         if n > cfg.momentum_length:
-            momentum[cfg.momentum_length :] = c[cfg.momentum_length :] - c[: -cfg.momentum_length]
+            momentum[cfg.momentum_length :] = momentum_source[cfg.momentum_length :] - momentum_source[: -cfg.momentum_length]
 
         atr = _rma(_true_range(h, l, c), cfg.atr_length)
         atr_baseline = _ema(atr, settings.dynamic_threshold_length)
-        atr_ratio = np.where(np.isfinite(atr) & np.isfinite(atr_baseline) & (atr_baseline != 0.0), atr / atr_baseline, np.nan)
+        atr_mask = np.isfinite(atr) & np.isfinite(atr_baseline) & (atr_baseline != 0.0)
+        atr_ratio = _safe_divide(atr, atr_baseline, atr_mask)
 
         fast_context = _ema(c, cfg.context_fast_ema_length)
         slow_context = _ema(c, cfg.context_slow_ema_length)
@@ -695,7 +713,7 @@ class RawIndicatorDashboardEngine:
         for i in range(n):
             if i < cfg.context_slope_length or not (np.isfinite(fast_context[i]) and np.isfinite(slow_context[i]) and np.isfinite(slow_context[i - cfg.context_slope_length]) and np.isfinite(atr[i])):
                 continue
-            safe_atr = max(atr[i], 1e-12)
+            safe_atr = max(float(atr[i]), cfg.minimum_tick)
             position = _clamp((c[i] - slow_context[i]) / (safe_atr * 1.50), -1.0, 1.0)
             order = _clamp((fast_context[i] - slow_context[i]) / (safe_atr * 0.75), -1.0, 1.0)
             slope = _clamp((slow_context[i] - slow_context[i - cfg.context_slope_length]) / (safe_atr * float(cfg.context_slope_length)), -1.0, 1.0)
@@ -705,16 +723,16 @@ class RawIndicatorDashboardEngine:
         stoch_low = _rolling_min(l, cfg.stochastic_length)
         stoch_high = _rolling_max(h, cfg.stochastic_length)
         stoch_range = stoch_high - stoch_low
-        stoch_raw = np.where(np.isfinite(stoch_range) & (stoch_range != 0.0), 100.0 * (c - stoch_low) / stoch_range, np.nan)
+        stoch_raw = _safe_divide((c - stoch_low) * 100.0, stoch_range, np.isfinite(stoch_range) & (stoch_range != 0.0))
         stoch_k = _sma(stoch_raw, cfg.stochastic_k_smoothing)
         stoch_d = _sma(stoch_k, cfg.stochastic_d_smoothing)
         stochastic = stoch_d if cfg.stochastic_displayed_value == "%D" else stoch_k
 
-        srsi_base = _rsi(c, cfg.stoch_rsi_rsi_length)
+        srsi_base = _rsi(srsi_source, cfg.stoch_rsi_rsi_length)
         srsi_low = _rolling_min(srsi_base, cfg.stoch_rsi_length)
         srsi_high = _rolling_max(srsi_base, cfg.stoch_rsi_length)
         srsi_range = srsi_high - srsi_low
-        srsi_raw = np.where(np.isfinite(srsi_range) & (srsi_range != 0.0), 100.0 * (srsi_base - srsi_low) / srsi_range, np.nan)
+        srsi_raw = _safe_divide((srsi_base - srsi_low) * 100.0, srsi_range, np.isfinite(srsi_range) & (srsi_range != 0.0))
         srsi_k = _sma(srsi_raw, cfg.stoch_rsi_k_smoothing)
         srsi_d = _sma(srsi_k, cfg.stoch_rsi_d_smoothing)
         stoch_rsi = srsi_d if cfg.stoch_rsi_displayed_value == "%D" else srsi_k
@@ -725,7 +743,7 @@ class RawIndicatorDashboardEngine:
         smi_range = smi_high - smi_low
         smi_num = _ema(_ema(smi_distance, cfg.smi_first_smoothing), cfg.smi_second_smoothing)
         smi_rng = _ema(_ema(smi_range, cfg.smi_first_smoothing), cfg.smi_second_smoothing)
-        smi_main = np.where(np.isfinite(smi_rng) & (smi_rng != 0.0), 100.0 * smi_num / (smi_rng / 2.0), np.nan)
+        smi_main = _safe_divide(smi_num * 100.0, smi_rng / 2.0, np.isfinite(smi_rng) & (smi_rng != 0.0))
         smi_signal = _ema(smi_main, cfg.smi_signal_length)
         smi = smi_signal if cfg.smi_displayed_value == "Sinyal" else smi_main
 
@@ -734,19 +752,19 @@ class RawIndicatorDashboardEngine:
         mom_thr = _dynamic_threshold(momentum, settings.dynamic_threshold_length, settings.lookback, cfg.momentum_dynamic_multiplier, settings.dynamic_step_cap_multiplier, cumulative=False)
 
         series = {
-            "CMF": (cmf, np.full(n, cfg.cmf_minimum_move), np.full(n, True), 0.10, self.EVIDENCE_MAX_STANDARD),
+            "CMF": (cmf, np.full(n, cfg.cmf_minimum_move), volume_calculable, 0.10, self.EVIDENCE_MAX_STANDARD),
             "OBV": (obv, obv_thr, volume_calculable, None, self.EVIDENCE_MAX_STANDARD),
-            "CCI": (cci, np.full(n, cfg.cci_minimum_move), np.full(n, True), 100.0, self.EVIDENCE_MAX_STANDARD),
-            "RSI": (rsi, np.full(n, cfg.rsi_minimum_move), np.full(n, True), 20.0, self.EVIDENCE_MAX_STANDARD),
-            "MACD": (macd, macd_thr, np.full(n, cfg.macd_fast_length < cfg.macd_slow_length), None, self.EVIDENCE_MAX_STANDARD),
-            "MOMENTUM": (momentum, mom_thr, np.full(n, True), None, self.EVIDENCE_MAX_STANDARD),
-            "STOCHASTIC": (stochastic, np.full(n, cfg.stochastic_minimum_move), np.full(n, True), 30.0, self.EVIDENCE_MAX_TIMING),
-            "STOCH_RSI": (stoch_rsi, np.full(n, cfg.stoch_rsi_minimum_move), np.full(n, True), 30.0, self.EVIDENCE_MAX_TIMING),
-            "SMI": (smi, np.full(n, cfg.smi_minimum_move), np.full(n, True), 40.0, self.EVIDENCE_MAX_STANDARD),
+            "CCI": (cci, np.full(n, cfg.cci_minimum_move), np.ones(n, dtype=bool), 100.0, self.EVIDENCE_MAX_STANDARD),
+            "RSI": (rsi, np.full(n, cfg.rsi_minimum_move), np.ones(n, dtype=bool), 20.0, self.EVIDENCE_MAX_STANDARD),
+            "MACD": (macd, macd_thr, np.full(n, cfg.macd_fast_length < cfg.macd_slow_length, dtype=bool), None, self.EVIDENCE_MAX_STANDARD),
+            "MOMENTUM": (momentum, mom_thr, np.ones(n, dtype=bool), None, self.EVIDENCE_MAX_STANDARD),
+            "STOCHASTIC": (stochastic, np.full(n, cfg.stochastic_minimum_move), np.ones(n, dtype=bool), 30.0, self.EVIDENCE_MAX_TIMING),
+            "STOCH_RSI": (stoch_rsi, np.full(n, cfg.stoch_rsi_minimum_move), np.ones(n, dtype=bool), 30.0, self.EVIDENCE_MAX_TIMING),
+            "SMI": (smi, np.full(n, cfg.smi_minimum_move), np.ones(n, dtype=bool), 40.0, self.EVIDENCE_MAX_STANDARD),
         }
 
         trend_history: dict[str, list[_TrendResult]] = {name: [] for name in series}
-        state_memory: dict[str, int] = {name: 0 for name in series}
+        state_memory = {name: 0 for name in series}
         for i in range(n):
             for name, (values, thresholds, eligibility, _, _) in series.items():
                 eligible = bool(eligibility[i])
@@ -757,89 +775,111 @@ class RawIndicatorDashboardEngine:
                     state_memory[name] = 0
                 elif tr.direction != 0:
                     state_memory[name] = tr.direction
-                elif tr.pending != 0:
-                    # Pine preserves last confirmed direction memory while pending.
-                    pass
-                else:
+                elif tr.pending == 0:
                     state_memory[name] = 0
 
-        i = n - 1
-        coverage_trust = 0.0 if not np.isfinite(coverage[i]) else _clamp(coverage[i] / max(cfg.minimum_volume_coverage, 1e-6), 0.0, 1.0)
-        variation_trust = 1.0 if cfg.minimum_volume_variation <= 0.0 else 0.0 if not np.isfinite(variation[i]) else _clamp(variation[i] / cfg.minimum_volume_variation, 0.0, 1.0)
-        limited_trust = min(coverage_trust, variation_trust) * cfg.limited_volume_evidence_weight
-        volume_trust = 1.0 if volume_reliable[i] else limited_trust if volume_calculable[i] else 0.0
+        weak = _clamp(cfg.weak_evidence_threshold, 0.05, 0.85)
+        medium = _clamp(max(cfg.medium_evidence_threshold, weak + 0.05), weak + 0.05, 0.90)
+        strong = _clamp(max(cfg.strong_evidence_threshold, medium + 0.05), medium + 0.05, 0.95)
+        del medium  # classification threshold is retained for Tur-2/UI, counts need weak/strong only.
 
-        indicators: dict[str, IndicatorEvidence] = {}
-        for name, (values, thresholds, eligibility, zone_scale, maximum) in series.items():
-            tr = trend_history[name][i]
-            valid = bool(eligibility[i]) and i >= settings.lookback and np.isfinite(values[i]) and np.isfinite(values[i - settings.lookback]) and tr.consistency is not None
-            if name in {"OBV", "MACD", "MOMENTUM"}:
-                valid = valid and np.isfinite(thresholds[i])
-            if name == "CMF":
-                valid = valid and bool(volume_calculable[i])
-            if name == "OBV":
-                valid = valid and np.isfinite(obv_baseline[i])
+        snapshots: list[RawIndicatorSnapshot] = []
+        for i in range(n):
+            coverage_trust = 0.0 if not np.isfinite(coverage[i]) else _clamp(coverage[i] / max(cfg.minimum_volume_coverage, 1e-6), 0.0, 1.0)
+            variation_trust = 1.0 if cfg.minimum_volume_variation <= 0.0 else 0.0 if not np.isfinite(variation[i]) else _clamp(variation[i] / cfg.minimum_volume_variation, 0.0, 1.0)
+            limited_trust = min(coverage_trust, variation_trust) * cfg.limited_volume_evidence_weight
+            volume_trust = 1.0 if volume_reliable[i] else limited_trust if volume_calculable[i] else 0.0
 
-            threshold = float(thresholds[i]) if np.isfinite(thresholds[i]) else np.nan
-            movement = _movement_strength(values, i, settings.lookback, threshold)
-            if name == "OBV":
-                signed_zone = _normalized_signed(values[i] - obv_baseline[i], max(abs(threshold), 1e-7)) if np.isfinite(obv_baseline[i]) else 0.0
-            elif name in {"MACD", "MOMENTUM"}:
-                signed_zone = _normalized_signed(values[i], max(abs(threshold), 1e-7))
-            elif name == "RSI":
-                signed_zone = _normalized_signed(values[i] - 50.0, 20.0)
-            elif name in {"STOCHASTIC", "STOCH_RSI"}:
-                signed_zone = _normalized_signed(values[i] - 50.0, 30.0)
-            else:
-                signed_zone = _normalized_signed(values[i], float(zone_scale or 1.0))
-            trust = volume_trust if name in {"CMF", "OBV"} else 1.0
-            evidence = _evidence_strength(tr.direction, tr.pending, tr.reason, valid, tr.consistency, signed_zone, movement, cfg.pending_evidence_weight, trust, maximum)
-            relative = None if evidence is None else _clamp(evidence / max(maximum, 1e-6), -1.0, 1.0)
-            indicators[name] = IndicatorEvidence(
-                value=_opt(values[i]),
-                valid=valid,
-                direction=tr.direction,
-                pending_direction=tr.pending,
-                reason=tr.reason,
-                consistency=tr.consistency,
-                movement_strength=movement,
-                signed_zone=signed_zone,
-                evidence=evidence,
-                relative_evidence=relative,
+            indicators: dict[str, IndicatorEvidence] = {}
+            for name, (values, thresholds, eligibility, zone_scale, maximum) in series.items():
+                tr = trend_history[name][i]
+                valid = bool(eligibility[i]) and i >= settings.lookback and np.isfinite(values[i]) and np.isfinite(values[i - settings.lookback]) and tr.consistency is not None
+                if name in {"OBV", "MACD", "MOMENTUM"}:
+                    valid = valid and np.isfinite(thresholds[i])
+                if name == "OBV":
+                    valid = valid and np.isfinite(obv_baseline[i])
+                threshold = float(thresholds[i]) if np.isfinite(thresholds[i]) else np.nan
+                movement = _movement_strength(values, i, settings.lookback, threshold)
+                if name == "OBV":
+                    signed_zone = _normalized_signed(values[i] - obv_baseline[i], max(abs(threshold), 1e-7)) if np.isfinite(obv_baseline[i]) else 0.0
+                elif name in {"MACD", "MOMENTUM"}:
+                    signed_zone = _normalized_signed(values[i], max(abs(threshold), 1e-7))
+                elif name == "RSI":
+                    signed_zone = _normalized_signed(values[i] - 50.0, 20.0)
+                elif name in {"STOCHASTIC", "STOCH_RSI"}:
+                    signed_zone = _normalized_signed(values[i] - 50.0, 30.0)
+                else:
+                    signed_zone = _normalized_signed(values[i], float(zone_scale or 1.0))
+                # Source v2.3.7 keeps raw CMF/OBV evidence unscaled; volume trust
+                # affects their effective contribution weight in section 14/14B.
+                evidence = _evidence_strength(tr.direction, tr.pending, tr.reason, bool(valid), tr.consistency, signed_zone, movement, cfg.pending_evidence_weight, 1.0, maximum)
+                relative = None if evidence is None else _clamp(evidence / max(maximum, 1e-6), -1.0, 1.0)
+                indicators[name] = IndicatorEvidence(_opt(values[i]), bool(valid), tr.direction, tr.pending, tr.reason, tr.consistency, movement, signed_zone, evidence, relative)
+
+            price_value = _opt(price_context[i]) if price_context_valid[i] else None
+            indicators["PRICE_CONTEXT"] = IndicatorEvidence(
+                price_value,
+                bool(price_context_valid[i]),
+                1 if (price_value or 0.0) > 0.0 else -1 if (price_value or 0.0) < 0.0 else 0,
+                0,
+                TrendReason.CONFIRMED if price_context_valid[i] else TrendReason.DATA_WAIT,
+                None,
+                abs(price_value or 0.0),
+                price_value or 0.0,
+                price_value,
+                price_value,
             )
 
-        price_evidence = _opt(price_context[i]) if price_context_valid[i] else None
-        indicators["PRICE_CONTEXT"] = IndicatorEvidence(
-            value=price_evidence,
-            valid=bool(price_context_valid[i]),
-            direction=1 if (price_evidence or 0.0) > 0.0 else -1 if (price_evidence or 0.0) < 0.0 else 0,
-            pending_direction=0,
-            reason=TrendReason.CONFIRMED if price_context_valid[i] else TrendReason.DATA_WAIT,
-            consistency=None,
-            movement_strength=abs(price_evidence or 0.0),
-            signed_zone=price_evidence or 0.0,
-            evidence=price_evidence,
-            relative_evidence=price_evidence,
-        )
+            valid_count = sum(int(e.valid) for e in indicators.values())
+            up_count = sum(int((e.relative_evidence or 0.0) >= weak) for e in indicators.values())
+            down_count = sum(int((e.relative_evidence or 0.0) <= -weak) for e in indicators.values())
+            strong_up = sum(int((e.relative_evidence or 0.0) >= strong) for e in indicators.values())
+            strong_down = sum(int((e.relative_evidence or 0.0) <= -strong) for e in indicators.values())
 
-        raw_values_ready = sum(1 for key in ("CMF", "OBV", "CCI", "RSI", "MACD", "MOMENTUM", "STOCHASTIC", "STOCH_RSI", "SMI") if indicators[key].valid)
-        quality = RawDataQuality.OK if raw_values_ready >= 6 and price_context_valid[i] else RawDataQuality.WARMUP
-        timestamp = frame.iloc[i].get("timestamp") if "timestamp" in frame.columns else i
-        return RawIndicatorSnapshot(
-            timestamp=timestamp,
-            data_quality=quality,
-            volume_quality=VolumeQuality(int(volume_quality[i])),
-            volume_coverage=_opt(coverage[i]),
-            volume_variation=_opt(variation[i]),
-            volume_calculable=bool(volume_calculable[i]),
-            volume_reliable=bool(volume_reliable[i]),
-            volume_trust=float(volume_trust),
-            atr=_opt(atr[i]),
-            atr_ratio=_opt(atr_ratio[i]),
-            price_context=price_evidence,
-            price_context_valid=bool(price_context_valid[i]),
-            indicators=indicators,
-        )
+            effective_weights = dict(self._WEIGHTS)
+            effective_weights["CMF"] = self._WEIGHTS["CMF"] * volume_trust if indicators["CMF"].valid else 0.0
+            effective_weights["OBV"] = self._WEIGHTS["OBV"] * volume_trust if indicators["OBV"].valid else 0.0
+            valid_weight = 0.0
+            weighted_up = 0.0
+            weighted_down = 0.0
+            for name, e in indicators.items():
+                weight = effective_weights[name] if name in {"CMF", "OBV"} else self._WEIGHTS[name] if e.valid else 0.0
+                if name in {"CMF", "OBV"}:
+                    pass
+                elif not e.valid:
+                    weight = 0.0
+                valid_weight += weight
+                raw_evidence = e.evidence or 0.0
+                weighted_up += max(raw_evidence, 0.0) * weight
+                weighted_down += max(-raw_evidence, 0.0) * weight
+            net_score = (weighted_up - weighted_down) / valid_weight * 100.0 if valid_weight > 0.0 else None
+
+            quality = RawDataQuality.OK if valid_count >= 6 else RawDataQuality.WARMUP
+            timestamp = frame.iloc[i].get("timestamp") if "timestamp" in frame.columns else i
+            snapshots.append(
+                RawIndicatorSnapshot(
+                    timestamp=timestamp,
+                    data_quality=quality,
+                    volume_quality=VolumeQuality(int(volume_quality[i])),
+                    volume_coverage=_opt(coverage[i]),
+                    volume_variation=_opt(variation[i]),
+                    volume_calculable=bool(volume_calculable[i]),
+                    volume_reliable=bool(volume_reliable[i]),
+                    volume_trust=float(volume_trust),
+                    atr=_opt(atr[i]),
+                    atr_ratio=_opt(atr_ratio[i]),
+                    price_context=price_value,
+                    price_context_valid=bool(price_context_valid[i]),
+                    indicators=indicators,
+                    valid_evidence_count=valid_count,
+                    up_evidence_count=up_count,
+                    down_evidence_count=down_count,
+                    strong_up_count=strong_up,
+                    strong_down_count=strong_down,
+                    net_evidence_score=net_score,
+                )
+            )
+        return snapshots
 
 
 __all__ = [
