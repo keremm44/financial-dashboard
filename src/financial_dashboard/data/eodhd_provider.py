@@ -94,8 +94,7 @@ class EODHDProvider(MarketDataProvider):
         )
         return f"{self.config.base_url.rstrip('/')}/eod/{self._ticker(symbol)}?{query}"
 
-    @staticmethod
-    def _http_error_detail(exc: HTTPError) -> str:
+    def _http_error_detail(self, exc: HTTPError) -> str:
         """Read a short provider error body without ever including the request URL/token."""
         try:
             raw = exc.read()
