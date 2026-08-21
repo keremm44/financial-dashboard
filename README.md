@@ -12,10 +12,14 @@ Local-first, deterministic OHLCV analysis foundation with independent multi-time
   - pure post-core, symmetric confidence support bounded to `ham_delta ∈ [-5, +5]`
   - deterministic fixed-facts narration payload (no provider/Groq integration)
   - Streamlit MTF/detail/history inspection with recent 100 rows by default and explicit all-history mode
-- Volume Participation Round 1 evidence foundation:
+- Volume Participation completed evidence layers:
   - independent `1d/4h/2h/1h/30m` replay with full immutable confirmed-bar history
   - explicit warmup, low-participation, unavailable-volume, limited-data, and incomplete-tail boundaries
   - causal same-timeframe BOS/CHoCH links across `PRE_EVENT → AT_EVENT → FOLLOW_THROUGH`
+  - bounded lower-timeframe inflow and direct i/eCHoCH/i/eBOS progression without higher-timeframe promotion
+  - strict confirmed-opposition blocking risk plus typed recovery/supersession/fake-reclaim release routes
+  - one-bar shock/fake/absorption/follow-through/reclaim histories and shared-source volume deduplication
+  - Streamlit MTF/link/risk/history diagnostics with the last 100 bars by default and optional all-history mode
 - Persistent internal/external BOS and CHoCH history, with typed BOS maturity (`INITIAL_STRUCTURE`, `TRANSITION_CONFIRMATION`, `CONTINUATION`)
 - Typed Support/Resistance zones, lifecycle, MTF confluence, and opposing-zone conflicts
 - Causal event-location links with explicit no-match outcomes
@@ -25,7 +29,7 @@ Local-first, deterministic OHLCV analysis foundation with independent multi-time
   - Support/Resistance location context
 - Streamlit v0.1 local inspection/debug interface with Plotly charts
 
-The three analytical domains run continuously and in parallel. Higher-timeframe context does not disable lower-timeframe calculation or evidence retention. Weakening and recovery remain distinct states. Ham follows the same isolation rule and remains supporting evidence: it can adjust only an already-authoritative core confidence, never direction/action/status, blockers, Market Structure, or S/R. See the Ham [Round 1 evidence contract](docs/ham_evidence_round1_contract.md) and [Round 2 support contract](docs/ham_evidence_round2_contract.md). Volume remains neutral participation evidence and cannot create or replace BOS/CHoCH; see the [Volume Round 1 evidence contract](docs/volume_evidence_round1_contract.md).
+The three analytical domains run continuously and in parallel. Higher-timeframe context does not disable lower-timeframe calculation or evidence retention. Weakening and recovery remain distinct states. Ham follows the same isolation rule and remains supporting evidence: it can adjust only an already-authoritative core confidence, never direction/action/status, blockers, Market Structure, or S/R. See the Ham [Round 1 evidence contract](docs/ham_evidence_round1_contract.md) and [Round 2 support contract](docs/ham_evidence_round2_contract.md). Volume remains neutral participation evidence and cannot create or replace BOS/CHoCH; see the [Volume Round 1 evidence contract](docs/volume_evidence_round1_contract.md) and [Round 2 MTF/risk/UI contract](docs/volume_evidence_round2_contract.md).
 
 ## Local installation
 
@@ -85,6 +89,16 @@ Required market columns are `timestamp`, `open`, `high`, `low`, `close`, and `vo
   --backfill
 ```
 
+Add `--volume-round2` to the same command to run the five-timeframe Volume authority, risk, shock, propagation, and shared-source dedup acceptance after refresh. To validate an already populated five-timeframe cache without making another provider request:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\live_smoke.py `
+  --symbol ASELS `
+  --cache-root .cache\live-smoke `
+  --cache-only `
+  --volume-round2
+```
+
 The actual history can still be shorter than `--days`: tvDatafeed first returns at most the latest `--max-bars` bars and then the adapter applies the requested date window. The UI therefore reports observed usable first/last candles, closed+complete counts, first external structure event, typed BOS maturity, and left-boundary status. A requested bar count is never treated as proof that pre-cache structure was observed.
 
 ## Run Streamlit
@@ -117,5 +131,6 @@ The interface provides:
 - causal event-location outcomes and links
 - cache freshness, usable replay range, row filtering, source-quality, and structural left-boundary diagnostics
 - Ham five-timeframe quality/family matrix, all ten latest indicator details, and confirmed history (recent 100 by default; all rows on explicit request)
+- Volume five-timeframe participation matrix, causal Structure links, opposition/shock lifecycles, direct structural progression, dedup diagnostics, and confirmed history (recent 100 by default; all rows on explicit request)
 
 It intentionally does **not** produce buy/sell actions, recommendations, predictions, stops, targets, provider-refresh automation, Groq narration, or a global Decision Engine. Since this UI has no authoritative global core direction/confidence, it also does not fabricate one merely to display the Ham `±5` adapter.

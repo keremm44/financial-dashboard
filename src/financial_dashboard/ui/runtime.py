@@ -14,9 +14,15 @@ from financial_dashboard.ham_mtf_replay import (
     HamMTFEvidenceReplay,
     HamMTFEvidenceReplayRunner,
 )
+from financial_dashboard.mtf_replay import MTFReplayResult
+from financial_dashboard.structure_location_replay import StructureLocationMTFResult
 from financial_dashboard.three_domain_replay import (
     CachedThreeDomainObserverRunner,
     ThreeDomainReplayResult,
+)
+from financial_dashboard.volume_mtf_replay import (
+    VolumeMTFEvidenceReplay,
+    VolumeMTFEvidenceReplayRunner,
 )
 
 
@@ -228,6 +234,27 @@ def replay_cached_ham(
     return HamMTFEvidenceReplayRunner(store).replay(
         clean_symbol,
         timeframes=normalized,
+    )
+
+
+def replay_cached_volume(
+    cache_root: str | Path,
+    *,
+    symbol: str,
+    timeframes: tuple[str, ...],
+    structure_replay: MTFReplayResult | StructureLocationMTFResult | None = None,
+) -> VolumeMTFEvidenceReplay:
+    """Replay inspection-only Volume against an optional authoritative Structure run."""
+
+    normalized = _normalized_timeframes(timeframes)
+    clean_symbol = symbol.strip()
+    if not clean_symbol:
+        raise ValueError("symbol must not be empty")
+    store = ParquetOHLCVStore(Path(cache_root).expanduser())
+    return VolumeMTFEvidenceReplayRunner(store).replay(
+        clean_symbol,
+        timeframes=normalized,
+        structure_replay=structure_replay,
     )
 
 

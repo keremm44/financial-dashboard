@@ -435,7 +435,12 @@ def _summarize_window(
     aligned_confirmed = opposed_confirmed = 0
     aligned_candidate = opposed_candidate = 0
     opposing_absorption = same_direction_reclaim = 0
-    for snapshot in usable:
+    non_shock_usable = tuple(
+        snapshot
+        for snapshot in usable
+        if not snapshot.audit_export.one_bar_shock
+    )
+    for snapshot in non_shock_usable:
         direction = snapshot.evidence_direction
         if snapshot.state in _MATURE_STATES:
             if direction == event_direction:
@@ -487,10 +492,10 @@ def _summarize_window(
         opposed_candidate_count=opposed_candidate,
         conflict_count=sum(
             snapshot.state == FinalParticipationState.CONFLICT.value
-            for snapshot in usable
+            for snapshot in non_shock_usable
         ),
         shock_count=sum(
-            snapshot.state == FinalParticipationState.ONE_BAR_SHOCK.value
+            snapshot.audit_export.one_bar_shock
             for snapshot in usable
         ),
         opposing_absorption_count=opposing_absorption,

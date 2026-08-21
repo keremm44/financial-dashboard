@@ -35,6 +35,7 @@ def test_streamlit_app_smoke_renders_observer_without_decision_actions(
         "Market Structure",
         "Zones & location",
         "Ham evidence",
+        "Volume Participation",
         "Data quality",
     }
     ham_tab = next(tab for tab in app.tabs if tab.label == "Ham evidence")
@@ -46,6 +47,19 @@ def test_streamlit_app_smoke_renders_observer_without_decision_actions(
     assert len(ham_tab.dataframe[2].value) == 100
     assert "Source warnings" in ham_tab.dataframe[0].value.columns
     assert "Final confidence" not in ham_tab.dataframe[0].value.columns
+
+    volume_tab = next(tab for tab in app.tabs if tab.label == "Volume Participation")
+    assert not volume_tab.metric
+    assert not volume_tab.button
+    assert len(volume_tab.dataframe) == 8
+    assert len(volume_tab.dataframe[0].value) == 5
+    assert len(volume_tab.dataframe[1].value) == 40
+    assert len(volume_tab.dataframe[5].value) == 100
+    assert not volume_tab.dataframe[0].value["Raw volume summed"].any()
+    assert not volume_tab.dataframe[1].value["Lower-TF confirms target"].any()
+    assert volume_tab.dataframe[7].value.iloc[0]["Independent vote cap"] == 1
+    assert "Action" not in volume_tab.dataframe[0].value.columns
+    assert "Recommendation" not in volume_tab.dataframe[1].value.columns
 
     rendered_text = " ".join(
         warning.value for warning in app.warning
@@ -61,6 +75,18 @@ def test_streamlit_app_smoke_renders_observer_without_decision_actions(
     ham_tab = next(tab for tab in app.tabs if tab.label == "Ham evidence")
     assert len(ham_tab.dataframe[2].value) == 160
     assert any("160 / 160" in caption.value for caption in ham_tab.caption)
+
+    volume_tab = next(tab for tab in app.tabs if tab.label == "Volume Participation")
+    all_volume_history = next(
+        checkbox
+        for checkbox in volume_tab.checkbox
+        if checkbox.label == "Tüm Volume geçmişi"
+    )
+    app = all_volume_history.check().run(timeout=120)
+    assert not app.exception
+    volume_tab = next(tab for tab in app.tabs if tab.label == "Volume Participation")
+    assert len(volume_tab.dataframe[5].value) == 160
+    assert any("160 / 160" in caption.value for caption in volume_tab.caption)
 
 
 def test_streamlit_app_explains_empty_cache_instead_of_failing(

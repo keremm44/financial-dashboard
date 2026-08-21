@@ -25,9 +25,17 @@ from financial_dashboard.engines.volume_participation_engine import (
 from financial_dashboard.engines.volume_participation_lifecycle import (
     ParticipationLifecycleConfig,
 )
+from financial_dashboard.engines.volume_round2 import (
+    VolumeRound2Assessment,
+    build_volume_round2_assessment,
+)
 from financial_dashboard.mtf_replay import (
     CachedMarketStructureMTFRunner,
     MTFReplayResult,
+)
+from financial_dashboard.structure_location_replay import (
+    CausalBarClock,
+    StructureLocationMTFResult,
 )
 
 
@@ -137,6 +145,7 @@ class VolumeMTFEvidenceReplay:
     symbol: str
     timeframes: tuple[str, ...]
     timeframe_replays: tuple[VolumeTimeframeEvidenceReplay, ...]
+    round2: VolumeRound2Assessment
 
     def replay_for(self, timeframe: str) -> VolumeTimeframeEvidenceReplay:
         normalized = timeframe.strip().lower()
@@ -161,6 +170,7 @@ class VolumeMTFEvidenceReplayRunner:
         lifecycle_config: ParticipationLifecycleConfig | None = None,
         pre_event_bars: int = 2,
         follow_through_bars: int = 2,
+        clock: CausalBarClock | None = None,
     ) -> None:
         if pre_event_bars < 0 or follow_through_bars < 0:
             raise ValueError("Structure/Volume window lengths must be non-negative")
@@ -169,10 +179,11 @@ class VolumeMTFEvidenceReplayRunner:
         self.lifecycle_config = lifecycle_config or ParticipationLifecycleConfig()
         self.pre_event_bars = pre_event_bars
         self.follow_through_bars = follow_through_bars
+        self.clock = clock or CausalBarClock()
 
     @staticmethod
     def _validate_structure_replay(
-        structure_replay: MTFReplayResult,
+        structure_replay: MTFReplayResult | StructureLocationMTFResult,
         *,
         symbol: str,
         timeframes: tuple[str, ...],
@@ -192,12 +203,34 @@ class VolumeMTFEvidenceReplayRunner:
                 f"Market Structure replay is missing Volume timeframe(s): {missing!r}"
             )
 
+    @staticmethod
+    def _structure_snapshot(
+        structure_replay: MTFReplayResult | StructureLocationMTFResult,
+        timeframe: str,
+    ):
+        if isinstance(structure_replay, MTFReplayResult):
+            return structure_replay.structure_for(timeframe)
+        return structure_replay.replay_for(timeframe).market_structure
+
+    @staticmethod
+    def _structure_snapshots(
+        structure_replay: MTFReplayResult | StructureLocationMTFResult,
+        timeframes: tuple[str, ...],
+    ) -> tuple:
+        return tuple(
+            VolumeMTFEvidenceReplayRunner._structure_snapshot(
+                structure_replay,
+                timeframe,
+            )
+            for timeframe in timeframes
+        )
+
     def replay(
         self,
         symbol: str,
         *,
         timeframes: Iterable[str] = VOLUME_EVIDENCE_TIMEFRAMES,
-        structure_replay: MTFReplayResult | None = None,
+        structure_replay: MTFReplayResult | StructureLocationMTFResult | None = None,
     ) -> VolumeMTFEvidenceReplay:
         normalized_symbol = symbol.strip().upper()
         if not normalized_symbol:
@@ -225,7 +258,10 @@ class VolumeMTFEvidenceReplayRunner:
                     f"Structure/Volume closed-bar cache mismatch for "
                     f"{normalized_symbol} {timeframe}"
                 )
-            structure_snapshot = structure_replay.structure_for(timeframe)
+            structure_snapshot = self._structure_snapshot(
+                structure_replay,
+                timeframe,
+            )
             if structure_snapshot.symbol.strip().upper() != normalized_symbol:
                 raise ValueError(
                     f"Market Structure namespace mismatch for {timeframe}"
@@ -268,10 +304,21 @@ class VolumeMTFEvidenceReplayRunner:
                 )
             )
 
+        replay_tuple = tuple(timeframe_replays)
+        round2 = build_volume_round2_assessment(
+            symbol=normalized_symbol,
+            timeframe_replays=replay_tuple,
+            structure_snapshots=self._structure_snapshots(
+                structure_replay,
+                normalized_timeframes,
+            ),
+            clock=self.clock,
+        )
         return VolumeMTFEvidenceReplay(
             symbol=normalized_symbol,
             timeframes=normalized_timeframes,
-            timeframe_replays=tuple(timeframe_replays),
+            timeframe_replays=replay_tuple,
+            round2=round2,
         )
 
 
@@ -282,7 +329,7 @@ def replay_volume_evidence_from_cache(
     timeframes: Iterable[str] = VOLUME_EVIDENCE_TIMEFRAMES,
     config: VolumeParticipationConfig | None = None,
     lifecycle_config: ParticipationLifecycleConfig | None = None,
-    structure_replay: MTFReplayResult | None = None,
+    structure_replay: MTFReplayResult | StructureLocationMTFResult | None = None,
 ) -> VolumeMTFEvidenceReplay:
     return VolumeMTFEvidenceReplayRunner(
         ParquetOHLCVStore(cache_root),

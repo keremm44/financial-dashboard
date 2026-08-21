@@ -18,10 +18,12 @@ from financial_dashboard.engines.volume_evidence import (
     VolumeEvidenceDataQuality,
 )
 from financial_dashboard.mtf_replay import (
+    CachedMarketStructureMTFRunner,
     MTFReplayResult,
     MarketStructureTimeframeSnapshot,
     TimeframeReplay,
 )
+from financial_dashboard.structure_location_replay import CachedStructureLocationMTFRunner
 from financial_dashboard.volume_mtf_replay import (
     VOLUME_EVIDENCE_TIMEFRAMES,
     VolumeMTFEvidenceReplayRunner,
@@ -274,3 +276,157 @@ def test_changing_one_timeframe_does_not_change_another(tmp_path) -> None:
 
     assert before.replay_for("1d").history == after.replay_for("1d").history
     assert after.replay_for("30m").bar_count == before.replay_for("30m").bar_count + 1
+
+
+def test_both_authoritative_structure_result_shapes_produce_the_same_volume_replay(
+    tmp_path,
+) -> None:
+    store = ParquetOHLCVStore(tmp_path)
+    for timeframe in ("1h", "30m"):
+        store.merge_and_save(
+            _frame(timeframe),
+            symbol="ASELS",
+            timeframe=timeframe,
+            source="test",
+        )
+    timeframes = ("1h", "30m")
+    structure_only = CachedMarketStructureMTFRunner(store).run(
+        symbol="ASELS",
+        timeframes=timeframes,
+    )
+    structure_location = CachedStructureLocationMTFRunner(store).run(
+        symbol="ASELS",
+        timeframes=timeframes,
+    )
+    runner = VolumeMTFEvidenceReplayRunner(
+        store,
+        config=_config(),
+        lifecycle_config=ParticipationLifecycleConfig(pivot_length=2),
+    )
+
+    from_structure_only = runner.replay(
+        "ASELS",
+        timeframes=timeframes,
+        structure_replay=structure_only,
+    )
+    from_structure_location = runner.replay(
+        "ASELS",
+        timeframes=timeframes,
+        structure_replay=structure_location,
+    )
+
+    assert from_structure_only.timeframes == from_structure_location.timeframes
+    assert from_structure_only.round2 == from_structure_location.round2
+    for timeframe in timeframes:
+        assert (
+            from_structure_only.replay_for(timeframe).history
+            == from_structure_location.replay_for(timeframe).history
+        )
+        assert (
+            from_structure_only.replay_for(timeframe).event_links
+            == from_structure_location.replay_for(timeframe).event_links
+        )
+
+
+def test_replay_is_causal_for_every_prefix_after_structure_confirmation(tmp_path) -> None:
+    store = ParquetOHLCVStore(tmp_path)
+    full_frame = _frame("1h")
+    store.merge_and_save(
+        full_frame,
+        symbol="ASELS",
+        timeframe="1h",
+        source="test",
+    )
+    runner = VolumeMTFEvidenceReplayRunner(
+        store,
+        config=_config(),
+        lifecycle_config=ParticipationLifecycleConfig(pivot_length=2),
+    )
+    full = runner.replay(
+        "ASELS",
+        timeframes=("1h",),
+        structure_replay=_structure_result(
+            store,
+            timeframes=("1h",),
+            with_event=True,
+        ),
+    ).replay_for("1h")
+
+    for count in range(11, len(full_frame) + 1):
+        prefix_store = ParquetOHLCVStore(tmp_path / f"prefix-{count}")
+        prefix_store.merge_and_save(
+            full_frame.iloc[:count],
+            symbol="ASELS",
+            timeframe="1h",
+            source="test",
+        )
+        prefix = VolumeMTFEvidenceReplayRunner(
+            prefix_store,
+            config=_config(),
+            lifecycle_config=ParticipationLifecycleConfig(pivot_length=2),
+        ).replay(
+            "ASELS",
+            timeframes=("1h",),
+            structure_replay=_structure_result(
+                prefix_store,
+                timeframes=("1h",),
+                with_event=True,
+            ),
+        ).replay_for("1h")
+
+        assert prefix.history == full.history[:count]
+        assert prefix.latest == full.history[count - 1]
+        assert prefix.event_links[0].assessed_at == prefix.latest.timestamp
+        assert all(
+            bar_index <= prefix.latest.bar_index
+            for window in prefix.event_links[0].windows
+            for bar_index in window.observed_bar_indices
+        )
+
+
+def test_restart_from_the_same_cache_is_bitwise_deterministic_at_contract_level(
+    tmp_path,
+) -> None:
+    store = ParquetOHLCVStore(tmp_path)
+    for timeframe in ("2h", "1h", "30m"):
+        store.merge_and_save(
+            _frame(timeframe),
+            symbol="ASELS",
+            timeframe=timeframe,
+            source="test",
+        )
+    timeframes = ("2h", "1h", "30m")
+    runner = VolumeMTFEvidenceReplayRunner(
+        store,
+        config=_config(),
+        lifecycle_config=ParticipationLifecycleConfig(pivot_length=2),
+    )
+    first = runner.replay(
+        "ASELS",
+        timeframes=timeframes,
+        structure_replay=_structure_result(store, timeframes=timeframes, with_event=True),
+    )
+
+    restarted_store = ParquetOHLCVStore(tmp_path)
+    restarted = VolumeMTFEvidenceReplayRunner(
+        restarted_store,
+        config=_config(),
+        lifecycle_config=ParticipationLifecycleConfig(pivot_length=2),
+    ).replay(
+        "ASELS",
+        timeframes=timeframes,
+        structure_replay=_structure_result(
+            restarted_store,
+            timeframes=timeframes,
+            with_event=True,
+        ),
+    )
+
+    assert first.round2 == restarted.round2
+    assert first.total_bar_count == restarted.total_bar_count
+    for timeframe in timeframes:
+        assert first.replay_for(timeframe).history == restarted.replay_for(timeframe).history
+        assert (
+            first.replay_for(timeframe).event_links
+            == restarted.replay_for(timeframe).event_links
+        )

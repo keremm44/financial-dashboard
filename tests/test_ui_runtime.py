@@ -11,6 +11,7 @@ from financial_dashboard.ui.runtime import (
     inspect_symbol_cache,
     replay_cached_ham,
     replay_cached_observer,
+    replay_cached_volume,
     runnable_timeframes,
 )
 from financial_dashboard.ui.view_models import (
@@ -27,6 +28,14 @@ from financial_dashboard.ui.view_models import (
     overview_values,
     structure_events_frame,
     structure_history_frame,
+    volume_deduplication_frame,
+    volume_diagnostics_frame,
+    volume_event_links_frame,
+    volume_history_frame,
+    volume_mtf_matrix_frame,
+    volume_propagations_frame,
+    volume_risk_transitions_frame,
+    volume_shocks_frame,
     zones_frame,
 )
 from _ui_test_data import make_ui_store
@@ -86,6 +95,20 @@ def test_cache_runtime_preserves_missing_foundation_timeframes_and_replays_avail
     assert ham_missing["History bars"] == 0
     assert ham_missing["Source errors"] == "Cache file is missing"
     assert pd.isna(ham_missing["Price balance"])
+
+    volume = replay_cached_volume(
+        tmp_path,
+        symbol="THYAO",
+        timeframes=runnable_timeframes(statuses),
+        structure_replay=result.structure_location,
+    )
+    assert volume.timeframes == ("1d", "4h", "1h", "30m")
+    volume_matrix = volume_mtf_matrix_frame(volume, statuses)
+    assert tuple(volume_matrix["Timeframe"]) == FOUNDATION_OBSERVER_TIMEFRAMES
+    volume_missing = volume_matrix.loc[volume_matrix["Timeframe"] == "2h"].iloc[0]
+    assert volume_missing["Data"] == "MISSING"
+    assert volume_missing["History bars"] == 0
+    assert not volume_missing["Raw volume summed"]
 
 
 def test_view_models_and_plotly_chart_are_pure_contract_adapters(tmp_path) -> None:
@@ -252,5 +275,78 @@ def test_ham_ui_adapters_expose_recent_and_all_confirmed_history_without_decisio
     }
     for frame in (matrix, detail, recent, complete):
         assert prohibited_decision_columns.isdisjoint(
+            {str(column).strip().lower() for column in frame.columns}
+        )
+
+
+def test_volume_ui_adapters_expose_mtf_links_history_risks_and_diagnostics_without_actions(
+    tmp_path,
+) -> None:
+    make_ui_store(tmp_path)
+    statuses = inspect_symbol_cache(tmp_path, symbol="THYAO")
+    volume = replay_cached_volume(
+        tmp_path,
+        symbol="THYAO",
+        timeframes=runnable_timeframes(statuses),
+    )
+
+    matrix = volume_mtf_matrix_frame(volume, statuses)
+    assert tuple(matrix["Timeframe"]) == FOUNDATION_OBSERVER_TIMEFRAMES
+    assert set(matrix["History bars"]) == {160}
+    assert not matrix["Raw volume summed"].any()
+    assert "Action" not in matrix.columns
+    assert "Recommendation" not in matrix.columns
+
+    links = volume_event_links_frame(volume)
+    assert len(links) == len(volume.round2.event_assessments)
+    assert not links["Lower-TF confirms target"].any()
+    assert set(links["Same-TF relation"])
+    assert "Risk blocked" in links.columns
+
+    recent = volume_history_frame(volume, timeframe="1h")
+    complete = volume_history_frame(volume, timeframe="1h", limit=None)
+    assert len(recent) == 100
+    assert len(complete) == 160
+    assert recent.iloc[0]["Timestamp"] == complete.iloc[-100]["Timestamp"]
+    assert recent.iloc[-1]["Timestamp"] == complete.iloc[-1]["Timestamp"]
+    assert complete["Confirmed closed bar"].all()
+    for invalid_limit in (0, -1, True, 1.5):
+        with pytest.raises(ValueError, match="positive integer or None"):
+            volume_history_frame(volume, timeframe="1h", limit=invalid_limit)
+
+    risk_transitions = volume_risk_transitions_frame(volume)
+    shocks = volume_shocks_frame(volume)
+    propagations = volume_propagations_frame(volume)
+    diagnostics = volume_diagnostics_frame(volume)
+    dedup = volume_deduplication_frame(volume)
+    assert tuple(diagnostics["Timeframe"]) == volume.timeframes
+    assert dedup.iloc[0]["Independent vote cap"] == 1
+    assert not dedup.iloc[0]["Raw MTF volume summed"]
+    assert tuple(risk_transitions.columns)[0] == "Event UID"
+    assert tuple(shocks.columns)[0] == "Shock UID"
+    assert tuple(propagations.columns)[0] == "Origin timeframe"
+
+    prohibited = {
+        "action",
+        "recommendation",
+        "entry",
+        "buy",
+        "sell",
+        "al",
+        "sat",
+        "final confidence",
+    }
+    for frame in (
+        matrix,
+        links,
+        recent,
+        complete,
+        risk_transitions,
+        shocks,
+        propagations,
+        diagnostics,
+        dedup,
+    ):
+        assert prohibited.isdisjoint(
             {str(column).strip().lower() for column in frame.columns}
         )

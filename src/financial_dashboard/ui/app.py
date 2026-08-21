@@ -15,6 +15,7 @@ from financial_dashboard.ui.runtime import (
     inspect_symbol_cache,
     replay_cached_ham,
     replay_cached_observer,
+    replay_cached_volume,
     runnable_timeframes,
 )
 from financial_dashboard.ui.view_models import (
@@ -31,6 +32,14 @@ from financial_dashboard.ui.view_models import (
     overview_values,
     structure_events_frame,
     structure_history_frame,
+    volume_deduplication_frame,
+    volume_diagnostics_frame,
+    volume_event_links_frame,
+    volume_history_frame,
+    volume_mtf_matrix_frame,
+    volume_propagations_frame,
+    volume_risk_transitions_frame,
+    volume_shocks_frame,
     zones_frame,
 )
 
@@ -107,6 +116,24 @@ def _cached_ham_replay(
         cache_root,
         symbol=symbol,
         timeframes=timeframes,
+    )
+
+
+@st.cache_data(show_spinner="Volume Participation MTF geçmişi yeniden oynatılıyor…")
+def _cached_volume_replay(
+    cache_root: str,
+    symbol: str,
+    timeframes: tuple[str, ...],
+    fingerprint: tuple[tuple[str, int, int], ...],
+    epoch: int,
+    _structure_replay,
+):
+    del fingerprint, epoch
+    return replay_cached_volume(
+        cache_root,
+        symbol=symbol,
+        timeframes=timeframes,
+        structure_replay=_structure_replay,
     )
 
 
@@ -235,6 +262,20 @@ def main() -> None:
     except Exception as error:  # Ham inspection must not hide the other domains.
         ham_error = error
 
+    volume_result = None
+    volume_error: Exception | None = None
+    try:
+        volume_result = _cached_volume_replay(
+            cache_root,
+            symbol,
+            runnable,
+            fingerprint,
+            st.session_state.cache_epoch,
+            result.structure_location,
+        )
+    except Exception as error:  # Volume inspection must not hide the other domains.
+        volume_error = error
+
     st.caption(
         f"{symbol} · replay: {', '.join(result.timeframes)} · as-of: "
         f"{result.observation.as_of}"
@@ -269,13 +310,22 @@ def main() -> None:
     ):
         column.metric(label, values[label])
 
-    overview_tab, chart_tab, structure_tab, location_tab, ham_tab, quality_tab = st.tabs(
+    (
+        overview_tab,
+        chart_tab,
+        structure_tab,
+        location_tab,
+        ham_tab,
+        volume_tab,
+        quality_tab,
+    ) = st.tabs(
         (
             "Genel görünüm",
             "Grafik",
             "Market Structure",
             "Zones & location",
             "Ham evidence",
+            "Volume Participation",
             "Data quality",
         )
     )
@@ -489,6 +539,145 @@ def main() -> None:
                     "Varsayılan görünüm son 100 mumdur; Tüm geçmiş isteğe bağlıdır."
                 )
                 st.dataframe(history, width="stretch", hide_index=True)
+
+    with volume_tab:
+        st.subheader("Volume Participation · causal MTF inspection")
+        st.caption(
+            "Bu sekme yalnızca teyitli kapalı mum kanıtını, Structure bağlantılarını, "
+            "domain risklerini ve tanıları gösterir. Al/sat, giriş, öneri veya karar "
+            "otoritesi yoktur."
+        )
+        if volume_error is not None:
+            st.error(
+                "Volume Participation replay tamamlanamadı: "
+                f"{type(volume_error).__name__}: {volume_error}"
+            )
+        elif volume_result is None:
+            st.info("Volume Participation replay sonucu bulunmuyor.")
+        else:
+            pressure = volume_result.round2.pressure
+            st.caption(
+                f"MTF bağlam={pressure.state.value} · yönsel skor="
+                f"{pressure.directional_score:.3f} · coverage="
+                f"{pressure.evidence_coverage:.3f} · authority="
+                f"{pressure.decision_authority}. Ham hacimler toplanmaz."
+            )
+            st.dataframe(
+                volume_mtf_matrix_frame(volume_result, statuses),
+                width="stretch",
+                hide_index=True,
+            )
+            (
+                volume_links_tab,
+                volume_shock_tab,
+                volume_progression_tab,
+                volume_history_tab,
+                volume_diagnostics_tab,
+            ) = st.tabs(
+                (
+                    "Structure links & risks",
+                    "Shock / fake / reclaim",
+                    "Structure progression",
+                    "Confirmed history",
+                    "Diagnostics & dedup",
+                )
+            )
+            with volume_links_tab:
+                st.caption(
+                    "Same-TF ilişki otoritatiftir. Lower-TF inflow yalnızca zenginleştirir, "
+                    "karşı çıkar veya izler; hedef timeframe teyidi üretemez."
+                )
+                st.dataframe(
+                    volume_event_links_frame(volume_result),
+                    width="stretch",
+                    hide_index=True,
+                )
+                st.caption(
+                    "Opposition weakening bir release değildir. Yalnız aligned recovery, "
+                    "authoritative Structure supersession veya tamamlanmış fake/reclaim "
+                    "resolution blok riskini serbest bırakabilir."
+                )
+                st.dataframe(
+                    volume_risk_transitions_frame(volume_result),
+                    width="stretch",
+                    hide_index=True,
+                )
+            with volume_shock_tab:
+                st.caption(
+                    "Tek-mum hacim patlaması DETECTED_UNCONFIRMED başlar; aynı mumda "
+                    "confirmation veya entry authority kazanmaz."
+                )
+                st.dataframe(
+                    volume_shocks_frame(volume_result),
+                    width="stretch",
+                    hide_index=True,
+                )
+            with volume_progression_tab:
+                st.caption(
+                    "PARTICIPATION_WITHOUT_STRUCTURE originleri için yalnız doğrudan "
+                    "teyit edilmiş i/eCHoCH ve i/eBOS dağılımı gösterilir; üst timeframe "
+                    "Structure icat edilmez."
+                )
+                st.dataframe(
+                    volume_propagations_frame(volume_result),
+                    width="stretch",
+                    hide_index=True,
+                )
+            with volume_history_tab:
+                history_columns = st.columns((1.2, 1.0, 1.0))
+                volume_history_timeframe = history_columns[0].selectbox(
+                    "Volume geçmiş zaman dilimi",
+                    volume_result.timeframes,
+                    key="volume_history_timeframe",
+                )
+                show_all_volume_history = history_columns[1].checkbox(
+                    "Tüm Volume geçmişi",
+                    value=False,
+                    key="volume_history_all",
+                    help="Kapalı ve tamamlanmış Volume geçmişinin tamamını gösterir.",
+                )
+                volume_recent_limit = history_columns[2].number_input(
+                    "Volume son mum",
+                    min_value=10,
+                    max_value=5000,
+                    value=100,
+                    step=10,
+                    disabled=show_all_volume_history,
+                    key="volume_history_limit",
+                )
+                volume_history = volume_history_frame(
+                    volume_result,
+                    timeframe=volume_history_timeframe,
+                    limit=(
+                        None
+                        if show_all_volume_history
+                        else int(volume_recent_limit)
+                    ),
+                )
+                volume_history_total = volume_result.replay_for(
+                    volume_history_timeframe
+                ).bar_count
+                st.caption(
+                    f"Gösterilen {len(volume_history)} / {volume_history_total} teyitli "
+                    "Volume mumu. Varsayılan görünüm son 100 mumdur; tüm geçmiş "
+                    "isteğe bağlıdır."
+                )
+                st.dataframe(volume_history, width="stretch", hide_index=True)
+            with volume_diagnostics_tab:
+                st.dataframe(
+                    volume_diagnostics_frame(volume_result),
+                    width="stretch",
+                    hide_index=True,
+                )
+                st.dataframe(
+                    volume_deduplication_frame(volume_result),
+                    width="stretch",
+                    hide_index=True,
+                )
+                st.caption(
+                    "Ham FLOW, Volume Participation ve gelecekteki Auction aynı kaynak "
+                    "hacim ailesindedir; bağımsız oy gibi üst üste bindirilemez."
+                )
 
     with quality_tab:
         st.subheader("Cache freshness & source quality")
