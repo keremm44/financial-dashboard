@@ -6,6 +6,7 @@ from typing import Any
 import pandas as pd
 
 from .market_structure import MarketStructureConfig, MarketStructureEngine as _SwingCoreEngine, SIDE_HIGH, SIDE_LOW, SwingPoint
+from .market_structure_evidence import export_structure_event
 from .market_structure_runtime_bridge import MarketStructureRuntime
 from .market_structure_state import BreakConfig
 from .models import Direction, EngineResult
@@ -34,6 +35,11 @@ class MarketStructureEngine(_SwingCoreEngine):
         super().reset()
         self._runtime = MarketStructureRuntime(self.break_config)
         self._export = None
+        # Public event memory is export-only. It does not participate in Market
+        # Structure score/state math. Runtime intentionally treats sweeps as
+        # non-structural, while downstream still needs the latest structured event
+        # without parsing EngineResult event strings.
+        self._latest_public_events = {"EXTERNAL": None, "INTERNAL": None}
 
     def _candidate_update(self, candidate, incoming, locked_by_break: bool):
         runtime_lock = self._runtime.locks_candidate(incoming.scope, candidate) if hasattr(self, "_runtime") else False
@@ -60,6 +66,22 @@ class MarketStructureEngine(_SwingCoreEngine):
             if scope_state.low_candidate.valid and scope_state.low_candidate.identity == confirmed.identity and scope_state.low_candidate.source_bar == confirmed.source_bar:
                 scope_state.low_candidate = SwingPoint()
         return confirmed
+
+    def _remember_public_events(self, structure_events) -> None:
+        for event in structure_events:
+            if not event.valid or event.scope not in self._latest_public_events:
+                continue
+            previous = self._latest_public_events[event.scope]
+            previous_key = (
+                previous.event_bar if previous is not None and previous.event_bar is not None else -1,
+                previous.identity if previous is not None else -1,
+            )
+            event_key = (
+                event.event_bar if event.event_bar is not None else -1,
+                event.identity,
+            )
+            if previous is None or event_key >= previous_key:
+                self._latest_public_events[event.scope] = event
 
     def update(self, bar: pd.Series | dict[str, Any]) -> EngineResult | None:
         row = dict(bar) if isinstance(bar, dict) else bar.to_dict()
@@ -111,9 +133,15 @@ class MarketStructureEngine(_SwingCoreEngine):
                 ),
             )
         )
+        self._remember_public_events(structure_events)
 
         score = self._runtime.score(bar_index=bar_index)
         self._export = self._runtime.export(self._external.swings, self._internal.swings, bar_index=bar_index)
+        self._export = replace(
+            self._export,
+            external_event=export_structure_event(self._latest_public_events["EXTERNAL"]),
+            internal_event=export_structure_event(self._latest_public_events["INTERNAL"]),
+        )
         external = self._runtime.external.context
 
         if external.direction > 0:
