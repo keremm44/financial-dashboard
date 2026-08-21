@@ -34,13 +34,33 @@ def test_streamlit_app_smoke_renders_observer_without_decision_actions(
         "Grafik",
         "Market Structure",
         "Zones & location",
+        "Ham evidence",
         "Data quality",
     }
+    ham_tab = next(tab for tab in app.tabs if tab.label == "Ham evidence")
+    assert not ham_tab.metric
+    assert not ham_tab.button
+    assert len(ham_tab.dataframe) == 3
+    assert len(ham_tab.dataframe[0].value) == 5
+    assert len(ham_tab.dataframe[1].value) == 10
+    assert len(ham_tab.dataframe[2].value) == 100
+    assert "Source warnings" in ham_tab.dataframe[0].value.columns
+    assert "Final confidence" not in ham_tab.dataframe[0].value.columns
+
     rendered_text = " ".join(
         warning.value for warning in app.warning
     ).lower()
     assert "al/sat" in rendered_text
     assert "öneri" in rendered_text
+
+    all_history = next(
+        checkbox for checkbox in ham_tab.checkbox if checkbox.label == "Tüm geçmiş"
+    )
+    app = all_history.check().run(timeout=120)
+    assert not app.exception
+    ham_tab = next(tab for tab in app.tabs if tab.label == "Ham evidence")
+    assert len(ham_tab.dataframe[2].value) == 160
+    assert any("160 / 160" in caption.value for caption in ham_tab.caption)
 
 
 def test_streamlit_app_explains_empty_cache_instead_of_failing(

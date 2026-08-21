@@ -10,6 +10,10 @@ from financial_dashboard.engines.pattern_compression_core import PatternCompress
 from financial_dashboard.engines.three_domain_observer import (
     FOUNDATION_OBSERVER_TIMEFRAMES,
 )
+from financial_dashboard.ham_mtf_replay import (
+    HamMTFEvidenceReplay,
+    HamMTFEvidenceReplayRunner,
+)
 from financial_dashboard.three_domain_replay import (
     CachedThreeDomainObserverRunner,
     ThreeDomainReplayResult,
@@ -206,6 +210,25 @@ def replay_cached_observer(
         pattern_compression_config=pattern_config,
     )
     return runner.run(symbol=clean_symbol, timeframes=normalized)
+
+
+def replay_cached_ham(
+    cache_root: str | Path,
+    *,
+    symbol: str,
+    timeframes: tuple[str, ...],
+) -> HamMTFEvidenceReplay:
+    """Replay neutral Ham evidence independently for every available timeframe."""
+
+    normalized = _normalized_timeframes(timeframes)
+    clean_symbol = symbol.strip()
+    if not clean_symbol:
+        raise ValueError("symbol must not be empty")
+    store = ParquetOHLCVStore(Path(cache_root).expanduser())
+    return HamMTFEvidenceReplayRunner(store).replay(
+        clean_symbol,
+        timeframes=normalized,
+    )
 
 
 def cache_fingerprint(

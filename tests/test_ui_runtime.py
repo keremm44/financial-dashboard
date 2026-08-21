@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import pandas as pd
+import pytest
+
 from financial_dashboard.engines.three_domain_observer import FOUNDATION_OBSERVER_TIMEFRAMES
 from financial_dashboard.ui.charts import make_market_figure
 from financial_dashboard.ui.runtime import (
     cache_fingerprint,
     discover_cached_symbols,
     inspect_symbol_cache,
+    replay_cached_ham,
     replay_cached_observer,
     runnable_timeframes,
 )
@@ -13,6 +17,9 @@ from financial_dashboard.ui.view_models import (
     cache_status_frame,
     confluence_frame,
     event_zone_links_frame,
+    ham_history_frame,
+    ham_indicator_evidence_frame,
+    ham_mtf_evidence_frame,
     location_outcomes_frame,
     mtf_matrix_frame,
     observer_facts_frame,
@@ -65,6 +72,20 @@ def test_cache_runtime_preserves_missing_foundation_timeframes_and_replays_avail
     missing = matrix.loc[matrix["Timeframe"] == "2h"].iloc[0]
     assert missing["Data"] == "MISSING"
     assert missing["External state"] == "—"
+
+    ham = replay_cached_ham(
+        tmp_path,
+        symbol="THYAO",
+        timeframes=runnable_timeframes(statuses),
+    )
+    assert ham.timeframes == ("1d", "4h", "1h", "30m")
+    ham_matrix = ham_mtf_evidence_frame(ham, statuses)
+    assert tuple(ham_matrix["Timeframe"]) == FOUNDATION_OBSERVER_TIMEFRAMES
+    ham_missing = ham_matrix.loc[ham_matrix["Timeframe"] == "2h"].iloc[0]
+    assert ham_missing["Data"] == "MISSING"
+    assert ham_missing["History bars"] == 0
+    assert ham_missing["Source errors"] == "Cache file is missing"
+    assert pd.isna(ham_missing["Price balance"])
 
 
 def test_view_models_and_plotly_chart_are_pure_contract_adapters(tmp_path) -> None:
@@ -122,3 +143,114 @@ def test_view_models_and_plotly_chart_are_pure_contract_adapters(tmp_path) -> No
     assert figure.data[0].type == "candlestick"
     assert figure.layout.xaxis.rangeslider.visible is False
     assert result is before
+
+
+def test_replay_cached_ham_keeps_timeframes_isolated(tmp_path) -> None:
+    store = make_ui_store(tmp_path)
+    statuses = inspect_symbol_cache(tmp_path, symbol="THYAO")
+    baseline = replay_cached_ham(
+        tmp_path,
+        symbol="THYAO",
+        timeframes=runnable_timeframes(statuses),
+    )
+
+    changed = store.load("THYAO", "30m")
+    replacement_close = pd.Series(
+        [300.0 - index * 0.4 for index in range(len(changed))],
+        index=changed.index,
+    )
+    replacement_open = replacement_close.shift(1, fill_value=replacement_close.iloc[0])
+    changed["open"] = replacement_open
+    changed["close"] = replacement_close
+    changed["high"] = pd.concat((replacement_open, replacement_close), axis=1).max(axis=1) + 0.5
+    changed["low"] = pd.concat((replacement_open, replacement_close), axis=1).min(axis=1) - 0.5
+    store.merge_and_save(
+        changed,
+        symbol="THYAO",
+        timeframe="30m",
+        source="ui-test-isolation",
+    )
+
+    replayed = replay_cached_ham(
+        tmp_path,
+        symbol="THYAO",
+        timeframes=runnable_timeframes(
+            inspect_symbol_cache(tmp_path, symbol="THYAO")
+        ),
+    )
+    for timeframe in ("1d", "4h", "2h", "1h"):
+        assert replayed.replay_for(timeframe).history == baseline.replay_for(timeframe).history
+    assert replayed.replay_for("30m").history != baseline.replay_for("30m").history
+
+
+def test_ham_ui_adapters_expose_recent_and_all_confirmed_history_without_decisions(
+    tmp_path,
+) -> None:
+    make_ui_store(tmp_path)
+    statuses = inspect_symbol_cache(tmp_path, symbol="THYAO")
+    ham = replay_cached_ham(
+        tmp_path,
+        symbol="THYAO",
+        timeframes=runnable_timeframes(statuses),
+    )
+
+    matrix = ham_mtf_evidence_frame(ham, statuses)
+    assert tuple(matrix["Timeframe"]) == FOUNDATION_OBSERVER_TIMEFRAMES
+    assert set(matrix["History bars"]) == {160}
+    assert set(matrix["Profile"]) == {"1d", "4h", "2h", "1h", "30m"}
+    assert "Source warnings" in matrix.columns
+    assert "Source errors" in matrix.columns
+    assert "System state" not in matrix.columns
+    assert "System bias" not in matrix.columns
+    assert "Family decision score" not in matrix.columns
+
+    detail = ham_indicator_evidence_frame(ham, timeframe="1h")
+    assert len(detail) == 10
+    assert set(detail["Indicator"]) == {
+        "PRICE_CONTEXT",
+        "MACD",
+        "MOMENTUM",
+        "RSI",
+        "CCI",
+        "SMI",
+        "CMF",
+        "OBV",
+        "STOCHASTIC",
+        "STOCH_RSI",
+    }
+    assert "Reason" in detail.columns
+    assert "Pending direction" in detail.columns
+
+    recent = ham_history_frame(ham, timeframe="1h")
+    complete = ham_history_frame(ham, timeframe="1h", limit=None)
+    assert len(recent) == 100
+    assert len(complete) == 160
+    assert recent.iloc[0]["Timestamp"] == complete.iloc[-100]["Timestamp"]
+    assert recent.iloc[-1]["Timestamp"] == complete.iloc[-1]["Timestamp"]
+    assert "Flow ready" in complete.columns
+    assert "Volume trust" in complete.columns
+    for invalid_limit in (0, -1, True, 1.5):
+        with pytest.raises(
+            ValueError,
+            match="positive integer or None",
+        ):
+            ham_history_frame(ham, timeframe="1h", limit=invalid_limit)
+
+    prohibited_decision_columns = {
+        "action",
+        "status",
+        "system state",
+        "system bias",
+        "family decision score",
+        "core confidence",
+        "final confidence",
+        "recommendation",
+        "buy",
+        "sell",
+        "al",
+        "sat",
+    }
+    for frame in (matrix, detail, recent, complete):
+        assert prohibited_decision_columns.isdisjoint(
+            {str(column).strip().lower() for column in frame.columns}
+        )

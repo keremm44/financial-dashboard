@@ -5,6 +5,7 @@ from .fvg_engulfing_engine import EngulfingFormation, FormationSnapshot, FvgForm
 from .fvg_engulfing import FvgEngulfingEngine
 from .fvg_engulfing_final import EngulfingLifecycleRecord, EngulfingSideExport, FvgEngulfingExport, FvgLifecycleRecord, FvgSideExport
 from .fvg_engulfing_models import EngulfingDirection, EngulfingState, FvgDirection, FvgEngulfingConfig, FvgEngulfingDataQuality, FvgState, SensitivityProfile
+from .ham_evidence import FamilySnapshot, HamEvidenceConfig, HamEvidenceEngine, HamEvidenceSnapshot, HamFamily, HamFamilyEvidence, HamFamilyEvidenceSet, build_ham_family_evidence
 from .liquidity_engine import LiquidityEngine, LiquidityExport
 from .liquidity_models import LiquidityConfig, LiquidityPool, LiquidityPoolState, LiquiditySide, LiquidityTouch
 from .market_structure import MarketStructureConfig
@@ -47,7 +48,6 @@ from .raw_indicator_dashboard import (
 )
 from .raw_indicator_dashboard_decision import (
     DecisionConfig,
-    FamilySnapshot,
     HamDashboardDecisionEngine,
     HamDashboardDecisionSnapshot,
     HamDashboardExport,
@@ -109,6 +109,7 @@ __all__ = [
     "PatternCompressionEngine", "OrderBlockEngine", "OrderBlockConfig", "OrderBlockRecord", "OrderBlockExport", "OrderBlockSideExport", "OrderBlockDataQuality",
     "FvgEngulfingEngine", "FvgEngulfingConfig", "FvgEngulfingDataQuality", "FvgFormation", "EngulfingFormation", "FormationSnapshot", "FvgLifecycleRecord", "EngulfingLifecycleRecord", "FvgEngulfingExport", "FvgSideExport", "EngulfingSideExport", "FvgDirection", "FvgState", "EngulfingDirection", "EngulfingState", "SensitivityProfile",
     "RawIndicatorDashboardEngine", "RawIndicatorConfig", "RawIndicatorSnapshot", "IndicatorEvidence", "RawDataQuality", "VolumeQuality", "TrendProfile", "TrendReason", "EffectiveTrendSettings",
+    "HamEvidenceEngine", "HamEvidenceConfig", "HamEvidenceSnapshot", "HamFamily", "HamFamilyEvidence", "HamFamilyEvidenceSet", "build_ham_family_evidence",
     "HamDashboardDecisionEngine", "HamDashboardDecisionSnapshot", "HamDashboardExport", "DecisionConfig", "FamilySnapshot", "SystemState",
     "LiquidityEngine", "LiquidityExport", "LiquidityConfig", "LiquidityPool", "LiquidityPoolState", "LiquiditySide", "LiquidityTouch",
     "AuctionVolumeProfileEngine", "AuctionConfig", "AuctionExport",

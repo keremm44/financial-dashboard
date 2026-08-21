@@ -13,6 +13,7 @@ from financial_dashboard.ui.runtime import (
     cache_fingerprint,
     discover_cached_symbols,
     inspect_symbol_cache,
+    replay_cached_ham,
     replay_cached_observer,
     runnable_timeframes,
 )
@@ -20,6 +21,9 @@ from financial_dashboard.ui.view_models import (
     cache_status_frame,
     confluence_frame,
     event_zone_links_frame,
+    ham_history_frame,
+    ham_indicator_evidence_frame,
+    ham_mtf_evidence_frame,
     location_outcomes_frame,
     mtf_matrix_frame,
     observer_facts_frame,
@@ -90,6 +94,22 @@ def _cached_replay(
     )
 
 
+@st.cache_data(show_spinner="Ham MTF evidence geçmişi yeniden oynatılıyor…")
+def _cached_ham_replay(
+    cache_root: str,
+    symbol: str,
+    timeframes: tuple[str, ...],
+    fingerprint: tuple[tuple[str, int, int], ...],
+    epoch: int,
+):
+    del fingerprint, epoch
+    return replay_cached_ham(
+        cache_root,
+        symbol=symbol,
+        timeframes=timeframes,
+    )
+
+
 def _default_cache_root() -> str:
     configured = os.environ.get("FINANCIAL_DASHBOARD_CACHE")
     if configured:
@@ -124,7 +144,7 @@ def main() -> None:
             help="Provider çağrısı yapılmaz; yalnızca var olan yerel cache okunur.",
         )
         cache_root = str(Path(cache_root_input).expanduser().resolve(strict=False))
-        if st.button("Cache'i yeniden tara", use_container_width=True):
+        if st.button("Cache'i yeniden tara", width="stretch"):
             st.session_state.cache_epoch += 1
             st.cache_data.clear()
 
@@ -177,7 +197,7 @@ def main() -> None:
             "Bu sembol için yeniden oynatılabilir kapalı + tamamlanmış mum bulunamadı."
         )
         st.subheader("Veri kalitesi")
-        st.dataframe(cache_status_frame(statuses), use_container_width=True, hide_index=True)
+        st.dataframe(cache_status_frame(statuses), width="stretch", hide_index=True)
         st.stop()
 
     missing = tuple(tf for tf in FOUNDATION_OBSERVER_TIMEFRAMES if tf not in runnable)
@@ -199,8 +219,21 @@ def main() -> None:
     except Exception as error:  # Streamlit boundary: retain quality diagnostics.
         st.error(f"Deterministik replay tamamlanamadı: {type(error).__name__}: {error}")
         st.subheader("Veri kalitesi")
-        st.dataframe(cache_status_frame(statuses), use_container_width=True, hide_index=True)
+        st.dataframe(cache_status_frame(statuses), width="stretch", hide_index=True)
         st.stop()
+
+    ham_result = None
+    ham_error: Exception | None = None
+    try:
+        ham_result = _cached_ham_replay(
+            cache_root,
+            symbol,
+            runnable,
+            fingerprint,
+            st.session_state.cache_epoch,
+        )
+    except Exception as error:  # Ham inspection must not hide the other domains.
+        ham_error = error
 
     st.caption(
         f"{symbol} · replay: {', '.join(result.timeframes)} · as-of: "
@@ -236,12 +269,13 @@ def main() -> None:
     ):
         column.metric(label, values[label])
 
-    overview_tab, chart_tab, structure_tab, location_tab, quality_tab = st.tabs(
+    overview_tab, chart_tab, structure_tab, location_tab, ham_tab, quality_tab = st.tabs(
         (
             "Genel görünüm",
             "Grafik",
             "Market Structure",
             "Zones & location",
+            "Ham evidence",
             "Data quality",
         )
     )
@@ -253,7 +287,7 @@ def main() -> None:
         )
         st.dataframe(
             mtf_matrix_frame(result, statuses),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
         st.subheader("Birleşik betimleyici gerçekler")
@@ -261,7 +295,7 @@ def main() -> None:
         if facts.empty:
             st.info("Bu replay kesitinde ek gerilim veya açıklama gerçeği yok.")
         else:
-            st.dataframe(facts, use_container_width=True, hide_index=True)
+            st.dataframe(facts, width="stretch", hide_index=True)
 
     with chart_tab:
         left, middle, right = st.columns((1.1, 2.2, 1.2))
@@ -290,7 +324,7 @@ def main() -> None:
             show_confluence=show_confluence,
             show_conflicts=show_conflicts,
         )
-        st.plotly_chart(figure, use_container_width=True)
+        st.plotly_chart(figure, width="stretch")
 
     with structure_tab:
         st.subheader("History boundary & warm-up")
@@ -300,7 +334,7 @@ def main() -> None:
         )
         st.dataframe(
             structure_history_frame(result),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
         st.subheader("BOS / CHoCH event ledger")
@@ -324,7 +358,7 @@ def main() -> None:
             "Causal available at, eventin ilgili zaman diliminde ancak hangi anda "
             "diğer domainlerce bilinebildiğini gösterir."
         )
-        st.dataframe(filtered_events, use_container_width=True, hide_index=True)
+        st.dataframe(filtered_events, width="stretch", hide_index=True)
 
     with location_tab:
         zone_table = zones_frame(result)
@@ -345,38 +379,121 @@ def main() -> None:
             & zone_table["Timeframe"].isin(selected_zone_tfs)
         ]
         st.subheader("Typed zones")
-        st.dataframe(filtered_zones, use_container_width=True, hide_index=True)
+        st.dataframe(filtered_zones, width="stretch", hide_index=True)
 
         confluence_view, conflict_view, outcomes_view, links_view = st.tabs(
             ("Confluence", "Opposing conflicts", "Causal outcomes", "Event-zone links")
         )
         with confluence_view:
             st.dataframe(
-                confluence_frame(result), use_container_width=True, hide_index=True
+                confluence_frame(result), width="stretch", hide_index=True
             )
         with conflict_view:
             st.dataframe(
                 opposing_conflicts_frame(result),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
         with outcomes_view:
             st.dataframe(
                 location_outcomes_frame(result),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
         with links_view:
             st.dataframe(
                 event_zone_links_frame(result),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
+
+    with ham_tab:
+        st.subheader("Ham Indicator Dashboard v2.3.7 · nötr evidence")
+        st.caption(
+            "Bu görünüm karar üretmez. Ham system_state/system_bias kullanılmaz; "
+            "yalnızca kapalı + tamamlanmış mumların Tur-1 bileşenleri ve "
+            "PRICE/MOMENTUM/TIMING/FLOW özetleri gösterilir."
+        )
+        if ham_error is not None:
+            st.error(
+                "Ham evidence replay tamamlanamadı: "
+                f"{type(ham_error).__name__}: {ham_error}"
+            )
+        elif ham_result is None:
+            st.info("Ham evidence replay sonucu bulunmuyor.")
+        else:
+            st.dataframe(
+                ham_mtf_evidence_frame(ham_result, statuses),
+                width="stretch",
+                hide_index=True,
+            )
+            st.info(
+                "±5 Ham adaptörü yalnızca otoritatif core direction + confidence "
+                "oluştuktan sonra çalışır. Three-domain pressure burada karar yönü "
+                "yerine kullanılmaz.",
+                icon="ℹ️",
+            )
+            detail_tab, history_tab = st.tabs(
+                ("Latest indicator detail", "Confirmed history")
+            )
+            with detail_tab:
+                detail_timeframe = st.selectbox(
+                    "Ham detay zaman dilimi",
+                    ham_result.timeframes,
+                    key="ham_detail_timeframe",
+                )
+                detail_replay = ham_result.replay_for(detail_timeframe)
+                st.caption(
+                    f"{detail_timeframe} · profile={detail_replay.profile.value} · "
+                    f"latest={detail_replay.latest_timestamp} · "
+                    f"source={detail_replay.source_quality.status.value}"
+                )
+                st.dataframe(
+                    ham_indicator_evidence_frame(
+                        ham_result,
+                        timeframe=detail_timeframe,
+                    ),
+                    width="stretch",
+                    hide_index=True,
+                )
+            with history_tab:
+                history_columns = st.columns((1.2, 1.0, 1.0))
+                history_timeframe = history_columns[0].selectbox(
+                    "Ham geçmiş zaman dilimi",
+                    ham_result.timeframes,
+                    key="ham_history_timeframe",
+                )
+                show_all_history = history_columns[1].checkbox(
+                    "Tüm geçmiş",
+                    value=False,
+                    key="ham_history_all",
+                    help="Kapalı ve tamamlanmış cache geçmişinin tamamını gösterir.",
+                )
+                recent_limit = history_columns[2].number_input(
+                    "Son mum",
+                    min_value=10,
+                    max_value=1000,
+                    value=100,
+                    step=10,
+                    disabled=show_all_history,
+                    key="ham_history_limit",
+                )
+                history = ham_history_frame(
+                    ham_result,
+                    timeframe=history_timeframe,
+                    limit=None if show_all_history else int(recent_limit),
+                )
+                history_total = ham_result.replay_for(history_timeframe).bar_count
+                st.caption(
+                    f"Gösterilen {len(history)} / {history_total} teyitli mum. "
+                    "Varsayılan görünüm son 100 mumdur; Tüm geçmiş isteğe bağlıdır."
+                )
+                st.dataframe(history, width="stretch", hide_index=True)
 
     with quality_tab:
         st.subheader("Cache freshness & source quality")
         st.dataframe(
-            cache_status_frame(statuses), use_container_width=True, hide_index=True
+            cache_status_frame(statuses), width="stretch", hide_index=True
         )
         st.caption(
             "Replay girdisi yalnızca `is_closed=True` ve `is_complete=True` satırlardır. "
@@ -385,7 +502,7 @@ def main() -> None:
         st.subheader("Usable replay range & structural warm-up")
         st.dataframe(
             structure_history_frame(result),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
         st.caption(

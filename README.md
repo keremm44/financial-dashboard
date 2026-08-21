@@ -7,6 +7,11 @@ Local-first, deterministic OHLCV analysis foundation with independent multi-time
 - Canonical OHLCV cache and data-quality gates
 - Closed + complete candle filtering (`is_closed=True`, `is_complete=True`)
 - Independent `1d`, `4h`, `2h`, `1h`, and `30m` replay
+- Ham Indicator Dashboard v2.3.7 end-to-end support layers:
+  - all ten Tur-1 components, exact neutral PRICE/MOMENTUM/TIMING/FLOW families, matching timeframe profiles, and full closed-bar history
+  - pure post-core, symmetric confidence support bounded to `ham_delta ∈ [-5, +5]`
+  - deterministic fixed-facts narration payload (no provider/Groq integration)
+  - Streamlit MTF/detail/history inspection with recent 100 rows by default and explicit all-history mode
 - Persistent internal/external BOS and CHoCH history, with typed BOS maturity (`INITIAL_STRUCTURE`, `TRANSITION_CONFIRMATION`, `CONTINUATION`)
 - Typed Support/Resistance zones, lifecycle, MTF confluence, and opposing-zone conflicts
 - Causal event-location links with explicit no-match outcomes
@@ -16,7 +21,7 @@ Local-first, deterministic OHLCV analysis foundation with independent multi-time
   - Support/Resistance location context
 - Streamlit v0.1 local inspection/debug interface with Plotly charts
 
-The three analytical domains run continuously and in parallel. Higher-timeframe context does not disable lower-timeframe calculation or evidence retention. Weakening and recovery remain distinct states.
+The three analytical domains run continuously and in parallel. Higher-timeframe context does not disable lower-timeframe calculation or evidence retention. Weakening and recovery remain distinct states. Ham follows the same isolation rule and remains supporting evidence: it can adjust only an already-authoritative core confidence, never direction/action/status, blockers, Market Structure, or S/R. See the [Round 1 evidence contract](docs/ham_evidence_round1_contract.md) and [Round 2 support contract](docs/ham_evidence_round2_contract.md).
 
 ## Local installation
 
@@ -107,5 +112,6 @@ The interface provides:
 - typed zone lifecycle and confluence/conflict tables
 - causal event-location outcomes and links
 - cache freshness, usable replay range, row filtering, source-quality, and structural left-boundary diagnostics
+- Ham five-timeframe quality/family matrix, all ten latest indicator details, and confirmed history (recent 100 by default; all rows on explicit request)
 
-It intentionally does **not** produce buy/sell actions, recommendations, predictions, stops, targets, provider-refresh automation, Groq narration, or a global Decision Engine.
+It intentionally does **not** produce buy/sell actions, recommendations, predictions, stops, targets, provider-refresh automation, Groq narration, or a global Decision Engine. Since this UI has no authoritative global core direction/confidence, it also does not fabricate one merely to display the Ham `±5` adapter.

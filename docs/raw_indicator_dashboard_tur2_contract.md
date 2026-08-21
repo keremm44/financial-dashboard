@@ -4,6 +4,11 @@ Authoritative source: `Ham İndikatör Dashboard v2.3.7 FINAL`.
 
 Tur-2 consumes only causal Tur-1 snapshots. It does not recalculate OHLCV indicators.
 
+The exact family aggregation now lives in the neutral Round 1 extractor
+`build_ham_family_evidence`; Tur-2 delegates to it for source-parity audit. This does
+not make Tur-2 `system_state`, `system_bias`, or family decision score part of the
+normal Ham evidence contract. See `ham_evidence_round1_contract.md`.
+
 ## Decision families
 
 Four normalized families are produced on a common -100..+100 scale:
