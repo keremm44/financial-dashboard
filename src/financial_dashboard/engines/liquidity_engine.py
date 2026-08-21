@@ -22,6 +22,10 @@ class LiquidityExport:
     latest_event_level: float | None = None
     latest_event_identity: str | None = None
     latest_event_direction: int = 0
+    latest_consume_side: str | None = None
+    latest_consume_level: float | None = None
+    latest_consume_identity: str | None = None
+    latest_consume_direction: int = 0
     quality: float | None = None
 
 
@@ -88,6 +92,7 @@ class LiquidityEngine(BaseEngine):
         # Existing pools first observe the current confirmed bar.
         updated_pools: list[LiquidityPool] = []
         directional_events: list[tuple[Direction, LiquidityPool, str]] = []
+        consume_events: list[tuple[Direction, LiquidityPool]] = []
         for pool in self._pools:
             before = pool.state
             updated = apply_bar_event(
@@ -108,6 +113,9 @@ class LiquidityEngine(BaseEngine):
                     directional_events.append((direction, updated, event))
                     reasons.append(f"{updated.side.value} {event.lower()} at {updated.level:.6f}")
                 elif event == "CONSUME":
+                    # Consumption is continuation/location information, not a reversal vote.
+                    direction = Direction.UP if updated.side is LiquiditySide.BSL else Direction.DOWN
+                    consume_events.append((direction, updated))
                     reasons.append(f"{updated.side.value} liquidity consumed beyond {updated.level:.6f}")
         self._pools = tuple(updated_pools)
 
@@ -146,7 +154,8 @@ class LiquidityEngine(BaseEngine):
 
         direction, state, score, quality, latest = self._interpret(directional_events)
         levels = self._public_levels(clean["close"])
-        self._export = self._build_export(clean["close"], latest, quality)
+        latest_consume = consume_events[-1] if consume_events else None
+        self._export = self._build_export(clean["close"], latest, quality, latest_consume=latest_consume)
         self._snapshot = EngineResult(
             engine=self.name,
             state=state,
@@ -249,12 +258,25 @@ class LiquidityEngine(BaseEngine):
         close: float,
         latest: tuple[Direction, LiquidityPool, str] | None,
         quality: float,
+        *,
+        latest_consume: tuple[Direction, LiquidityPool] | None = None,
     ) -> LiquidityExport:
         active = [p for p in self._pools if p.state not in {LiquidityPoolState.CONSUMED, LiquidityPoolState.INVALIDATED}]
         bsl = [p for p in active if p.side is LiquiditySide.BSL]
         ssl = [p for p in active if p.side is LiquiditySide.SSL]
         nearest_bsl = min((p.level for p in bsl if p.level >= close), default=None)
         nearest_ssl = max((p.level for p in ssl if p.level <= close), default=None)
+
+        consume_fields: dict[str, Any] = {}
+        if latest_consume is not None:
+            consume_direction, consume_pool = latest_consume
+            consume_fields = {
+                "latest_consume_side": consume_pool.side.value,
+                "latest_consume_level": consume_pool.level,
+                "latest_consume_identity": consume_pool.identity,
+                "latest_consume_direction": int(consume_direction),
+            }
+
         if latest is None:
             return LiquidityExport(
                 nearest_bsl=nearest_bsl,
@@ -262,6 +284,7 @@ class LiquidityEngine(BaseEngine):
                 active_bsl_count=len(bsl),
                 active_ssl_count=len(ssl),
                 quality=quality,
+                **consume_fields,
             )
         direction, pool, event = latest
         return LiquidityExport(
@@ -275,4 +298,5 @@ class LiquidityEngine(BaseEngine):
             latest_event_identity=pool.identity,
             latest_event_direction=int(direction),
             quality=quality,
+            **consume_fields,
         )

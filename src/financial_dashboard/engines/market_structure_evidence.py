@@ -22,6 +22,30 @@ HANDSHAKE = 314159.0
 
 
 @dataclass(frozen=True, slots=True)
+class MarketStructureEventExport:
+    """Structured downstream view of one confirmed Market Structure event.
+
+    This is deliberately additive to the existing stable structure export.  It
+    prevents downstream consumers from having to recover BOS/CHoCH/sweep/failure
+    semantics by parsing `EngineResult.events` strings.
+    """
+
+    scope: str | None = None
+    event_type: str | None = None
+    direction: int = 0
+    event_bar: int | None = None
+    identity: int | None = None
+    level: float | None = None
+    quality: float | None = None
+    broken_swing_identity: int | None = None
+    broken_source_bar: int | None = None
+    origin_swing_identity: int | None = None
+    origin_source_bar: int | None = None
+    origin_price: float | None = None
+    evidence_text: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class MarketStructureExport:
     external_state: float | None
     internal_state: float | None
@@ -35,6 +59,28 @@ class MarketStructureExport:
     internal_weak_low: float | None
     internal_weak_high: float | None
     handshake: float = HANDSHAKE
+    external_event: MarketStructureEventExport = MarketStructureEventExport()
+    internal_event: MarketStructureEventExport = MarketStructureEventExport()
+
+
+def export_structure_event(event: StructureEvent | None) -> MarketStructureEventExport:
+    if event is None or not event.valid:
+        return MarketStructureEventExport()
+    return MarketStructureEventExport(
+        scope=event.scope or None,
+        event_type=event.event_type or None,
+        direction=int(event.direction),
+        event_bar=event.event_bar,
+        identity=event.identity or None,
+        level=event.level,
+        quality=event.quality,
+        broken_swing_identity=event.broken_swing_identity or None,
+        broken_source_bar=event.broken_source_bar,
+        origin_swing_identity=event.origin_swing_identity or None,
+        origin_source_bar=event.origin_source_bar,
+        origin_price=event.origin_price,
+        evidence_text=event.evidence_text or None,
+    )
 
 
 def _latest_event(external: StructureEvent | None, internal: StructureEvent | None) -> StructureEvent | None:

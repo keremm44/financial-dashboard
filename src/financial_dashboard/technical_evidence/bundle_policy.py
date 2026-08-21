@@ -1,0 +1,250 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from typing import Any, Iterable, Mapping
+
+import pandas as pd
+
+from .models import NormalizedLevel, TechnicalEvidenceItem, TechnicalEvidencePacket
+from .tur2 import (
+    EvidenceGraphError,
+    FreshnessClass,
+    FreshnessRecord,
+    TechnicalEvidenceBundle,
+    build_technical_evidence_bundle as _build_core_bundle,
+)
+
+
+def build_technical_evidence_bundle(
+    packets: Iterable[TechnicalEvidencePacket],
+    *,
+    as_of_timestamp: Any | None = None,
+    as_of_known_bars: Mapping[str, int] | None = None,
+) -> TechnicalEvidenceBundle:
+    """Strict public Tur-2 bundle gate.
+
+    Separate engine adapter packets for the same timeframe are allowed only when
+    they represent the same snapshot (same known_bar and timestamp). They are
+    losslessly coalesced before Tur-2 enrichment. Different snapshots for the
+    same timeframe are rejected so historical and current states cannot coexist
+    as if both were current evidence.
+    """
+
+    packet_tuple = _coalesce_same_snapshot_packets(tuple(packets))
+    normalized_as_of_bars = _normalize_as_of_bars(as_of_known_bars)
+    _validate_packet_as_of(packet_tuple, as_of_timestamp, normalized_as_of_bars)
+
+    bundle = _build_core_bundle(
+        packet_tuple,
+        as_of_timestamp=as_of_timestamp,
+        as_of_known_bars=normalized_as_of_bars,
+    )
+    return _sanitize_inferred_level_freshness(bundle)
+
+
+def _coalesce_same_snapshot_packets(
+    packets: tuple[TechnicalEvidencePacket, ...],
+) -> tuple[TechnicalEvidencePacket, ...]:
+    groups: dict[str, list[TechnicalEvidencePacket]] = {}
+    for packet in packets:
+        _validate_packet_members_snapshot(packet)
+        key = packet.timeframe.strip().lower()
+        groups.setdefault(key, []).append(packet)
+
+    out: list[TechnicalEvidencePacket] = []
+    for key, group in sorted(groups.items()):
+        unique: list[TechnicalEvidencePacket] = []
+        for packet in group:
+            if packet not in unique:
+                unique.append(packet)
+        first = unique[0]
+        for packet in unique[1:]:
+            if packet.known_bar != first.known_bar or not _timestamps_equal(packet.timestamp, first.timestamp):
+                raise EvidenceGraphError(
+                    f"multiple snapshots for timeframe {key}: bundle requires one as-of snapshot per timeframe"
+                )
+
+        evidence = _dedupe_evidence(item for packet in unique for item in packet.evidence)
+        levels = _dedupe_levels(level for packet in unique for level in packet.levels)
+        out.append(
+            TechnicalEvidencePacket(
+                timeframe=first.timeframe,
+                known_bar=first.known_bar,
+                timestamp=first.timestamp,
+                evidence=evidence,
+                levels=levels,
+            )
+        )
+    return tuple(out)
+
+
+def _validate_packet_members_snapshot(packet: TechnicalEvidencePacket) -> None:
+    """Reject historical/current mixing inside one packet.
+
+    `source_bar` carries causal origin and may be older.  `known_bar` and
+    `timestamp`, when supplied on a normalized item/level, describe the snapshot
+    at which that fact is being handed downstream and therefore must agree with
+    the containing packet.
+
+    Missing member metadata remains allowed and is treated as unknown; TEL does
+    not invent it from the packet merely to satisfy the check.
+    """
+
+    for item in packet.evidence:
+        if packet.known_bar is not None and item.known_bar is not None and item.known_bar != packet.known_bar:
+            raise EvidenceGraphError(
+                f"evidence snapshot bar mismatch in timeframe {packet.timeframe}: {item.id}"
+            )
+        if item.timestamp is not None and not _timestamps_equal(item.timestamp, packet.timestamp):
+            raise EvidenceGraphError(
+                f"evidence snapshot timestamp mismatch in timeframe {packet.timeframe}: {item.id}"
+            )
+
+    for level in packet.levels:
+        if packet.known_bar is not None and level.known_bar is not None and level.known_bar != packet.known_bar:
+            raise EvidenceGraphError(
+                f"level snapshot bar mismatch in timeframe {packet.timeframe}: {level.id}"
+            )
+        if level.timestamp is not None and not _timestamps_equal(level.timestamp, packet.timestamp):
+            raise EvidenceGraphError(
+                f"level snapshot timestamp mismatch in timeframe {packet.timeframe}: {level.id}"
+            )
+
+
+def _normalize_as_of_bars(values: Mapping[str, int] | None) -> dict[str, int] | None:
+    if values is None:
+        return None
+    out: dict[str, int] = {}
+    for timeframe, known_bar in values.items():
+        key = str(timeframe).strip().lower()
+        value = int(known_bar)
+        if key in out and out[key] != value:
+            raise EvidenceGraphError(f"conflicting as-of bar for timeframe {key}")
+        out[key] = value
+    return out
+
+
+def _validate_packet_as_of(
+    packets: tuple[TechnicalEvidencePacket, ...],
+    as_of_timestamp: Any | None,
+    as_of_known_bars: Mapping[str, int] | None,
+) -> None:
+    for packet in packets:
+        key = packet.timeframe.strip().lower()
+        if as_of_known_bars is not None and key in as_of_known_bars:
+            limit = int(as_of_known_bars[key])
+            if packet.known_bar is not None and int(packet.known_bar) > limit:
+                raise EvidenceGraphError(
+                    f"packet beyond as-of bar for timeframe {key}: {packet.known_bar} > {limit}"
+                )
+        if as_of_timestamp is not None:
+            relation = _timestamp_relation(packet.timestamp, as_of_timestamp)
+            if relation is None:
+                raise EvidenceGraphError(
+                    f"packet timestamp is not comparable to explicit as-of timestamp for timeframe {key}"
+                )
+            if relation > 0:
+                raise EvidenceGraphError(
+                    f"packet beyond as-of timestamp for timeframe {key}: {packet.timestamp}"
+                )
+
+
+def _sanitize_inferred_level_freshness(bundle: TechnicalEvidenceBundle) -> TechnicalEvidenceBundle:
+    """Keep only causally defensible level freshness.
+
+    A level with its own source_bar is always safe. For an unanchored level, the
+    core may inherit freshness from referencing evidence. The public policy keeps
+    that inheritance only when every usable source anchor comes from the same
+    upstream engine and resolves to one identical source_bar. Otherwise the level
+    freshness remains UNKNOWN rather than borrowing age from unrelated evidence.
+    """
+
+    evidence_by_level: dict[str, list[TechnicalEvidenceItem]] = {}
+    for item in bundle.evidence:
+        for level_id in item.level_refs:
+            evidence_by_level.setdefault(level_id, []).append(item)
+
+    unsafe: set[str] = set()
+    for level in bundle.levels:
+        if level.source_bar is not None:
+            continue
+        anchors = [
+            item
+            for item in evidence_by_level.get(level.id, ())
+            if item.source_engine == level.source_engine
+            and item.source_bar is not None
+            and item.freshness is not None
+        ]
+        source_bars = {int(item.source_bar) for item in anchors if item.source_bar is not None}
+        if not anchors or len(source_bars) != 1:
+            unsafe.add(level.id)
+
+    if not unsafe:
+        return bundle
+
+    levels = tuple(
+        replace(level, freshness=None) if level.id in unsafe else level
+        for level in bundle.levels
+    )
+    freshness = tuple(
+        FreshnessRecord(
+            target_id=record.target_id,
+            target_kind=record.target_kind,
+            value=None,
+            classification=FreshnessClass.UNKNOWN,
+            age_bars=None,
+            anchor="UNKNOWN",
+            horizon_bars=None,
+        )
+        if record.target_kind == "LEVEL" and record.target_id in unsafe
+        else record
+        for record in bundle.freshness
+    )
+    return replace(bundle, levels=levels, freshness=freshness)
+
+
+def _dedupe_evidence(values: Iterable[TechnicalEvidenceItem]) -> tuple[TechnicalEvidenceItem, ...]:
+    by_id: dict[str, TechnicalEvidenceItem] = {}
+    for item in values:
+        existing = by_id.get(item.id)
+        if existing is not None and existing != item:
+            raise ValueError(f"conflicting duplicate evidence id: {item.id}")
+        by_id[item.id] = item
+    return tuple(sorted(by_id.values(), key=lambda item: (item.source_engine, item.evidence_type, item.id)))
+
+
+def _dedupe_levels(values: Iterable[NormalizedLevel]) -> tuple[NormalizedLevel, ...]:
+    by_id: dict[str, NormalizedLevel] = {}
+    for level in values:
+        existing = by_id.get(level.id)
+        if existing is not None and existing != level:
+            raise ValueError(f"conflicting duplicate level id: {level.id}")
+        by_id[level.id] = level
+    return tuple(sorted(by_id.values(), key=lambda level: (level.source_engine, level.level_type, level.id)))
+
+
+def _timestamps_equal(left: Any, right: Any) -> bool:
+    relation = _timestamp_relation(left, right)
+    if relation is None:
+        return left is None and right is None or str(left) == str(right)
+    return relation == 0
+
+
+def _timestamp_relation(left: Any, right: Any) -> int | None:
+    if left is None or right is None:
+        return None
+    try:
+        left_ts = pd.Timestamp(left)
+        right_ts = pd.Timestamp(right)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(left_ts) or pd.isna(right_ts):
+        return None
+    left_aware = left_ts.tzinfo is not None
+    right_aware = right_ts.tzinfo is not None
+    if left_aware != right_aware:
+        return None
+    if left_aware:
+        left_ts = left_ts.tz_convert("UTC")
+        right_ts = right_ts.tz_convert("UTC")
+    return -1 if left_ts < right_ts else 1 if left_ts > right_ts else 0
