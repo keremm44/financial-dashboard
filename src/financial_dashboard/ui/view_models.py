@@ -51,6 +51,7 @@ def cache_status_frame(
             "Confirmed rows": status.confirmed_row_count,
             "Open rows": status.open_row_count,
             "Incomplete rows": status.incomplete_row_count,
+            "Earliest timestamp": status.earliest_timestamp,
             "Latest timestamp": status.latest_timestamp,
             "Warnings": " | ".join(status.warnings),
             "Errors": " | ".join(status.errors),
@@ -67,10 +68,58 @@ def cache_status_frame(
             "Confirmed rows",
             "Open rows",
             "Incomplete rows",
+            "Earliest timestamp",
             "Latest timestamp",
             "Warnings",
             "Errors",
             "Path",
+        ),
+    )
+
+
+def structure_history_frame(result: ThreeDomainReplayResult) -> pd.DataFrame:
+    """Expose observed chronology and left-boundary limits without sufficiency claims."""
+
+    rows = [
+        {
+            "Timeframe": diagnostic.timeframe,
+            "Usable closed bars": diagnostic.input_bar_count,
+            "Usable first candle": diagnostic.input_start,
+            "Usable last candle": diagnostic.input_end,
+            "First external event": diagnostic.first_external_event_type,
+            "First event at": diagnostic.first_external_event_at,
+            "First event maturity": diagnostic.first_external_event_maturity.value,
+            "Bars before first event": diagnostic.bars_before_first_external_event,
+            "External structure events": diagnostic.external_structure_event_count,
+            "External CHoCH": diagnostic.choch_count,
+            "Transition BOS": diagnostic.transition_confirmation_bos_count,
+            "Continuation BOS": diagnostic.continuation_bos_count,
+            "Current uses initial structure": (
+                "YES" if diagnostic.current_progression_uses_initial_structure else "NO"
+            ),
+            "Left-boundary state": diagnostic.state.value,
+            "Reasons": " | ".join(diagnostic.reasons),
+        }
+        for diagnostic in result.structure_history
+    ]
+    return _frame(
+        rows,
+        (
+            "Timeframe",
+            "Usable closed bars",
+            "Usable first candle",
+            "Usable last candle",
+            "First external event",
+            "First event at",
+            "First event maturity",
+            "Bars before first event",
+            "External structure events",
+            "External CHoCH",
+            "Transition BOS",
+            "Continuation BOS",
+            "Current uses initial structure",
+            "Left-boundary state",
+            "Reasons",
         ),
     )
 

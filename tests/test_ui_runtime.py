@@ -19,6 +19,7 @@ from financial_dashboard.ui.view_models import (
     opposing_conflicts_frame,
     overview_values,
     structure_events_frame,
+    structure_history_frame,
     zones_frame,
 )
 from _ui_test_data import make_ui_store
@@ -37,6 +38,11 @@ def test_cache_runtime_preserves_missing_foundation_timeframes_and_replays_avail
     assert tuple(status.timeframe for status in complete_statuses) == FOUNDATION_OBSERVER_TIMEFRAMES
     assert all(status.exists and status.runnable for status in complete_statuses)
     assert all(status.confirmed_row_count == status.row_count for status in complete_statuses)
+    assert all(status.earliest_timestamp is not None for status in complete_statuses)
+    assert all(
+        status.earliest_timestamp < status.latest_timestamp
+        for status in complete_statuses
+    )
 
     store.path_for("THYAO", "2h").unlink()
     statuses = inspect_symbol_cache(tmp_path, symbol="THYAO")
@@ -71,8 +77,21 @@ def test_view_models_and_plotly_chart_are_pure_contract_adapters(tmp_path) -> No
     )
 
     assert overview_values(result)["Combined state"] == "DOMAINS_REPORTED"
-    assert len(cache_status_frame(statuses)) == 5
+    cache_status = cache_status_frame(statuses)
+    assert len(cache_status) == 5
+    assert "Earliest timestamp" in cache_status.columns
     assert len(mtf_matrix_frame(result, statuses)) == 5
+    history = structure_history_frame(result)
+    assert len(history) == 5
+    assert set(history["Usable closed bars"]) == {160}
+    assert set(history["Left-boundary state"]) <= {
+        "NO_EXTERNAL_STRUCTURE",
+        "LEFT_BOUNDARY_ACTIVE",
+        "INITIAL_STRUCTURE_NOT_CURRENT",
+        "POST_INITIAL_PROGRESSION",
+        "NO_INITIALIZATION_RECORD",
+    }
+    assert "Bars before first event" in history.columns
     structure_events = structure_events_frame(result)
     assert not structure_events.empty
     assert "BOS maturity" in structure_events.columns

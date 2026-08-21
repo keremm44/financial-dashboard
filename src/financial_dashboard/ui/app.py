@@ -26,6 +26,7 @@ from financial_dashboard.ui.view_models import (
     opposing_conflicts_frame,
     overview_values,
     structure_events_frame,
+    structure_history_frame,
     zones_frame,
 )
 
@@ -205,6 +206,20 @@ def main() -> None:
         f"{symbol} · replay: {', '.join(result.timeframes)} · as-of: "
         f"{result.observation.as_of}"
     )
+    boundary_active = tuple(
+        diagnostic.timeframe
+        for diagnostic in result.structure_history
+        if diagnostic.current_progression_uses_initial_structure
+    )
+    if boundary_active:
+        st.warning(
+            "Market Structure sol-sınır bağımlılığı: "
+            f"{', '.join(boundary_active)}. Bu zaman dilimlerindeki güncel ilerleme, "
+            "cache içinde nötr başlangıçtan kurulan ilk yöne dayanıyor. Cache öncesi "
+            "yapı gözlenmediği için önceki bearish/bullish bağlam veya ARGENT ile "
+            "CHoCH eşliği bu pencereyle kanıtlanamaz.",
+            icon="⚠️",
+        )
     values = overview_values(result)
     card_columns = st.columns(6)
     for column, label in zip(
@@ -278,6 +293,17 @@ def main() -> None:
         st.plotly_chart(figure, use_container_width=True)
 
     with structure_tab:
+        st.subheader("History boundary & warm-up")
+        st.caption(
+            "Bu tablo keyfi bir minimum-bar eşiği uygulamaz; replay'in gerçekten "
+            "gördüğü ilk/son kapalı mumu ve teyitli external olay kronolojisini raporlar."
+        )
+        st.dataframe(
+            structure_history_frame(result),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.subheader("BOS / CHoCH event ledger")
         event_frame = structure_events_frame(result)
         filter_columns = st.columns(3)
         scopes = filter_columns[0].multiselect(
@@ -355,6 +381,17 @@ def main() -> None:
         st.caption(
             "Replay girdisi yalnızca `is_closed=True` ve `is_complete=True` satırlardır. "
             "Cache dosyasındaki açık/eksik satırlar sayılır fakat motor durumunu ilerletmez."
+        )
+        st.subheader("Usable replay range & structural warm-up")
+        st.dataframe(
+            structure_history_frame(result),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(
+            "LEFT_BOUNDARY_ACTIVE, güncel yapının cache içindeki ilk yön kurulumuna "
+            "dayandığını söyler; daha fazla barın otomatik olarak yeterli olduğunu veya "
+            "cache öncesinde kesin bir CHoCH bulunduğunu söylemez."
         )
 
 

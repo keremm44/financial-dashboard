@@ -26,6 +26,7 @@ class CacheTimeframeStatus:
     confirmed_row_count: int
     open_row_count: int
     incomplete_row_count: int
+    earliest_timestamp: Any
     latest_timestamp: Any
     quality_status: DataQualityStatus | None
     warnings: tuple[str, ...] = ()
@@ -110,6 +111,7 @@ def inspect_symbol_cache(
                     confirmed_row_count=0,
                     open_row_count=0,
                     incomplete_row_count=0,
+                    earliest_timestamp=None,
                     latest_timestamp=None,
                     quality_status=None,
                     errors=("Cache file is missing",),
@@ -140,6 +142,9 @@ def inspect_symbol_cache(
                     confirmed_row_count=int((closed & complete).sum()),
                     open_row_count=int((~closed).sum()),
                     incomplete_row_count=int((~complete).sum()),
+                    earliest_timestamp=(
+                        None if frame.empty else frame.iloc[0]["timestamp"]
+                    ),
                     latest_timestamp=(
                         None if frame.empty else frame.iloc[-1]["timestamp"]
                     ),
@@ -159,6 +164,7 @@ def inspect_symbol_cache(
                     confirmed_row_count=0,
                     open_row_count=0,
                     incomplete_row_count=0,
+                    earliest_timestamp=None,
                     latest_timestamp=None,
                     quality_status=None,
                     errors=(f"{type(error).__name__}: {error}",),

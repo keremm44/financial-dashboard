@@ -57,6 +57,21 @@ Cache files use the store's `SYMBOL__timeframe.parquet` convention:
 
 Required market columns are `timestamp`, `open`, `high`, `low`, `close`, and `volume`. Canonical cache files also preserve `symbol`, `timeframe`, `source`, `is_closed`, and `is_complete`. Missing or invalid foundation timeframes remain visible in the UI as unavailable; they are not silently treated as neutral or switched off.
 
+### BIST cache backfill
+
+`scripts/live_smoke.py` remains right-edge incremental by default. Increasing `--days` alone on an existing cache does **not** extend its left edge. Use `--backfill` to request the complete available provider window and merge older rows into the existing cache without deleting it:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\live_smoke.py `
+  --symbol ASELS `
+  --days 90 `
+  --max-bars 5000 `
+  --cache-root .cache\live-smoke `
+  --backfill
+```
+
+The actual history can still be shorter than `--days`: tvDatafeed first returns at most the latest `--max-bars` bars and then the adapter applies the requested date window. The UI therefore reports observed usable first/last candles, closed+complete counts, first external structure event, typed BOS maturity, and left-boundary status. A requested bar count is never treated as proof that pre-cache structure was observed.
+
 ## Run Streamlit
 
 Use the installed launcher:
@@ -85,6 +100,6 @@ The interface provides:
 - candlesticks with event, zone, confluence, and conflict overlays
 - typed zone lifecycle and confluence/conflict tables
 - causal event-location outcomes and links
-- cache freshness, row filtering, and source-quality diagnostics
+- cache freshness, usable replay range, row filtering, source-quality, and structural left-boundary diagnostics
 
 It intentionally does **not** produce buy/sell actions, recommendations, predictions, stops, targets, provider-refresh automation, Groq narration, or a global Decision Engine.

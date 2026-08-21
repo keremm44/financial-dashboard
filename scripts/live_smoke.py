@@ -42,27 +42,76 @@ def main() -> int:
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--cache-root", default=".cache/live-smoke")
     parser.add_argument("--max-bars", type=int, default=5000)
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help=(
+            "request the complete provider window and merge it into the existing "
+            "cache; without this flag refresh remains right-edge incremental"
+        ),
+    )
     args = parser.parse_args()
+    if args.days <= 0:
+        parser.error("--days must be positive")
+    if args.max_bars <= 0:
+        parser.error("--max-bars must be positive")
 
     end = datetime.now(TZ)
     start = end - timedelta(days=args.days)
 
     print("=== ARGENT LIVE SMOKE ===")
-    print(f"symbol={args.symbol} exchange=BIST start={start.isoformat()} end={end.isoformat()}")
+    refresh_mode = "backfill-merge" if args.backfill else "incremental"
+    print(
+        f"symbol={args.symbol} exchange=BIST start={start.isoformat()} "
+        f"end={end.isoformat()} mode={refresh_mode}"
+    )
 
     provider = TvDatafeedProvider(exchange="BIST", max_bars=args.max_bars)
     store = ParquetOHLCVStore(Path(args.cache_root))
     pipeline = MarketDataPipeline(provider, store)
-
-    result = pipeline.refresh_bist_5m_incremental(
-        symbol=args.symbol,
-        requested_start=start,
-        end=end,
+    cached_before = store.load(args.symbol, "5m")
+    left_edge_before = (
+        None if cached_before.empty else cached_before.iloc[0]["timestamp"]
     )
+
+    if args.backfill:
+        # A full-window provider request can extend the cache's left edge.  The
+        # Parquet store merges by timestamp, so existing rows are preserved unless
+        # the provider returns a newer value for the same timestamp.
+        result = pipeline.refresh_bist_5m(
+            symbol=args.symbol,
+            start=start,
+            end=end,
+        )
+    else:
+        result = pipeline.refresh_bist_5m_incremental(
+            symbol=args.symbol,
+            requested_start=start,
+            end=end,
+        )
 
     print("\n[provider]")
     print(f"volume_status={provider.last_volume_status} volume_type={provider.volume_type}")
     print(f"5m={_summary(result.base)}")
+    if args.backfill:
+        left_edge_after = (
+            None if result.base.empty else result.base.iloc[0]["timestamp"]
+        )
+        if left_edge_before is None and left_edge_after is not None:
+            left_edge_status = "CACHE_POPULATED"
+        elif (
+            left_edge_before is not None
+            and left_edge_after is not None
+            and left_edge_after < left_edge_before
+        ):
+            left_edge_status = "LEFT_EDGE_EXTENDED"
+        else:
+            left_edge_status = "LEFT_EDGE_UNCHANGED"
+        print(
+            "backfill="
+            f"{left_edge_status} before={left_edge_before} after={left_edge_after} "
+            f"requested_days={args.days} provider_max_bars={args.max_bars}"
+        )
 
     print("\n[derived]")
     for timeframe, frame in result.derived.items():

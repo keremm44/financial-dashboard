@@ -5,6 +5,10 @@ from typing import Any
 
 from .data.parquet_store import ParquetOHLCVStore
 from .engines.market_structure import MarketStructureConfig
+from .engines.market_structure_history import (
+    StructureHistoryDiagnostic,
+    assess_structure_history,
+)
 from .engines.market_structure_state import BreakConfig
 from .engines.mtf_story_context import classify_context
 from .engines.mtf_story_engine import classify_story
@@ -56,6 +60,7 @@ class ThreeDomainReplayResult:
     structure: StructureProgressionSnapshot
     location: LocationContextSnapshot
     observation: ThreeDomainObservation
+    structure_history: tuple[StructureHistoryDiagnostic, ...] = ()
 
     def pattern_for(self, timeframe: str) -> PatternTimeframeSnapshot:
         normalized = timeframe.strip().lower()
@@ -187,6 +192,25 @@ class CachedThreeDomainObserverRunner:
             timeframes=normalized,
             symbol=symbol,
         )
+        current_progression_event_uids = tuple(
+            event.event_uid for event in structure.latest_external_events
+        )
+        structure_history_rows: list[StructureHistoryDiagnostic] = []
+        for timeframe in normalized:
+            replay = structure_location.replay_for(timeframe)
+            frame = replay.input_batch.frame
+            structure_history_rows.append(
+                assess_structure_history(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    input_bar_count=len(frame),
+                    input_start=frame.iloc[0]["timestamp"],
+                    input_end=frame.iloc[-1]["timestamp"],
+                    events=replay.market_structure.events,
+                    current_progression_event_uids=current_progression_event_uids,
+                )
+            )
+        structure_history = tuple(structure_history_rows)
         location = build_location_context(
             established_zones,
             structure_location.confluence,
@@ -210,6 +234,7 @@ class CachedThreeDomainObserverRunner:
             structure=structure,
             location=location,
             observation=observation,
+            structure_history=structure_history,
         )
 
     def run_foundation(self, *, symbol: str) -> ThreeDomainReplayResult:
