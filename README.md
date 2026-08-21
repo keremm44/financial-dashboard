@@ -36,6 +36,12 @@ python -m pip install -e ".[dev,ui]"
 python -m pytest
 ```
 
+For BIST/tvDatafeed refresh scripts, install the optional live-data dependencies in the same virtual environment used to run the script:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[live]"
+```
+
 ## Parquet cache
 
 The UI reads the existing local cache only; it does not call a market-data provider. By default it looks under `./data/cache`. A different directory can be selected in the sidebar or configured before launch:
