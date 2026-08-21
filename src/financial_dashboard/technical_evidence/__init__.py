@@ -1,13 +1,13 @@
 """Lossless Technical Evidence adapter layer between deterministic engines and decisions."""
 
 from .bundle_policy import build_technical_evidence_bundle
+from .market_structure_policy import adapt_market_structure
 from .pattern_policy import adapt_pattern
 from .policy import (
     adapt_auction,
     adapt_fvg_engulfing,
     adapt_ham,
     adapt_liquidity,
-    adapt_market_structure,
     adapt_mtf_story,
     adapt_order_block,
     adapt_stabil,
