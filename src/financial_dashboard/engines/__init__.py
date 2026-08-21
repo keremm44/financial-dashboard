@@ -18,7 +18,7 @@ from .market_structure_events import (
     StructureEventValidity,
 )
 from .market_structure_evidence import MarketStructureExport
-from .market_structure_state import BreakConfig
+from .market_structure_state import BosMaturity, BreakConfig
 from .mtf_story_context import MTFStoryContextError, classify_context
 from .mtf_story_engine import classify_story
 from .mtf_story_models import ConflictSeverity, ContextAssessment, ContextState, MTFStoryResult, MTFStoryState, RawTimeframeEvidence, StoryConflict, TimeframeRole, TimeframeStoryState, TriggerAssessment, TriggerState, role_for_timeframe
@@ -100,7 +100,7 @@ from .volatility_bands_fib_final import CoherenceState, DirectionBias, Fibonacci
 from .volatility_bands_fib import VolatilityBandsFibEngine
 
 __all__ = [
-    "MarketStructureEngine", "MarketStructureConfig", "BreakConfig", "MarketStructureExport", "MarketStructureEventRecord", "MarketStructureScopeSnapshot", "StructureEventConfirmation", "StructureEventValidity", "StructureEventRelevance", "StructureEventOutcome",
+    "MarketStructureEngine", "MarketStructureConfig", "BreakConfig", "BosMaturity", "MarketStructureExport", "MarketStructureEventRecord", "MarketStructureScopeSnapshot", "StructureEventConfirmation", "StructureEventValidity", "StructureEventRelevance", "StructureEventOutcome",
     "PatternCompressionEngine", "OrderBlockEngine", "OrderBlockConfig", "OrderBlockRecord", "OrderBlockExport", "OrderBlockSideExport", "OrderBlockDataQuality",
     "FvgEngulfingEngine", "FvgEngulfingConfig", "FvgEngulfingDataQuality", "FvgFormation", "EngulfingFormation", "FormationSnapshot", "FvgLifecycleRecord", "EngulfingLifecycleRecord", "FvgEngulfingExport", "FvgSideExport", "EngulfingSideExport", "FvgDirection", "FvgState", "EngulfingDirection", "EngulfingState", "SensitivityProfile",
     "RawIndicatorDashboardEngine", "RawIndicatorConfig", "RawIndicatorSnapshot", "IndicatorEvidence", "RawDataQuality", "VolumeQuality", "TrendProfile", "TrendReason", "EffectiveTrendSettings",

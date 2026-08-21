@@ -73,7 +73,15 @@ def test_view_models_and_plotly_chart_are_pure_contract_adapters(tmp_path) -> No
     assert overview_values(result)["Combined state"] == "DOMAINS_REPORTED"
     assert len(cache_status_frame(statuses)) == 5
     assert len(mtf_matrix_frame(result, statuses)) == 5
-    assert not structure_events_frame(result).empty
+    structure_events = structure_events_frame(result)
+    assert not structure_events.empty
+    assert "BOS maturity" in structure_events.columns
+    assert set(structure_events["BOS maturity"]) <= {
+        "NOT_APPLICABLE",
+        "INITIAL_STRUCTURE",
+        "TRANSITION_CONFIRMATION",
+        "CONTINUATION",
+    }
     assert tuple(zones_frame(result).columns)[0] == "Zone UID"
     assert tuple(confluence_frame(result).columns)[0] == "Cluster UID"
     assert tuple(opposing_conflicts_frame(result).columns)[0] == "Conflict UID"

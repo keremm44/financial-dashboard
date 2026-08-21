@@ -13,6 +13,8 @@ from financial_dashboard.engines.market_structure_events import (
     StructureEventValidity,
 )
 from financial_dashboard.engines.market_structure_state import (
+    BosMaturity,
+    EVIDENCE_INITIAL_STRUCTURE_BREAK_CONFIRMED,
     EVENT_BOS,
     EVENT_CHOCH,
     EVENT_TRANSITION_FAIL,
@@ -92,8 +94,15 @@ def _event(
     scope: str = "EXTERNAL",
     event_bar: int = 1,
     validity: StructureEventValidity = StructureEventValidity.VALID,
+    bos_maturity: BosMaturity | None = None,
+    evidence_text: str = "DIRECT_CONFIRMATION",
 ) -> MarketStructureEventRecord:
     confirmed_at = pd.Timestamp("2026-01-01T10:00:00Z") + pd.Timedelta(hours=event_bar)
+    resolved_bos_maturity = (
+        BosMaturity.CONTINUATION
+        if bos_maturity is None and event_type == EVENT_BOS
+        else bos_maturity or BosMaturity.NOT_APPLICABLE
+    )
     return MarketStructureEventRecord(
         event_uid=f"X:{timeframe}:{uid}",
         identity=event_bar,
@@ -113,7 +122,7 @@ def _event(
         origin_source_at=confirmed_at - pd.Timedelta(hours=2),
         origin_price=99.0,
         quality=75.0,
-        evidence_text="DIRECT_CONFIRMATION",
+        evidence_text=evidence_text,
         confirmation_status=StructureEventConfirmation.CONFIRMED,
         validity=validity,
         relevance=StructureEventRelevance.CURRENT,
@@ -123,6 +132,7 @@ def _event(
         confirmation_high=102.0,
         confirmation_low=99.5,
         confirmation_close=101.5,
+        bos_maturity=resolved_bos_maturity,
     )
 
 
@@ -253,6 +263,55 @@ def test_bos_choch_progression_and_opposing_directions_remain_independent() -> N
     assert snapshot.upward.directly_confirmed_timeframes == ("1h", "30m")
     assert snapshot.downward.stage is StructureProgressionStage.H2_BOS
     assert snapshot.downward.directly_confirmed_timeframes == ("2h",)
+
+
+def test_initial_h4_structure_is_not_promoted_to_mature_h4_bos() -> None:
+    initial_h4 = replace(
+        _event(
+            "ASELS_INITIAL_H4",
+            timeframe="4h",
+            event_type=EVENT_BOS,
+            direction=Direction.UP,
+            bos_maturity=BosMaturity.INITIAL_STRUCTURE,
+            evidence_text=EVIDENCE_INITIAL_STRUCTURE_BREAK_CONFIRMED,
+        ),
+        broken_level=368.50,
+        origin_price=346.75,
+        confirmation_close=394.25,
+        quality=90.0,
+    )
+
+    initial_snapshot = build_structure_progression(
+        (_observed(initial_h4, "2026-01-01T11:00:00Z"),),
+        as_of=pd.Timestamp("2026-01-01T11:00:00Z"),
+    )
+
+    assert initial_snapshot.upward.stage is StructureProgressionStage.H4_INITIAL_STRUCTURE
+    assert initial_snapshot.upward.stage is not StructureProgressionStage.H4_BOS
+    assert initial_snapshot.upward.rank == 7
+    assert initial_snapshot.upward.event_type == EVENT_BOS
+    assert initial_snapshot.upward.bos_maturity is BosMaturity.INITIAL_STRUCTURE
+    assert initial_snapshot.upward.directly_confirmed_timeframes == ("4h",)
+
+    continuation_h4 = _event(
+        "ASELS_CONTINUATION_H4",
+        timeframe="4h",
+        event_type=EVENT_BOS,
+        direction=Direction.UP,
+        event_bar=2,
+        bos_maturity=BosMaturity.CONTINUATION,
+    )
+    continuation_snapshot = build_structure_progression(
+        (
+            _observed(initial_h4, "2026-01-01T11:00:00Z"),
+            _observed(continuation_h4, "2026-01-01T12:00:00Z"),
+        ),
+        as_of=pd.Timestamp("2026-01-01T12:00:00Z"),
+    )
+
+    assert continuation_snapshot.upward.stage is StructureProgressionStage.H4_BOS
+    assert continuation_snapshot.upward.rank == 8
+    assert continuation_snapshot.upward.bos_maturity is BosMaturity.CONTINUATION
 
 
 def test_future_event_cannot_change_an_earlier_progression_prefix() -> None:
@@ -439,6 +498,7 @@ def test_combined_observer_reports_tension_without_cross_domain_gating() -> None
         location=location,
     )
 
+    assert observation.contract_version == 2
     assert observation.state is CombinedObservationState.CROSS_DOMAIN_TENSION
     assert ObserverTensionCode.LOWER_TF_OPPOSES_GENERAL_PRESSURE in observation.tensions
     assert observation.pressure is pressure

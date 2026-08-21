@@ -36,7 +36,7 @@ class MarketStructureExport:
     internal_weak_low: float | None
     internal_weak_high: float | None
     handshake: float = HANDSHAKE
-    contract_version: int = 2
+    contract_version: int = 3
     events: tuple[MarketStructureEventRecord, ...] = ()
     latest_external_event: MarketStructureEventRecord | None = None
     latest_internal_event: MarketStructureEventRecord | None = None

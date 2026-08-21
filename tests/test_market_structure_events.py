@@ -17,6 +17,7 @@ from financial_dashboard.engines.market_structure_events import (
     StructureEventValidity,
 )
 from financial_dashboard.engines.market_structure_state import (
+    BosMaturity,
     EVENT_BOS,
     EVENT_CHOCH,
     EVENT_TRANSITION_FAIL,
@@ -36,6 +37,7 @@ def _event(
     direction: int,
     event_bar: int,
     scope: str = "EXTERNAL",
+    bos_maturity: BosMaturity = BosMaturity.NOT_APPLICABLE,
 ) -> StructureEvent:
     return StructureEvent(
         valid=True,
@@ -53,6 +55,7 @@ def _event(
         origin_price=99.0 + identity,
         quality=70.0,
         evidence_text=event_type,
+        bos_maturity=bos_maturity,
     )
 
 
@@ -80,6 +83,26 @@ def test_choch_history_links_local_bos_follow_through_without_mutating_old_snaps
     assert current_snapshot[0].age_bars == 4
     with pytest.raises(FrozenInstanceError):
         current_snapshot[0].age_bars = 99  # type: ignore[misc]
+
+
+def test_ledger_preserves_typed_initial_structure_maturity() -> None:
+    rows = _rows()
+    ledger = MarketStructureEventLedger()
+
+    record = ledger.append(
+        _event(
+            identity=1,
+            event_type=EVENT_BOS,
+            direction=1,
+            event_bar=3,
+            bos_maturity=BosMaturity.INITIAL_STRUCTURE,
+        ),
+        rows,
+    )
+
+    assert record.bos_maturity is BosMaturity.INITIAL_STRUCTURE
+    assert record.is_initial_structure
+    assert ledger.snapshot(current_bar=3)[0].is_initial_structure
 
 
 def test_transition_failure_retains_and_marks_failed_choch_in_same_scope() -> None:
@@ -142,7 +165,7 @@ def test_integrated_export_retains_typed_history_and_immutable_scope_snapshots()
     export = engine.export_contract
 
     assert export is not None
-    assert export.contract_version == 2
+    assert export.contract_version == 3
     assert export.events == engine.event_history
     assert export.external_scope is not None
     assert export.internal_scope is not None

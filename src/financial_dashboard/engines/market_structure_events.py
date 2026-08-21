@@ -5,6 +5,7 @@ from enum import StrEnum
 from typing import Any, Iterable, Sequence
 
 from .market_structure_state import (
+    BosMaturity,
     EVENT_BOS,
     EVENT_CHOCH,
     EVENT_FALSE_BREAK,
@@ -86,6 +87,11 @@ class MarketStructureEventRecord:
     confirmation_high: float | None = None
     confirmation_low: float | None = None
     confirmation_close: float | None = None
+    bos_maturity: BosMaturity = BosMaturity.NOT_APPLICABLE
+
+    @property
+    def is_initial_structure(self) -> bool:
+        return self.bos_maturity is BosMaturity.INITIAL_STRUCTURE
 
     @property
     def is_active(self) -> bool:
@@ -252,6 +258,7 @@ class MarketStructureEventLedger:
             relevance=StructureEventRelevance.CURRENT,
             outcome=outcome,
             confirmation_high=self._price(rows, event.event_bar, "high"),
+            bos_maturity=event.bos_maturity,
             confirmation_low=self._price(rows, event.event_bar, "low"),
             confirmation_close=self._price(rows, event.event_bar, "close"),
         )

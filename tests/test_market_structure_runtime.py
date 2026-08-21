@@ -1,6 +1,8 @@
 from financial_dashboard.engines.market_structure import SCOPE_EXTERNAL, SIDE_HIGH, SIDE_LOW, SWING_CANDIDATE, SWING_CONFIRMED, SwingPoint
 from financial_dashboard.engines.market_structure_runtime import MarketStructureRuntime
 from financial_dashboard.engines.market_structure_state import (
+    BosMaturity,
+    EVIDENCE_INITIAL_STRUCTURE_BREAK_CONFIRMED,
     EVENT_BOS,
     EVENT_CHOCH,
     ROLE_PROTECTED_HIGH,
@@ -50,7 +52,9 @@ def test_neutral_bos_establishes_bullish_structure_same_bar() -> None:
         safe_atr=1.0,
     )
 
-    assert any(event.event_type == EVENT_BOS for event in events)
+    initial_bos = next(event for event in events if event.event_type == EVENT_BOS)
+    assert initial_bos.bos_maturity is BosMaturity.INITIAL_STRUCTURE
+    assert initial_bos.evidence_text == EVIDENCE_INITIAL_STRUCTURE_BREAK_CONFIRMED
     assert runtime.external.context.state == STATE_BULLISH
     assert runtime.external.context.direction == 1
     assert runtime.external.context.protected_low_identity == 2
@@ -112,7 +116,8 @@ def test_transition_bos_confirms_new_direction_and_exports_levels() -> None:
         safe_atr=1.0,
     )
 
-    assert any(event.event_type == EVENT_BOS for event in events)
+    transition_bos = next(event for event in events if event.event_type == EVENT_BOS)
+    assert transition_bos.bos_maturity is BosMaturity.TRANSITION_CONFIRMATION
     assert runtime.external.context.state == STATE_BULLISH
     assert runtime.external.context.protected_low_identity == 3
     exported = runtime.export(swings, [], bar_index=20)

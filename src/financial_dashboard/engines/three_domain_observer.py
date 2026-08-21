@@ -13,7 +13,7 @@ from .market_structure_events import (
     StructureEventRelevance,
     StructureEventValidity,
 )
-from .market_structure_state import EVENT_BOS, EVENT_CHOCH
+from .market_structure_state import BosMaturity, EVENT_BOS, EVENT_CHOCH
 from .models import Direction
 from .mtf_story_models import (
     ContextAssessment,
@@ -80,14 +80,19 @@ class MTFPressureSnapshot:
 
 class StructureProgressionStage(StrEnum):
     NONE = "NONE"
+    M30_INITIAL_STRUCTURE = "M30_INITIAL_STRUCTURE"
     M30_CHOCH = "M30_CHOCH"
     M30_BOS = "M30_BOS"
+    H1_INITIAL_STRUCTURE = "H1_INITIAL_STRUCTURE"
     H1_CHOCH = "H1_CHOCH"
     H1_BOS = "H1_BOS"
+    H2_INITIAL_STRUCTURE = "H2_INITIAL_STRUCTURE"
     H2_CHOCH = "H2_CHOCH"
     H2_BOS = "H2_BOS"
+    H4_INITIAL_STRUCTURE = "H4_INITIAL_STRUCTURE"
     H4_CHOCH = "H4_CHOCH"
     H4_BOS = "H4_BOS"
+    D1_INITIAL_STRUCTURE = "D1_INITIAL_STRUCTURE"
     D1_CHOCH = "D1_CHOCH"
     D1_BOS = "D1_BOS"
 
@@ -103,6 +108,17 @@ _STAGE_BY_EVENT: dict[tuple[str, str], tuple[StructureProgressionStage, int]] = 
     ("4h", EVENT_BOS): (StructureProgressionStage.H4_BOS, 8),
     ("1d", EVENT_CHOCH): (StructureProgressionStage.D1_CHOCH, 9),
     ("1d", EVENT_BOS): (StructureProgressionStage.D1_BOS, 10),
+}
+
+# Initial structure has the same timeframe significance as a CHoCH, but not the
+# maturity of a continuation/transition-confirming BOS.  The distinct stage keeps
+# the semantic label honest while preserving the existing lower/higher-TF ranks.
+_INITIAL_STAGE_BY_TIMEFRAME: dict[str, tuple[StructureProgressionStage, int]] = {
+    "30m": (StructureProgressionStage.M30_INITIAL_STRUCTURE, 1),
+    "1h": (StructureProgressionStage.H1_INITIAL_STRUCTURE, 3),
+    "2h": (StructureProgressionStage.H2_INITIAL_STRUCTURE, 5),
+    "4h": (StructureProgressionStage.H4_INITIAL_STRUCTURE, 7),
+    "1d": (StructureProgressionStage.D1_INITIAL_STRUCTURE, 9),
 }
 
 
@@ -127,6 +143,7 @@ class DirectionalStructureProgression:
     event_uid: str | None
     event_type: str | None
     directly_confirmed_timeframes: tuple[str, ...] = ()
+    bos_maturity: BosMaturity = BosMaturity.NOT_APPLICABLE
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,7 +248,7 @@ class ThreeDomainObservation:
     location: LocationContextSnapshot
     tensions: tuple[ObserverTensionCode, ...] = ()
     facts: tuple[str, ...] = ()
-    contract_version: int = 1
+    contract_version: int = 2
 
 
 def build_mtf_pressure(
@@ -389,6 +406,15 @@ def _latest_scope_events(
     )
 
 
+def _progression_stage(
+    event: MarketStructureEventRecord,
+) -> tuple[StructureProgressionStage, int] | None:
+    timeframe = (event.timeframe or "").strip().lower()
+    if event.event_type == EVENT_BOS and event.is_initial_structure:
+        return _INITIAL_STAGE_BY_TIMEFRAME.get(timeframe)
+    return _STAGE_BY_EVENT.get((timeframe, event.event_type))
+
+
 def _directional_progression(
     direction: Direction,
     latest_external: tuple[MarketStructureEventRecord, ...],
@@ -404,7 +430,7 @@ def _directional_progression(
             or event.validity is not StructureEventValidity.VALID
         ):
             continue
-        stage_record = _STAGE_BY_EVENT.get((timeframe, event.event_type))
+        stage_record = _progression_stage(event)
         if stage_record is None:
             continue
         stage, rank = stage_record
@@ -419,6 +445,7 @@ def _directional_progression(
             timeframe=None,
             event_uid=None,
             event_type=None,
+            bos_maturity=BosMaturity.NOT_APPLICABLE,
         )
 
     rank, event, stage = max(candidates, key=lambda item: (item[0], item[1].event_bar))
@@ -432,6 +459,7 @@ def _directional_progression(
         timeframe=event.timeframe,
         event_uid=event.event_uid,
         event_type=event.event_type,
+        bos_maturity=event.bos_maturity,
         directly_confirmed_timeframes=ordered_confirmed,
     )
 
