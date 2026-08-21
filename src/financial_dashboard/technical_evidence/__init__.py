@@ -3,6 +3,7 @@
 from .bundle_policy import build_technical_evidence_bundle
 from .market_structure_policy import adapt_market_structure
 from .pattern_policy import adapt_pattern
+from .support_resistance_policy import adapt_support_resistance
 from .policy import (
     adapt_auction,
     adapt_fvg_engulfing,
@@ -11,7 +12,6 @@ from .policy import (
     adapt_mtf_story,
     adapt_order_block,
     adapt_stabil,
-    adapt_support_resistance,
     adapt_volatility,
     adapt_volume_participation,
     merge_packets,
