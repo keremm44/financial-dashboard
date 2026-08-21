@@ -100,6 +100,20 @@ from .three_domain_observer import (
 from .volume_participation_engine import EffortResultClass, ParticipationExport, ParticipationState, VolumeLevel, VolumeParticipationConfig, VolumeParticipationMetrics
 from .volume_participation_lifecycle import AbsorptionEvent, AbsorptionSide, AbsorptionStage, BreakParticipationEvent, BreakStage, ConfirmedParticipationPivot, LifecycleStage, ParticipationLifecycleConfig, ParticipationLifecycleExport
 from .volume_participation_final import FinalParticipationState, UnifiedParticipationExport, VolumeParticipationEngine
+from .volume_evidence import (
+    ParticipationWithoutStructure,
+    StructureVolumeLink,
+    StructureVolumeRelation,
+    StructureVolumeTiming,
+    VolumeEvidenceDataQuality,
+    VolumeEvidenceEngine,
+    VolumeEvidenceSnapshot,
+    VolumeEvidenceStatus,
+    VolumeWindowEvidence,
+    find_participation_without_structure,
+    link_structure_event_to_volume,
+    link_structure_events_to_volume,
+)
 from .volatility_bands_fib_engine import BandAgreement, BandState, DataQualityStatus, VolatilityBandsConfig, VolatilityBandsExport, VolatilityState
 from .volatility_bands_fib_final import CoherenceState, DirectionBias, FibonacciState, StructureFibAlignment, StructureState, VolatilityBandsFibFinalExport
 from .volatility_bands_fib import VolatilityBandsFibEngine
@@ -116,7 +130,7 @@ __all__ = [
     "SupportResistanceRangeEngine", "SupportResistanceConfig", "SupportResistanceExport", "RangeState", "RangeSnapshot", "ConfirmedPivot", "SupportResistanceZone", "ZoneKind", "ZoneSide", "ZoneLifecycle", "ZoneLifecycleEvent",
     "CausalZoneObservation", "ZoneConfluenceConfig", "ZoneConfluenceCluster", "StructureZoneLinkConfig", "StructureZoneLink", "StructureLocationAnchor", "StructureZoneRelation", "StructureLocationMeaning", "StructureLocationOutcomeStatus", "StructureLocationOutcome", "build_zone_confluence", "link_structure_event_to_zones", "evaluate_structure_event_location",
     "FOUNDATION_OBSERVER_TIMEFRAMES", "MTFPressureState", "PressureChange", "RecoveryStatus", "MTFPressureSnapshot", "CausalStructureEventObservation", "StructureProgressionStage", "DirectionalStructureProgression", "StructureProgressionSnapshot", "OpposingZoneConflictConfig", "ZoneRoleConflictKind", "OpposingZoneConflict", "LocationContextState", "LocationContextSnapshot", "ObserverTensionCode", "CombinedObservationState", "ThreeDomainObservation", "build_mtf_pressure", "build_structure_progression", "find_opposing_zone_conflicts", "build_location_context", "combine_three_domains",
-    "VolumeParticipationEngine", "VolumeParticipationConfig", "VolumeParticipationMetrics", "ParticipationExport", "ParticipationState", "VolumeLevel", "EffortResultClass", "ParticipationLifecycleConfig", "ParticipationLifecycleExport", "LifecycleStage", "AbsorptionSide", "AbsorptionStage", "AbsorptionEvent", "BreakStage", "BreakParticipationEvent", "ConfirmedParticipationPivot", "FinalParticipationState", "UnifiedParticipationExport",
+    "VolumeParticipationEngine", "VolumeParticipationConfig", "VolumeParticipationMetrics", "ParticipationExport", "ParticipationState", "VolumeLevel", "EffortResultClass", "ParticipationLifecycleConfig", "ParticipationLifecycleExport", "LifecycleStage", "AbsorptionSide", "AbsorptionStage", "AbsorptionEvent", "BreakStage", "BreakParticipationEvent", "ConfirmedParticipationPivot", "FinalParticipationState", "UnifiedParticipationExport", "VolumeEvidenceEngine", "VolumeEvidenceSnapshot", "VolumeEvidenceStatus", "VolumeEvidenceDataQuality", "VolumeWindowEvidence", "StructureVolumeTiming", "StructureVolumeRelation", "StructureVolumeLink", "ParticipationWithoutStructure", "link_structure_event_to_volume", "link_structure_events_to_volume", "find_participation_without_structure",
     "StabilTrendEngine", "StabilTrendConfig", "StabilTrendContext", "StabilTrendExport", "StabilMainState", "StabilReason", "WeeklyTrendState", "WeeklyTrendSnapshot", "DailyRawState", "DailyTrendState", "DailyTrendSnapshot", "GapState", "H4TrendState", "H4Lifecycle", "H4EvidenceStatus", "H4TrendSnapshot", "ConfirmedStabilPivot",
     "VolatilityBandsFibEngine", "VolatilityBandsConfig", "VolatilityBandsExport", "VolatilityBandsFibFinalExport", "VolatilityState", "BandState", "BandAgreement", "DataQualityStatus", "StructureState", "FibonacciState", "StructureFibAlignment", "DirectionBias", "CoherenceState",
     "TimeframeRole", "RawTimeframeEvidence", "TimeframeStoryState", "ContextAssessment", "TriggerAssessment", "ContextState", "TriggerState", "MTFStoryState", "ConflictSeverity", "StoryConflict", "MTFStoryResult", "role_for_timeframe", "MTFStoryNormalizationError", "normalize_timeframe_evidence", "MTFStoryContextError", "classify_context", "MTFStoryTriggerError", "classify_trigger", "classify_story", "MTFStoryStateMachine", "replay_story_results",

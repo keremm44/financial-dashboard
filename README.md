@@ -12,6 +12,10 @@ Local-first, deterministic OHLCV analysis foundation with independent multi-time
   - pure post-core, symmetric confidence support bounded to `ham_delta ∈ [-5, +5]`
   - deterministic fixed-facts narration payload (no provider/Groq integration)
   - Streamlit MTF/detail/history inspection with recent 100 rows by default and explicit all-history mode
+- Volume Participation Round 1 evidence foundation:
+  - independent `1d/4h/2h/1h/30m` replay with full immutable confirmed-bar history
+  - explicit warmup, low-participation, unavailable-volume, limited-data, and incomplete-tail boundaries
+  - causal same-timeframe BOS/CHoCH links across `PRE_EVENT → AT_EVENT → FOLLOW_THROUGH`
 - Persistent internal/external BOS and CHoCH history, with typed BOS maturity (`INITIAL_STRUCTURE`, `TRANSITION_CONFIRMATION`, `CONTINUATION`)
 - Typed Support/Resistance zones, lifecycle, MTF confluence, and opposing-zone conflicts
 - Causal event-location links with explicit no-match outcomes
@@ -21,7 +25,7 @@ Local-first, deterministic OHLCV analysis foundation with independent multi-time
   - Support/Resistance location context
 - Streamlit v0.1 local inspection/debug interface with Plotly charts
 
-The three analytical domains run continuously and in parallel. Higher-timeframe context does not disable lower-timeframe calculation or evidence retention. Weakening and recovery remain distinct states. Ham follows the same isolation rule and remains supporting evidence: it can adjust only an already-authoritative core confidence, never direction/action/status, blockers, Market Structure, or S/R. See the [Round 1 evidence contract](docs/ham_evidence_round1_contract.md) and [Round 2 support contract](docs/ham_evidence_round2_contract.md).
+The three analytical domains run continuously and in parallel. Higher-timeframe context does not disable lower-timeframe calculation or evidence retention. Weakening and recovery remain distinct states. Ham follows the same isolation rule and remains supporting evidence: it can adjust only an already-authoritative core confidence, never direction/action/status, blockers, Market Structure, or S/R. See the Ham [Round 1 evidence contract](docs/ham_evidence_round1_contract.md) and [Round 2 support contract](docs/ham_evidence_round2_contract.md). Volume remains neutral participation evidence and cannot create or replace BOS/CHoCH; see the [Volume Round 1 evidence contract](docs/volume_evidence_round1_contract.md).
 
 ## Local installation
 
