@@ -47,6 +47,7 @@ def _coalesce_same_snapshot_packets(
 ) -> tuple[TechnicalEvidencePacket, ...]:
     groups: dict[str, list[TechnicalEvidencePacket]] = {}
     for packet in packets:
+        _validate_packet_members_snapshot(packet)
         key = packet.timeframe.strip().lower()
         groups.setdefault(key, []).append(packet)
 
@@ -77,6 +78,39 @@ def _coalesce_same_snapshot_packets(
     return tuple(out)
 
 
+def _validate_packet_members_snapshot(packet: TechnicalEvidencePacket) -> None:
+    """Reject historical/current mixing inside one packet.
+
+    `source_bar` carries causal origin and may be older.  `known_bar` and
+    `timestamp`, when supplied on a normalized item/level, describe the snapshot
+    at which that fact is being handed downstream and therefore must agree with
+    the containing packet.
+
+    Missing member metadata remains allowed and is treated as unknown; TEL does
+    not invent it from the packet merely to satisfy the check.
+    """
+
+    for item in packet.evidence:
+        if packet.known_bar is not None and item.known_bar is not None and item.known_bar != packet.known_bar:
+            raise EvidenceGraphError(
+                f"evidence snapshot bar mismatch in timeframe {packet.timeframe}: {item.id}"
+            )
+        if item.timestamp is not None and not _timestamps_equal(item.timestamp, packet.timestamp):
+            raise EvidenceGraphError(
+                f"evidence snapshot timestamp mismatch in timeframe {packet.timeframe}: {item.id}"
+            )
+
+    for level in packet.levels:
+        if packet.known_bar is not None and level.known_bar is not None and level.known_bar != packet.known_bar:
+            raise EvidenceGraphError(
+                f"level snapshot bar mismatch in timeframe {packet.timeframe}: {level.id}"
+            )
+        if level.timestamp is not None and not _timestamps_equal(level.timestamp, packet.timestamp):
+            raise EvidenceGraphError(
+                f"level snapshot timestamp mismatch in timeframe {packet.timeframe}: {level.id}"
+            )
+
+
 def _normalize_as_of_bars(values: Mapping[str, int] | None) -> dict[str, int] | None:
     if values is None:
         return None
@@ -105,7 +139,11 @@ def _validate_packet_as_of(
                 )
         if as_of_timestamp is not None:
             relation = _timestamp_relation(packet.timestamp, as_of_timestamp)
-            if relation is not None and relation > 0:
+            if relation is None:
+                raise EvidenceGraphError(
+                    f"packet timestamp is not comparable to explicit as-of timestamp for timeframe {key}"
+                )
+            if relation > 0:
                 raise EvidenceGraphError(
                     f"packet beyond as-of timestamp for timeframe {key}: {packet.timestamp}"
                 )
