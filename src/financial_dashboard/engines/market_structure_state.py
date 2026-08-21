@@ -76,6 +76,7 @@ class StructureEvent:
     origin_price: float | None = None
     quality: float = 0.0
     evidence_text: str = ""
+    candidate_bar: int | None = None
 
 
 @dataclass(slots=True)
@@ -379,7 +380,8 @@ def finalize_confirmed_break(
     event = StructureEvent(
         valid=True, identity=event_identity, scope=candidate.scope,
         event_type=candidate.intended_event_type, direction=candidate.direction,
-        event_bar=event_bar, broken_swing_identity=broken.identity, broken_source_bar=broken.source_bar,
+        candidate_bar=candidate.candidate_bar, event_bar=event_bar,
+        broken_swing_identity=broken.identity, broken_source_bar=broken.source_bar,
         origin_swing_identity=origin.identity, origin_source_bar=origin.source_bar,
         level=broken.price, origin_price=origin.price, quality=q, evidence_text=evidence,
     )

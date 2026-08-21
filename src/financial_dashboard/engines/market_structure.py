@@ -150,7 +150,7 @@ class MarketStructureEngine(BaseEngine):
 
     def update(self, bar: pd.Series | dict[str, Any]) -> EngineResult | None:
         row = dict(bar) if isinstance(bar, dict) else bar.to_dict()
-        if not bool(row.get("is_closed", True)):
+        if not bool(row.get("is_closed", True)) or not bool(row.get("is_complete", True)):
             return self._snapshot
 
         required = ("timestamp", "open", "high", "low", "close")

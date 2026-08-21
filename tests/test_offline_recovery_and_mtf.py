@@ -8,7 +8,11 @@ from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.data.pipeline import MarketDataPipeline
 from financial_dashboard.data.provider import MarketDataProvider
 from financial_dashboard.data.schema import canonicalize_ohlcv
-from financial_dashboard.mtf_replay import CachedMarketStructureMTFRunner
+from financial_dashboard.mtf_replay import (
+    FOUNDATION_MARKET_STRUCTURE_TIMEFRAMES,
+    CachedMarketStructureMTFRunner,
+    replay_foundation_market_structure,
+)
 
 
 class _MutableProvider(MarketDataProvider):
@@ -141,3 +145,31 @@ def test_cached_mtf_runner_replays_all_timeframes_independently(tmp_path) -> Non
         assert replay.input_batch.frame["timeframe"].eq(timeframe).all()
         assert len(replay.results) == len(replay.input_batch.frame)
         assert replay.snapshot is not None
+        assert replay.structure is first.structure_for(timeframe)
+
+
+def test_foundation_entry_point_exposes_namespaced_independent_structure_snapshots(tmp_path) -> None:
+    provider = _MutableProvider(_bist_5m())
+    store = ParquetOHLCVStore(tmp_path)
+    MarketDataPipeline(provider, store).refresh_bist_5m(
+        symbol="THYAO",
+        start=datetime.fromisoformat("2026-07-20T10:00:00+03:00"),
+        end=datetime.fromisoformat("2026-08-04T18:00:00+03:00"),
+    )
+
+    run = replay_foundation_market_structure(store, symbol="THYAO")
+
+    assert run.timeframes == FOUNDATION_MARKET_STRUCTURE_TIMEFRAMES
+    assert tuple(snapshot.timeframe for snapshot in run.structure_snapshots) == run.timeframes
+    assert len({id(snapshot) for snapshot in run.structure_snapshots}) == len(run.timeframes)
+    for snapshot in run.structure_snapshots:
+        assert snapshot.symbol == "THYAO"
+        assert snapshot.bar_count == len(run.replays[snapshot.timeframe].input_batch.frame)
+        assert snapshot.external_scope is not None
+        assert snapshot.internal_scope is not None
+        assert all(event.symbol == "THYAO" for event in snapshot.events)
+        assert all(event.timeframe == snapshot.timeframe for event in snapshot.events)
+        assert all(
+            event.event_uid.startswith(f"THYAO:{snapshot.timeframe}:")
+            for event in snapshot.events
+        )
