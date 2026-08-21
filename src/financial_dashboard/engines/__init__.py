@@ -68,6 +68,30 @@ from .structure_location import (
 )
 from .support_resistance_engine import ConfirmedPivot, RangeSnapshot, RangeState, SupportResistanceConfig, SupportResistanceExport, SupportResistanceRangeEngine
 from .support_resistance_zones import SupportResistanceZone, ZoneKind, ZoneLifecycle, ZoneLifecycleEvent, ZoneSide
+from .three_domain_observer import (
+    CausalStructureEventObservation,
+    CombinedObservationState,
+    DirectionalStructureProgression,
+    FOUNDATION_OBSERVER_TIMEFRAMES,
+    LocationContextSnapshot,
+    LocationContextState,
+    MTFPressureSnapshot,
+    MTFPressureState,
+    ObserverTensionCode,
+    OpposingZoneConflict,
+    OpposingZoneConflictConfig,
+    PressureChange,
+    RecoveryStatus,
+    StructureProgressionSnapshot,
+    StructureProgressionStage,
+    ThreeDomainObservation,
+    ZoneRoleConflictKind,
+    build_location_context,
+    build_mtf_pressure,
+    build_structure_progression,
+    combine_three_domains,
+    find_opposing_zone_conflicts,
+)
 from .volume_participation_engine import EffortResultClass, ParticipationExport, ParticipationState, VolumeLevel, VolumeParticipationConfig, VolumeParticipationMetrics
 from .volume_participation_lifecycle import AbsorptionEvent, AbsorptionSide, AbsorptionStage, BreakParticipationEvent, BreakStage, ConfirmedParticipationPivot, LifecycleStage, ParticipationLifecycleConfig, ParticipationLifecycleExport
 from .volume_participation_final import FinalParticipationState, UnifiedParticipationExport, VolumeParticipationEngine
@@ -85,6 +109,7 @@ __all__ = [
     "AuctionVolumeProfileEngine", "AuctionConfig", "AuctionExport",
     "SupportResistanceRangeEngine", "SupportResistanceConfig", "SupportResistanceExport", "RangeState", "RangeSnapshot", "ConfirmedPivot", "SupportResistanceZone", "ZoneKind", "ZoneSide", "ZoneLifecycle", "ZoneLifecycleEvent",
     "CausalZoneObservation", "ZoneConfluenceConfig", "ZoneConfluenceCluster", "StructureZoneLinkConfig", "StructureZoneLink", "StructureLocationAnchor", "StructureZoneRelation", "StructureLocationMeaning", "StructureLocationOutcomeStatus", "StructureLocationOutcome", "build_zone_confluence", "link_structure_event_to_zones", "evaluate_structure_event_location",
+    "FOUNDATION_OBSERVER_TIMEFRAMES", "MTFPressureState", "PressureChange", "RecoveryStatus", "MTFPressureSnapshot", "CausalStructureEventObservation", "StructureProgressionStage", "DirectionalStructureProgression", "StructureProgressionSnapshot", "OpposingZoneConflictConfig", "ZoneRoleConflictKind", "OpposingZoneConflict", "LocationContextState", "LocationContextSnapshot", "ObserverTensionCode", "CombinedObservationState", "ThreeDomainObservation", "build_mtf_pressure", "build_structure_progression", "find_opposing_zone_conflicts", "build_location_context", "combine_three_domains",
     "VolumeParticipationEngine", "VolumeParticipationConfig", "VolumeParticipationMetrics", "ParticipationExport", "ParticipationState", "VolumeLevel", "EffortResultClass", "ParticipationLifecycleConfig", "ParticipationLifecycleExport", "LifecycleStage", "AbsorptionSide", "AbsorptionStage", "AbsorptionEvent", "BreakStage", "BreakParticipationEvent", "ConfirmedParticipationPivot", "FinalParticipationState", "UnifiedParticipationExport",
     "StabilTrendEngine", "StabilTrendConfig", "StabilTrendContext", "StabilTrendExport", "StabilMainState", "StabilReason", "WeeklyTrendState", "WeeklyTrendSnapshot", "DailyRawState", "DailyTrendState", "DailyTrendSnapshot", "GapState", "H4TrendState", "H4Lifecycle", "H4EvidenceStatus", "H4TrendSnapshot", "ConfirmedStabilPivot",
     "VolatilityBandsFibEngine", "VolatilityBandsConfig", "VolatilityBandsExport", "VolatilityBandsFibFinalExport", "VolatilityState", "BandState", "BandAgreement", "DataQualityStatus", "StructureState", "FibonacciState", "StructureFibAlignment", "DirectionBias", "CoherenceState",
