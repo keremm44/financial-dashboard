@@ -6,6 +6,7 @@ from types import MappingProxyType
 from typing import Iterable, Mapping
 
 from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES, normalize_timeframes
+from financial_dashboard.data.analysis_inputs import AnalysisInputSnapshot
 from financial_dashboard.data.engine_input import EngineInputBatch, prepare_engine_input
 from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
@@ -151,14 +152,23 @@ class HamMTFEvidenceReplayRunner:
         symbol: str,
         *,
         timeframes: Iterable[str] = HAM_EVIDENCE_TIMEFRAMES,
+        input_snapshot: AnalysisInputSnapshot | None = None,
     ) -> HamMTFEvidenceReplay:
         normalized_symbol = normalize_symbol(symbol)
         normalized_timeframes = _normalize_timeframes(timeframes)
+        if input_snapshot is not None:
+            input_snapshot.validate_request(
+                symbol=normalized_symbol,
+                timeframes=normalized_timeframes,
+            )
 
         timeframe_replays: list[HamTimeframeEvidenceReplay] = []
         for timeframe in normalized_timeframes:
-            cached = self.store.load(normalized_symbol, timeframe)
-            batch = prepare_engine_input(cached)
+            if input_snapshot is None:
+                cached = self.store.load(normalized_symbol, timeframe)
+                batch = prepare_engine_input(cached)
+            else:
+                batch = input_snapshot.for_timeframe(timeframe).input_batch
             raw_config = self._raw_config_for(timeframe)
             engine = HamEvidenceEngine(
                 raw_config=raw_config,
