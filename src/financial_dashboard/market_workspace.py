@@ -11,6 +11,10 @@ from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.engines.pattern_compression_core import PatternCompressionConfig
 from financial_dashboard.ham_mtf_replay import HamMTFEvidenceReplay, HamMTFEvidenceReplayRunner
+from financial_dashboard.stabil_support_replay import (
+    StabilSupportReplayResult,
+    StabilSupportReplayRunner,
+)
 from financial_dashboard.structure_location_replay import (
     CachedStructureLocationMTFRunner,
     CausalBarClock,
@@ -73,6 +77,7 @@ class MarketAnalysisWorkspace:
     observer: ThreeDomainReplayResult
     ham: WorkspaceDomainResult
     volume: WorkspaceDomainResult
+    stabil_support: WorkspaceDomainResult
     liquidity: WorkspaceDomainResult
     order_block: WorkspaceDomainResult
     fvg_engulfing: WorkspaceDomainResult
@@ -88,6 +93,11 @@ class MarketAnalysisWorkspace:
     def volume_result(self) -> VolumeMTFEvidenceReplay | None:
         result = self.volume.result
         return result if isinstance(result, VolumeMTFEvidenceReplay) else None
+
+    @property
+    def stabil_support_result(self) -> StabilSupportReplayResult | None:
+        result = self.stabil_support.result
+        return result if isinstance(result, StabilSupportReplayResult) else None
 
     @property
     def liquidity_result(self) -> TargetEvidenceMTFReplay | None:
@@ -124,8 +134,10 @@ class MarketAnalysisWorkspaceRunner:
 
     The coordinator has no trading authority. It shares one immutable prepared input
     snapshot, isolates optional-domain failures, and combines only causal evidence.
-    Legacy TargetCluster and the semantic Objective/Reaction/Confirmation model are
-    emitted in parallel during migration; neither creates BUY/SELL authority.
+    Stabil Support is an independent daily support-lifecycle domain and cannot create
+    Market Structure, Volume or trading authority. Legacy TargetCluster and the
+    semantic Objective/Reaction/Confirmation model are emitted in parallel during
+    migration; neither creates BUY/SELL authority.
     """
 
     def __init__(self, store: ParquetOHLCVStore) -> None:
@@ -184,6 +196,16 @@ class MarketAnalysisWorkspaceRunner:
             )
         except Exception as error:
             volume = WorkspaceDomainResult.failed(error)
+
+        try:
+            stabil_support = WorkspaceDomainResult.ready(
+                StabilSupportReplayRunner(self.store).replay(
+                    normalized_symbol,
+                    input_snapshot=inputs,
+                )
+            )
+        except Exception as error:
+            stabil_support = WorkspaceDomainResult.failed(error)
 
         target_clock = CausalBarClock()
         reference_timeframe = "1h" if "1h" in normalized_timeframes else normalized_timeframes[0]
@@ -326,6 +348,7 @@ class MarketAnalysisWorkspaceRunner:
             observer=observer,
             ham=ham,
             volume=volume,
+            stabil_support=stabil_support,
             liquidity=liquidity,
             order_block=order_block,
             fvg_engulfing=fvg_engulfing,
