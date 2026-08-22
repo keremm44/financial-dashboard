@@ -74,13 +74,22 @@ The early track cannot create or rewrite:
 
 ## Supported timeframes
 
-Round 1 preserves the existing Volatility/Bands/Fib contract:
+This closure preserves the existing Volatility/Bands/Fib contract:
 
 - `2h`
 - `4h`
 - `1d`
 
 No new 1h/30m presets are introduced without separate replay calibration.
+
+## Direction-lag diagnostics
+
+Lag diagnostics compare an early event against the canonical **volatility regime clock** in `confirmed_export.regime`:
+
+- `EARLY_UP` → `UP_CANDIDATE` → `UP_CONFIRMED`
+- `EARLY_DOWN` → `DOWN_CANDIDATE` → `DOWN_CONFIRMED`
+
+The final engine's public `EngineResult.state` is a coherence state, so it must not be used as the volatility candidate/confirmed clock. Structure and Fibonacci confirmation clocks remain independent and are never accelerated by this diagnostic.
 
 ## Round split
 
@@ -98,5 +107,5 @@ No new 1h/30m presets are introduced without separate replay calibration.
 - shared-input MTF replay (`2h`, `4h`, `1d`);
 - independent workspace domain;
 - typed view models / inspection surface;
-- lag diagnostics: early → candidate → confirmed → structural break → Fib;
-- real BIST replay validation.
+- lag diagnostics: early → volatility candidate → volatility confirmed;
+- real BIST replay validation as the final calibration gate before merge.
