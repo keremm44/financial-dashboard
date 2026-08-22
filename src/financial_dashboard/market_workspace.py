@@ -18,6 +18,7 @@ from financial_dashboard.target_evidence_replay import (
     OrderBlockMTFReplayRunner,
     TargetEvidenceMTFReplay,
 )
+from financial_dashboard.targeting.adapters import support_resistance_evidence
 from financial_dashboard.targeting.clustering import build_targeting_snapshot
 from financial_dashboard.targeting.enrichment import enrich_liquidity_scope
 from financial_dashboard.targeting.models import TargetingSnapshot
@@ -208,14 +209,15 @@ class MarketAnalysisWorkspaceRunner:
             reference_price = float(reference_frame.iloc[-1]["close"])
             reference_atr = wilder_atr(reference_frame)
             reference_bar_time = reference_frame.iloc[-1]["timestamp"]
-            as_of = CausalBarClock().available_at(reference_bar_time, reference_timeframe)
+            target_clock = CausalBarClock()
+            as_of = target_clock.available_at(reference_bar_time, reference_timeframe)
 
             evidence = []
+            structure_by_timeframe = {
+                timeframe: observer.structure_location.replay_for(timeframe).market_structure
+                for timeframe in normalized_timeframes
+            }
             if liquidity.is_ready and isinstance(liquidity.result, TargetEvidenceMTFReplay):
-                structure_by_timeframe = {
-                    timeframe: observer.structure_location.replay_for(timeframe).market_structure
-                    for timeframe in normalized_timeframes
-                }
                 atr_by_timeframe = {
                     timeframe: liquidity.result.for_timeframe(timeframe).atr
                     for timeframe in liquidity.result.timeframes
@@ -227,6 +229,20 @@ class MarketAnalysisWorkspaceRunner:
                         atr_by_timeframe=atr_by_timeframe,
                     )
                 )
+
+            # S/R is already part of the required observer foundation. It joins the
+            # target layer through an adapter rather than becoming a new authority.
+            for timeframe in normalized_timeframes:
+                replay = observer.structure_location.replay_for(timeframe)
+                evidence.extend(
+                    support_resistance_evidence(
+                        symbol=normalized_symbol,
+                        timeframe=timeframe,
+                        snapshot=replay.support_resistance,
+                        clock=target_clock,
+                    )
+                )
+
             if order_block.is_ready and isinstance(order_block.result, TargetEvidenceMTFReplay):
                 evidence.extend(order_block.result.evidence)
             if fvg_engulfing.is_ready and isinstance(fvg_engulfing.result, TargetEvidenceMTFReplay):
