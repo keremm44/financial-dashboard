@@ -121,8 +121,10 @@ def test_early_down_can_appear_without_rewriting_confirmed_export() -> None:
 def test_same_direction_raw_evidence_is_not_reemitted_as_new_episode() -> None:
     engine = VolatilityDirectionTransitionEngine()
     neutral = VolatilityBandsFibFinalExport(regime=int(VolatilityState.BALANCED))
+    engine._rows = [{}]
 
     first = engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_UP), neutral)
+    engine._rows.append({})
     duplicate = engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_UP), neutral)
 
     assert first.state is EarlyDirectionTransition.EARLY_UP
@@ -137,9 +139,12 @@ def test_same_direction_raw_evidence_is_not_reemitted_as_new_episode() -> None:
 def test_neutral_opposite_flip_requires_two_consecutive_raw_observations() -> None:
     engine = VolatilityDirectionTransitionEngine()
     neutral = VolatilityBandsFibFinalExport(regime=int(VolatilityState.BALANCED))
+    engine._rows = [{}]
     engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_UP), neutral)
 
+    engine._rows.append({})
     first_down = engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_DOWN), neutral)
+    engine._rows.append({})
     second_down = engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_DOWN), neutral)
 
     assert first_down.state is EarlyDirectionTransition.NONE
@@ -152,21 +157,65 @@ def test_neutral_opposite_flip_requires_two_consecutive_raw_observations() -> No
 def test_nonconsecutive_opposite_raw_does_not_rearm_episode() -> None:
     engine = VolatilityDirectionTransitionEngine()
     neutral = VolatilityBandsFibFinalExport(regime=int(VolatilityState.BALANCED))
+    engine._rows = [{}]
     engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_UP), neutral)
 
+    engine._rows.append({})
     engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_DOWN), neutral)
+    engine._rows.append({})
     engine._apply_episode_lifecycle(EarlyDirectionEvidence(), neutral)
+    engine._rows.append({})
     second_attempt = engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_DOWN), neutral)
 
     assert second_attempt.state is EarlyDirectionTransition.NONE
     assert "opposite_rearm_pending" in second_attempt.reasons
 
 
+def test_idle_episode_expires_after_profile_maturity_window() -> None:
+    engine = VolatilityDirectionTransitionEngine(VolatilityBandsConfig(profile="Dengeli", timeframe="2h"))
+    neutral = VolatilityBandsFibFinalExport(regime=int(VolatilityState.BALANCED))
+    engine._rows = [{}]
+    first = engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_UP), neutral)
+    assert first.episode_id == 1
+
+    last = None
+    for _ in range(4):
+        engine._rows.append({})
+        last = engine._apply_episode_lifecycle(EarlyDirectionEvidence(), neutral)
+
+    assert last is not None
+    assert "episode_expired_idle" in last.reasons
+    assert engine._episode_direction is EarlyDirectionTransition.NONE
+
+    engine._rows.append({})
+    rearmed = engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_UP), neutral)
+    assert rearmed.state is EarlyDirectionTransition.EARLY_UP
+    assert rearmed.episode_started
+    assert rearmed.episode_id == 2
+
+
+def test_same_direction_candidate_closes_early_episode() -> None:
+    engine = VolatilityDirectionTransitionEngine()
+    neutral = VolatilityBandsFibFinalExport(regime=int(VolatilityState.BALANCED))
+    engine._rows = [{}]
+    engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_UP), neutral)
+
+    engine._rows.append({})
+    up_candidate = VolatilityBandsFibFinalExport(regime=int(VolatilityState.UP_CANDIDATE))
+    suppressed = engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_UP), up_candidate)
+
+    assert suppressed.state is EarlyDirectionTransition.NONE
+    assert "same_direction_already_candidate_or_confirmed" in suppressed.reasons
+    assert engine._episode_direction is EarlyDirectionTransition.NONE
+
+
 def test_reversal_away_from_confirmed_episode_direction_can_emit_immediately() -> None:
     engine = VolatilityDirectionTransitionEngine()
     neutral = VolatilityBandsFibFinalExport(regime=int(VolatilityState.BALANCED))
+    engine._rows = [{}]
     engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_UP), neutral)
 
+    engine._rows.append({})
     confirmed_up = VolatilityBandsFibFinalExport(regime=int(VolatilityState.UP_CONFIRMED))
     reversal = engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_DOWN), confirmed_up)
 
@@ -177,6 +226,7 @@ def test_reversal_away_from_confirmed_episode_direction_can_emit_immediately() -
 
 def test_same_direction_candidate_or_confirmed_is_not_called_early() -> None:
     engine = VolatilityDirectionTransitionEngine()
+    engine._rows = [{}]
     up_candidate = VolatilityBandsFibFinalExport(regime=int(VolatilityState.UP_CANDIDATE))
 
     suppressed = engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_UP), up_candidate)
