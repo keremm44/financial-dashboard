@@ -1,3 +1,4 @@
+from .arrival import build_arrival_context, build_semantic_targeting_snapshot
 from .clustering import (
     TargetClusterConfig,
     build_targeting_snapshot,
@@ -19,9 +20,45 @@ from .models import (
     TargetingSnapshot,
 )
 from .proximity import interval_gap, wilder_atr
+from .semantic_models import (
+    ArrivalContext,
+    ArrivalPosition,
+    ArrivalState,
+    BehaviorDirection,
+    Confirmation,
+    ConfirmationKind,
+    Objective,
+    ObjectiveKind,
+    PositionedReaction,
+    ReactionKind,
+    ReactionZone,
+    SemanticRole,
+    SemanticTargetingSnapshot,
+)
+from .semantic_roles import (
+    evidence_behavior,
+    evidence_side,
+    semantic_roles,
+    to_confirmation,
+    to_objective,
+    to_reaction_zone,
+)
 
 __all__ = [
+    "ArrivalContext",
+    "ArrivalPosition",
+    "ArrivalState",
+    "BehaviorDirection",
+    "Confirmation",
+    "ConfirmationKind",
     "LiquidityScope",
+    "Objective",
+    "ObjectiveKind",
+    "PositionedReaction",
+    "ReactionKind",
+    "ReactionZone",
+    "SemanticRole",
+    "SemanticTargetingSnapshot",
     "TargetCluster",
     "TargetClusterConfig",
     "TargetClusterKind",
@@ -33,10 +70,18 @@ __all__ = [
     "TargetRole",
     "TargetSide",
     "TargetingSnapshot",
+    "build_arrival_context",
+    "build_semantic_targeting_snapshot",
     "build_targeting_snapshot",
     "cluster_target_evidence",
     "deduplicate_origin_events",
     "enrich_liquidity_scope",
+    "evidence_behavior",
+    "evidence_side",
     "interval_gap",
+    "semantic_roles",
+    "to_confirmation",
+    "to_objective",
+    "to_reaction_zone",
     "wilder_atr",
 ]
