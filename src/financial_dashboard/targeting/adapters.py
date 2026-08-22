@@ -227,6 +227,7 @@ def fvg_engulfing_evidence(
         confirmed_at, available_at = _metadata(confirmations, identity, fallback=record.formation_time)
         low = float(record.lower_boundary)
         high = float(record.upper_boundary)
+        directional_role = TargetRole.DEMAND if int(record.direction) > 0 else TargetRole.SUPPLY
         out.append(
             TargetEvidence(
                 uid=f"TE-{_uid(symbol, identity)}",
@@ -234,7 +235,7 @@ def fvg_engulfing_evidence(
                 timeframe=timeframe,
                 evidence_type=TargetEvidenceType.FVG,
                 family=TargetEvidenceFamily.IMBALANCE,
-                roles=(TargetRole.IMBALANCE,),
+                roles=(TargetRole.IMBALANCE, directional_role, TargetRole.REACTION),
                 low=low,
                 high=high,
                 anchor_price=(low + high) / 2.0,
@@ -268,6 +269,7 @@ def fvg_engulfing_evidence(
         confirmed_at, available_at = _metadata(confirmations, identity, fallback=record.formation_time)
         low = float(record.lower_boundary)
         high = float(record.upper_boundary)
+        directional_role = TargetRole.DEMAND if int(record.direction) > 0 else TargetRole.SUPPLY
         out.append(
             TargetEvidence(
                 uid=f"TE-{_uid(symbol, identity)}",
@@ -275,7 +277,7 @@ def fvg_engulfing_evidence(
                 timeframe=timeframe,
                 evidence_type=TargetEvidenceType.ENGULFING,
                 family=TargetEvidenceFamily.REACTION,
-                roles=(TargetRole.REACTION,),
+                roles=(TargetRole.REACTION, directional_role),
                 low=low,
                 high=high,
                 anchor_price=(low + high) / 2.0,
