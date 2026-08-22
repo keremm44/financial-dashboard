@@ -5,6 +5,7 @@ from pathlib import Path
 
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.targeting_historical_replay import TargetingHistoricalReplayRunner
+from financial_dashboard.targeting_replay_diagnostics import semantic_transition_ledger
 
 
 def _target_text(cluster) -> str:
@@ -88,10 +89,12 @@ def main() -> int:
         print(f"reason={type(error).__name__}: {error}")
         return 2
 
+    semantic_transitions = semantic_transition_ledger(replay)
     print(
         f"symbol={replay.symbol} reference={replay.reference_timeframe} "
         f"timeframes={','.join(replay.timeframes)} points={len(replay.points)} "
-        f"transitions={len(replay.transitions)}"
+        f"raw_transitions={len(replay.transitions)} "
+        f"semantic_transitions={len(semantic_transitions)}"
     )
     if not replay.points:
         print("TARGETING_REPLAY_NO_POINTS")
@@ -109,13 +112,14 @@ def main() -> int:
         print(f"highest_confluence_up={_target_text(snapshot.highest_confluence_upside)}")
         print(f"highest_confluence_down={_target_text(snapshot.highest_confluence_downside)}")
 
-    print("\n[target-transitions]")
-    if not replay.transitions:
+    print("\n[semantic-target-transitions]")
+    if not semantic_transitions:
         print("NONE")
-    for transition in replay.transitions:
+    for transition in semantic_transitions:
         print(
-            f"{transition.available_at} {transition.field}: "
+            f"{transition.available_at} {transition.field} {transition.kind.value}: "
             f"{transition.previous_identity or 'NONE'} -> {transition.new_identity or 'NONE'} "
+            f"env={transition.previous_envelope}->{transition.new_envelope} "
             f"dist_atr={transition.previous_distance_atr}->{transition.new_distance_atr}"
         )
 
