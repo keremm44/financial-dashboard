@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
 
@@ -50,14 +50,17 @@ class _EarlyProfile:
     body_atr: float
     position_change: float
     context_count: int
+    idle_expiry_bars: int
 
 
 def _profile(config: VolatilityBandsConfig) -> _EarlyProfile:
+    # idle_expiry_bars mirrors the canonical maturity window for the same profile.
+    # It is lifecycle hygiene, not a new confirmation threshold.
     if config.profile == "Hassas":
-        return _EarlyProfile(.22, .25, .06, 1)
+        return _EarlyProfile(.22, .25, .06, 1, 3)
     if config.profile == "Seçici":
-        return _EarlyProfile(.40, .42, .10, 2)
-    return _EarlyProfile(.30, .32, .08, 2)
+        return _EarlyProfile(.40, .42, .10, 2, 5)
+    return _EarlyProfile(.30, .32, .08, 2, 4)
 
 
 def _safe_div(numerator: float | None, denominator: float | None, fallback: float = 0.0) -> float:
@@ -137,10 +140,10 @@ class VolatilityDirectionTransitionEngine:
     """Fast descriptive direction-transition track around the canonical engine.
 
     Raw one-bar evidence is filtered through a small episode lifecycle. Repeated
-    evidence in the same move is not re-emitted as a new transition, and neutral
-    market flip-flops need two consecutive opposite raw observations before re-arm.
-    If the canonical regime is already candidate/confirmed in the same direction,
-    early evidence is suppressed because it is no longer early.
+    evidence in the same move is not re-emitted as a new transition, neutral
+    flip-flops need two consecutive opposite raw observations before re-arm, and
+    stale episodes expire after the canonical maturity window. Confirmed volatility,
+    Structure and Fibonacci remain owned by the wrapped canonical engine.
     """
 
     ATR_LENGTH = 14
@@ -154,6 +157,7 @@ class VolatilityDirectionTransitionEngine:
         self._rows: list[dict[str, Any]] = []
         self._episode_direction = EarlyDirectionTransition.NONE
         self._episode_id = 0
+        self._episode_last_raw_index: int | None = None
         self._pending_opposite = EarlyDirectionTransition.NONE
         self._pending_opposite_count = 0
         self._snapshot = VolatilityDirectionSnapshot(
@@ -263,10 +267,7 @@ class VolatilityDirectionTransitionEngine:
         )
 
         if _canonical_is_shock(core_result):
-            return EarlyDirectionEvidence(
-                reasons=("canonical_one_bar_shock",),
-                **metrics,
-            )
+            return EarlyDirectionEvidence(reasons=("canonical_one_bar_shock",), **metrics)
 
         if up_core and up_count >= profile.context_count:
             reasons = ["up_displacement", "up_body", "upper_close_location"]
@@ -308,39 +309,31 @@ class VolatilityDirectionTransitionEngine:
 
     @staticmethod
     def _suppressed(raw: EarlyDirectionEvidence, reason: str, episode_id: int) -> EarlyDirectionEvidence:
-        return EarlyDirectionEvidence(
+        return replace(
+            raw,
             state=EarlyDirectionTransition.NONE,
             raw_state=raw.state,
-            evidence_count=raw.evidence_count,
             reasons=raw.reasons + (reason,),
-            displacement_atr=raw.displacement_atr,
-            body_atr=raw.body_atr,
-            close_location=raw.close_location,
-            bollinger_position=raw.bollinger_position,
-            bollinger_position_change=raw.bollinger_position_change,
-            atr_slope=raw.atr_slope,
-            width_slope=raw.width_slope,
             episode_started=False,
             episode_id=episode_id,
         )
 
+    def _reset_episode(self) -> None:
+        self._episode_direction = EarlyDirectionTransition.NONE
+        self._episode_last_raw_index = None
+        self._pending_opposite = EarlyDirectionTransition.NONE
+        self._pending_opposite_count = 0
+
     def _start_episode(self, raw: EarlyDirectionEvidence) -> EarlyDirectionEvidence:
         self._episode_id += 1
         self._episode_direction = raw.state
+        self._episode_last_raw_index = len(self._rows) - 1
         self._pending_opposite = EarlyDirectionTransition.NONE
         self._pending_opposite_count = 0
-        return EarlyDirectionEvidence(
-            state=raw.state,
+        return replace(
+            raw,
             raw_state=raw.state,
-            evidence_count=raw.evidence_count,
             reasons=raw.reasons + ("episode_started",),
-            displacement_atr=raw.displacement_atr,
-            body_atr=raw.body_atr,
-            close_location=raw.close_location,
-            bollinger_position=raw.bollinger_position,
-            bollinger_position_change=raw.bollinger_position_change,
-            atr_slope=raw.atr_slope,
-            width_slope=raw.width_slope,
             episode_started=True,
             episode_id=self._episode_id,
         )
@@ -350,27 +343,45 @@ class VolatilityDirectionTransitionEngine:
         raw: EarlyDirectionEvidence,
         export: VolatilityBandsFibFinalExport,
     ) -> EarlyDirectionEvidence:
+        current_index = len(self._rows) - 1
+        canonical_direction = _directional_regime(_regime(export))
+
         if raw.state is EarlyDirectionTransition.NONE:
             self._pending_opposite = EarlyDirectionTransition.NONE
             self._pending_opposite_count = 0
+            if (
+                self._episode_direction is not EarlyDirectionTransition.NONE
+                and self._episode_last_raw_index is not None
+                and current_index - self._episode_last_raw_index >= self._early_profile.idle_expiry_bars
+            ):
+                episode_id = self._episode_id
+                self._reset_episode()
+                return replace(raw, reasons=raw.reasons + ("episode_expired_idle",), episode_id=episode_id)
             return raw
 
-        canonical_direction = _directional_regime(_regime(export))
         if canonical_direction is raw.state:
-            return self._suppressed(raw, "same_direction_already_candidate_or_confirmed", self._episode_id)
+            episode_id = self._episode_id
+            suppressed = self._suppressed(
+                raw,
+                "same_direction_already_candidate_or_confirmed",
+                episode_id,
+            )
+            # The transition has reached the canonical track; keeping the early
+            # episode armed would suppress a later, genuinely new transition.
+            self._reset_episode()
+            return suppressed
 
         if self._episode_direction is EarlyDirectionTransition.NONE:
             return self._start_episode(raw)
 
         if raw.state is self._episode_direction:
+            self._episode_last_raw_index = current_index
             self._pending_opposite = EarlyDirectionTransition.NONE
             self._pending_opposite_count = 0
             return self._suppressed(raw, "same_episode_duplicate", self._episode_id)
 
-        # A true reversal away from an already directional canonical regime may emit
-        # immediately. In neutral regimes, require two consecutive opposite raw
-        # observations before changing episode direction; this prevents one-bar
-        # UP/DOWN flip-flops from becoming separate transition events.
+        # A reversal away from a directional canonical regime may emit immediately.
+        # In neutral regimes, require two consecutive opposite raw observations.
         if canonical_direction is self._episode_direction:
             return self._start_episode(raw)
 
