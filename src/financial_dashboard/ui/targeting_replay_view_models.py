@@ -35,7 +35,9 @@ def replay_points_frame(replay: TargetingHistoricalReplay) -> pd.DataFrame:
                 "Objectives": None if semantic is None else len(semantic.objectives),
                 "Reaction zones": None if semantic is None else len(semantic.reaction_zones),
                 "Confirmations": None if semantic is None else len(semantic.confirmations),
-                "Arrival state": "" if semantic is None else semantic.state.value,
+                "Overall": "" if semantic is None else semantic.overall_state.value,
+                "Upside state": "" if semantic is None else semantic.upside_state.value,
+                "Downside state": "" if semantic is None else semantic.downside_state.value,
                 "Nearest up ATR": None if snapshot.nearest_upside_target is None else snapshot.nearest_upside_target.distance_atr,
                 "Nearest down ATR": None if snapshot.nearest_downside_target is None else snapshot.nearest_downside_target.distance_atr,
             }
@@ -57,7 +59,9 @@ def semantic_targeting_summary_values(snapshot: SemanticTargetingSnapshot) -> di
         return f"{objective.anchor_price:.4f} · {distance_atr:.2f} ATR{scope}"
 
     return {
-        "Semantic state": snapshot.state.value,
+        "Overall (secondary)": snapshot.overall_state.value,
+        "Upside state": snapshot.upside_state.value,
+        "Downside state": snapshot.downside_state.value,
         "Nearest upside objective": objective_text(snapshot.nearest_upside_objective),
         "Nearest downside objective": objective_text(snapshot.nearest_downside_objective),
         "Reaction zones": len(snapshot.reaction_zones),
@@ -97,7 +101,8 @@ def reaction_zones_frame(snapshot: SemanticTargetingSnapshot) -> pd.DataFrame:
             {
                 "Reaction": zone.identity,
                 "Kind": zone.kind.value,
-                "Side": zone.side.value,
+                "Location": zone.side.value,
+                "Behavior": zone.behavior.value,
                 "Low": zone.low,
                 "High": zone.high,
                 "Roles": ", ".join(role.value for role in zone.roles),
@@ -120,7 +125,8 @@ def confirmations_frame(snapshot: SemanticTargetingSnapshot) -> pd.DataFrame:
             {
                 "Confirmation": confirmation.identity,
                 "Kind": confirmation.kind.value,
-                "Side": confirmation.side.value,
+                "Location": confirmation.side.value,
+                "Behavior": confirmation.behavior.value,
                 "Low": confirmation.low,
                 "High": confirmation.high,
                 "TF": source.timeframe,
@@ -141,16 +147,18 @@ def arrival_context_frame(context: ArrivalContext | None) -> pd.DataFrame:
         ("CURRENT", context.current_reactions),
         ("AHEAD", context.reactions_ahead),
         ("AT_OBJECTIVE", context.reactions_at),
-        ("BEYOND", context.reactions_beyond),
+        ("DOWNSTREAM", context.downstream_reactions),
     ):
         for item in members:
             zone = item.zone
             rows.append(
                 {
-                    "Position": label,
+                    "Context": label,
                     "Kind": zone.kind.value,
+                    "Behavior": zone.behavior.value,
                     "Low": zone.low,
                     "High": zone.high,
+                    "Objective distance ATR": item.distance_from_objective_atr,
                     "TF": zone.source.timeframe,
                     "State": zone.source.source_state,
                     "Independent from objective": item.independent_from_objective,
@@ -177,7 +185,9 @@ def shadow_comparison_frame(replay: TargetingHistoricalReplay) -> pd.DataFrame:
                 "Legacy technical zones": sum(cluster.kind.value == "TECHNICAL_ZONE" for cluster in legacy.clusters),
                 "Semantic reaction zones": len(semantic.reaction_zones),
                 "Semantic confirmations": len(semantic.confirmations),
-                "Arrival state": semantic.state.value,
+                "Overall": semantic.overall_state.value,
+                "Upside state": semantic.upside_state.value,
+                "Downside state": semantic.downside_state.value,
             }
         )
     return pd.DataFrame(rows)
