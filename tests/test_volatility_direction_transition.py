@@ -76,7 +76,11 @@ def _with_down_transition() -> pd.DataFrame:
     return pd.concat([frame, pd.DataFrame([row])], ignore_index=True)
 
 
-def _raw(state: EarlyDirectionTransition) -> EarlyDirectionEvidence:
+def _raw(
+    state: EarlyDirectionTransition,
+    *,
+    position: float | None = None,
+) -> EarlyDirectionEvidence:
     return EarlyDirectionEvidence(
         state=state,
         raw_state=state,
@@ -84,7 +88,16 @@ def _raw(state: EarlyDirectionTransition) -> EarlyDirectionEvidence:
         reasons=("synthetic_raw",),
         displacement_atr=.5 if state is EarlyDirectionTransition.EARLY_UP else -.5,
         body_atr=.5,
+        bollinger_position=position,
     )
+
+
+def _none(*, position: float | None = None) -> EarlyDirectionEvidence:
+    return EarlyDirectionEvidence(bollinger_position=position)
+
+
+def _advance(engine: VolatilityDirectionTransitionEngine) -> None:
+    engine._rows.append({})
 
 
 def test_early_up_can_appear_without_rewriting_confirmed_export() -> None:
@@ -124,7 +137,7 @@ def test_same_direction_raw_evidence_is_not_reemitted_as_new_episode() -> None:
     engine._rows = [{}]
 
     first = engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_UP), neutral)
-    engine._rows.append({})
+    _advance(engine)
     duplicate = engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_UP), neutral)
 
     assert first.state is EarlyDirectionTransition.EARLY_UP
@@ -142,9 +155,9 @@ def test_neutral_opposite_flip_requires_two_consecutive_raw_observations() -> No
     engine._rows = [{}]
     engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_UP), neutral)
 
-    engine._rows.append({})
+    _advance(engine)
     first_down = engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_DOWN), neutral)
-    engine._rows.append({})
+    _advance(engine)
     second_down = engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_DOWN), neutral)
 
     assert first_down.state is EarlyDirectionTransition.NONE
@@ -160,53 +173,142 @@ def test_nonconsecutive_opposite_raw_does_not_rearm_episode() -> None:
     engine._rows = [{}]
     engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_UP), neutral)
 
-    engine._rows.append({})
+    _advance(engine)
     engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_DOWN), neutral)
-    engine._rows.append({})
-    engine._apply_episode_lifecycle(EarlyDirectionEvidence(), neutral)
-    engine._rows.append({})
+    _advance(engine)
+    engine._apply_episode_lifecycle(_none(position=.7), neutral)
+    _advance(engine)
     second_attempt = engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_DOWN), neutral)
 
     assert second_attempt.state is EarlyDirectionTransition.NONE
     assert "opposite_rearm_pending" in second_attempt.reasons
 
 
-def test_idle_episode_expires_after_profile_maturity_window() -> None:
-    engine = VolatilityDirectionTransitionEngine(VolatilityBandsConfig(profile="Dengeli", timeframe="2h"))
+def test_idle_expiry_blocks_same_direction_until_semantic_reset() -> None:
+    engine = VolatilityDirectionTransitionEngine(
+        VolatilityBandsConfig(profile="Dengeli", timeframe="2h")
+    )
     neutral = VolatilityBandsFibFinalExport(regime=int(VolatilityState.BALANCED))
     engine._rows = [{}]
-    first = engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_UP), neutral)
+    first = engine._apply_episode_lifecycle(
+        _raw(EarlyDirectionTransition.EARLY_UP, position=.8), neutral
+    )
     assert first.episode_id == 1
 
     last = None
     for _ in range(4):
-        engine._rows.append({})
-        last = engine._apply_episode_lifecycle(EarlyDirectionEvidence(), neutral)
+        _advance(engine)
+        last = engine._apply_episode_lifecycle(_none(position=.8), neutral)
 
     assert last is not None
     assert "episode_expired_idle" in last.reasons
+    assert "semantic_rearm_required" in last.reasons
     assert engine._episode_direction is EarlyDirectionTransition.NONE
+    assert engine._rearm_block_direction is EarlyDirectionTransition.EARLY_UP
 
-    engine._rows.append({})
-    rearmed = engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_UP), neutral)
+    _advance(engine)
+    blocked = engine._apply_episode_lifecycle(
+        _raw(EarlyDirectionTransition.EARLY_UP, position=.8), neutral
+    )
+    assert blocked.state is EarlyDirectionTransition.NONE
+    assert "same_direction_rearm_not_observed" in blocked.reasons
+    assert engine._episode_id == 1
+
+
+def test_basis_return_semantically_rearms_same_direction() -> None:
+    engine = VolatilityDirectionTransitionEngine(
+        VolatilityBandsConfig(profile="Dengeli", timeframe="2h")
+    )
+    neutral = VolatilityBandsFibFinalExport(regime=int(VolatilityState.BALANCED))
+    engine._rows = [{}]
+    engine._apply_episode_lifecycle(
+        _raw(EarlyDirectionTransition.EARLY_UP, position=.8), neutral
+    )
+    for _ in range(4):
+        _advance(engine)
+        engine._apply_episode_lifecycle(_none(position=.8), neutral)
+
+    _advance(engine)
+    reset = engine._apply_episode_lifecycle(_none(position=.49), neutral)
+    assert "semantic_rearm_basis_reset" in reset.reasons
+    assert engine._rearm_block_direction is EarlyDirectionTransition.NONE
+
+    _advance(engine)
+    rearmed = engine._apply_episode_lifecycle(
+        _raw(EarlyDirectionTransition.EARLY_UP, position=.75), neutral
+    )
     assert rearmed.state is EarlyDirectionTransition.EARLY_UP
     assert rearmed.episode_started
     assert rearmed.episode_id == 2
 
 
-def test_same_direction_candidate_closes_early_episode() -> None:
+def test_opposite_evidence_semantically_rearms_after_idle_expiry() -> None:
+    engine = VolatilityDirectionTransitionEngine(
+        VolatilityBandsConfig(profile="Dengeli", timeframe="2h")
+    )
+    neutral = VolatilityBandsFibFinalExport(regime=int(VolatilityState.BALANCED))
+    engine._rows = [{}]
+    engine._apply_episode_lifecycle(
+        _raw(EarlyDirectionTransition.EARLY_UP, position=.8), neutral
+    )
+    for _ in range(4):
+        _advance(engine)
+        engine._apply_episode_lifecycle(_none(position=.8), neutral)
+
+    _advance(engine)
+    opposite = engine._apply_episode_lifecycle(
+        _raw(EarlyDirectionTransition.EARLY_DOWN, position=.3), neutral
+    )
+    assert opposite.state is EarlyDirectionTransition.EARLY_DOWN
+    assert opposite.episode_started
+    assert "semantic_rearm_opposite_evidence" in opposite.reasons
+
+
+def test_canonical_neutralization_semantically_rearms_after_graduation() -> None:
+    engine = VolatilityDirectionTransitionEngine()
+    neutral = VolatilityBandsFibFinalExport(regime=int(VolatilityState.BALANCED))
+    engine._rows = [{}]
+    engine._apply_episode_lifecycle(
+        _raw(EarlyDirectionTransition.EARLY_UP, position=.8), neutral
+    )
+
+    _advance(engine)
+    up_candidate = VolatilityBandsFibFinalExport(regime=int(VolatilityState.UP_CANDIDATE))
+    graduated = engine._apply_episode_lifecycle(
+        _raw(EarlyDirectionTransition.EARLY_UP, position=.8), up_candidate
+    )
+    assert "same_direction_already_candidate_or_confirmed" in graduated.reasons
+    assert engine._rearm_block_direction is EarlyDirectionTransition.EARLY_UP
+
+    _advance(engine)
+    reset = engine._apply_episode_lifecycle(_none(position=.8), neutral)
+    assert "semantic_rearm_canonical_neutralized" in reset.reasons
+    assert engine._rearm_block_direction is EarlyDirectionTransition.NONE
+
+    _advance(engine)
+    rearmed = engine._apply_episode_lifecycle(
+        _raw(EarlyDirectionTransition.EARLY_UP, position=.8), neutral
+    )
+    assert rearmed.state is EarlyDirectionTransition.EARLY_UP
+    assert rearmed.episode_id == 2
+
+
+def test_same_direction_candidate_closes_and_blocks_early_episode() -> None:
     engine = VolatilityDirectionTransitionEngine()
     neutral = VolatilityBandsFibFinalExport(regime=int(VolatilityState.BALANCED))
     engine._rows = [{}]
     engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_UP), neutral)
 
-    engine._rows.append({})
+    _advance(engine)
     up_candidate = VolatilityBandsFibFinalExport(regime=int(VolatilityState.UP_CANDIDATE))
-    suppressed = engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_UP), up_candidate)
+    suppressed = engine._apply_episode_lifecycle(
+        _raw(EarlyDirectionTransition.EARLY_UP), up_candidate
+    )
 
     assert suppressed.state is EarlyDirectionTransition.NONE
     assert "same_direction_already_candidate_or_confirmed" in suppressed.reasons
     assert engine._episode_direction is EarlyDirectionTransition.NONE
+    assert engine._rearm_block_direction is EarlyDirectionTransition.EARLY_UP
 
 
 def test_reversal_away_from_confirmed_episode_direction_can_emit_immediately() -> None:
@@ -215,9 +317,11 @@ def test_reversal_away_from_confirmed_episode_direction_can_emit_immediately() -
     engine._rows = [{}]
     engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_UP), neutral)
 
-    engine._rows.append({})
+    _advance(engine)
     confirmed_up = VolatilityBandsFibFinalExport(regime=int(VolatilityState.UP_CONFIRMED))
-    reversal = engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_DOWN), confirmed_up)
+    reversal = engine._apply_episode_lifecycle(
+        _raw(EarlyDirectionTransition.EARLY_DOWN), confirmed_up
+    )
 
     assert reversal.state is EarlyDirectionTransition.EARLY_DOWN
     assert reversal.episode_started
@@ -229,7 +333,9 @@ def test_same_direction_candidate_or_confirmed_is_not_called_early() -> None:
     engine._rows = [{}]
     up_candidate = VolatilityBandsFibFinalExport(regime=int(VolatilityState.UP_CANDIDATE))
 
-    suppressed = engine._apply_episode_lifecycle(_raw(EarlyDirectionTransition.EARLY_UP), up_candidate)
+    suppressed = engine._apply_episode_lifecycle(
+        _raw(EarlyDirectionTransition.EARLY_UP), up_candidate
+    )
 
     assert suppressed.state is EarlyDirectionTransition.NONE
     assert suppressed.raw_state is EarlyDirectionTransition.EARLY_UP
