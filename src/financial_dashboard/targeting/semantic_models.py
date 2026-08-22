@@ -16,6 +16,12 @@ class SemanticRole(StrEnum):
     STRUCTURAL_CONTEXT = "STRUCTURAL_CONTEXT"
 
 
+class BehaviorDirection(StrEnum):
+    BULLISH = "BULLISH"
+    BEARISH = "BEARISH"
+    NEUTRAL = "NEUTRAL"
+
+
 class ObjectiveKind(StrEnum):
     LIQUIDITY = "LIQUIDITY"
     FVG_REFILL = "FVG_REFILL"
@@ -73,6 +79,7 @@ class ReactionZone:
     identity: str
     kind: ReactionKind
     side: TargetSide
+    behavior: BehaviorDirection
     low: float
     high: float
     source: TargetEvidence
@@ -90,6 +97,7 @@ class Confirmation:
     identity: str
     kind: ConfirmationKind
     side: TargetSide
+    behavior: BehaviorDirection
     low: float
     high: float
     source: TargetEvidence
@@ -139,6 +147,7 @@ __all__ = [
     "ArrivalContext",
     "ArrivalPosition",
     "ArrivalState",
+    "BehaviorDirection",
     "Confirmation",
     "ConfirmationKind",
     "Objective",
