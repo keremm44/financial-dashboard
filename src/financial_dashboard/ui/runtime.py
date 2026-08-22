@@ -4,15 +4,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES, normalize_timeframes
+from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.data.quality import DataQualityStatus, assess_ohlcv_quality
 from financial_dashboard.engines.pattern_compression_core import PatternCompressionConfig
-from financial_dashboard.engines.three_domain_observer import (
-    FOUNDATION_OBSERVER_TIMEFRAMES,
-)
 from financial_dashboard.ham_mtf_replay import (
     HamMTFEvidenceReplay,
     HamMTFEvidenceReplayRunner,
+)
+from financial_dashboard.market_workspace import (
+    MarketAnalysisWorkspace,
+    replay_market_workspace_from_cache,
 )
 from financial_dashboard.mtf_replay import MTFReplayResult
 from financial_dashboard.structure_location_replay import StructureLocationMTFResult
@@ -60,25 +63,17 @@ class CacheTimeframeStatus:
 
 
 def _normalized_timeframes(timeframes: Iterable[str]) -> tuple[str, ...]:
-    normalized = tuple(str(timeframe).strip().lower() for timeframe in timeframes)
-    if not normalized or not all(normalized):
-        raise ValueError("at least one non-empty timeframe is required")
-    if len(set(normalized)) != len(normalized):
-        raise ValueError("timeframes must be unique after normalization")
-    unsupported = tuple(
-        timeframe
-        for timeframe in normalized
-        if timeframe not in FOUNDATION_OBSERVER_TIMEFRAMES
+    return normalize_timeframes(
+        timeframes,
+        supported=ANALYSIS_TIMEFRAMES,
+        label="UI",
     )
-    if unsupported:
-        raise ValueError("unsupported UI timeframes: " + ", ".join(unsupported))
-    return normalized
 
 
 def discover_cached_symbols(
     cache_root: str | Path,
     *,
-    timeframes: tuple[str, ...] = FOUNDATION_OBSERVER_TIMEFRAMES,
+    timeframes: tuple[str, ...] = ANALYSIS_TIMEFRAMES,
 ) -> tuple[str, ...]:
     root = Path(cache_root).expanduser()
     if not root.exists() or not root.is_dir():
@@ -91,7 +86,7 @@ def discover_cached_symbols(
             continue
         symbol, timeframe = stem.rsplit("__", 1)
         if symbol and timeframe.strip().lower() in allowed:
-            symbols.add(symbol)
+            symbols.add(normalize_symbol(symbol))
     return tuple(sorted(symbols))
 
 
@@ -99,12 +94,10 @@ def inspect_symbol_cache(
     cache_root: str | Path,
     *,
     symbol: str,
-    timeframes: tuple[str, ...] = FOUNDATION_OBSERVER_TIMEFRAMES,
+    timeframes: tuple[str, ...] = ANALYSIS_TIMEFRAMES,
 ) -> tuple[CacheTimeframeStatus, ...]:
     normalized = _normalized_timeframes(timeframes)
-    clean_symbol = symbol.strip()
-    if not clean_symbol:
-        raise ValueError("symbol must not be empty")
+    clean_symbol = normalize_symbol(symbol)
     store = ParquetOHLCVStore(Path(cache_root).expanduser())
     statuses: list[CacheTimeframeStatus] = []
 
@@ -189,8 +182,23 @@ def runnable_timeframes(
     by_timeframe = {status.timeframe: status for status in statuses}
     return tuple(
         timeframe
-        for timeframe in FOUNDATION_OBSERVER_TIMEFRAMES
+        for timeframe in ANALYSIS_TIMEFRAMES
         if (status := by_timeframe.get(timeframe)) is not None and status.runnable
+    )
+
+
+def replay_cached_workspace(
+    cache_root: str | Path,
+    *,
+    symbol: str,
+    timeframes: tuple[str, ...],
+    pattern_profile: str | None = None,
+) -> MarketAnalysisWorkspace:
+    return replay_market_workspace_from_cache(
+        cache_root,
+        symbol=normalize_symbol(symbol),
+        timeframes=_normalized_timeframes(timeframes),
+        pattern_profile=pattern_profile,
     )
 
 
@@ -202,9 +210,7 @@ def replay_cached_observer(
     pattern_profile: str | None = None,
 ) -> ThreeDomainReplayResult:
     normalized = _normalized_timeframes(timeframes)
-    clean_symbol = symbol.strip()
-    if not clean_symbol:
-        raise ValueError("symbol must not be empty")
+    clean_symbol = normalize_symbol(symbol)
     pattern_config = (
         None
         if pattern_profile is None
@@ -224,12 +230,8 @@ def replay_cached_ham(
     symbol: str,
     timeframes: tuple[str, ...],
 ) -> HamMTFEvidenceReplay:
-    """Replay neutral Ham evidence independently for every available timeframe."""
-
     normalized = _normalized_timeframes(timeframes)
-    clean_symbol = symbol.strip()
-    if not clean_symbol:
-        raise ValueError("symbol must not be empty")
+    clean_symbol = normalize_symbol(symbol)
     store = ParquetOHLCVStore(Path(cache_root).expanduser())
     return HamMTFEvidenceReplayRunner(store).replay(
         clean_symbol,
@@ -244,12 +246,8 @@ def replay_cached_volume(
     timeframes: tuple[str, ...],
     structure_replay: MTFReplayResult | StructureLocationMTFResult | None = None,
 ) -> VolumeMTFEvidenceReplay:
-    """Replay inspection-only Volume against an optional authoritative Structure run."""
-
     normalized = _normalized_timeframes(timeframes)
-    clean_symbol = symbol.strip()
-    if not clean_symbol:
-        raise ValueError("symbol must not be empty")
+    clean_symbol = normalize_symbol(symbol)
     store = ParquetOHLCVStore(Path(cache_root).expanduser())
     return VolumeMTFEvidenceReplayRunner(store).replay(
         clean_symbol,
@@ -262,13 +260,14 @@ def cache_fingerprint(
     cache_root: str | Path,
     *,
     symbol: str,
-    timeframes: tuple[str, ...] = FOUNDATION_OBSERVER_TIMEFRAMES,
+    timeframes: tuple[str, ...] = ANALYSIS_TIMEFRAMES,
 ) -> tuple[tuple[str, int, int], ...]:
     normalized = _normalized_timeframes(timeframes)
     store = ParquetOHLCVStore(Path(cache_root).expanduser())
+    clean_symbol = normalize_symbol(symbol)
     fingerprint: list[tuple[str, int, int]] = []
     for timeframe in normalized:
-        path = store.path_for(symbol.strip(), timeframe)
+        path = store.path_for(clean_symbol, timeframe)
         if path.exists():
             stat = path.stat()
             fingerprint.append((timeframe, stat.st_size, stat.st_mtime_ns))
