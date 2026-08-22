@@ -45,6 +45,12 @@ class ArrivalPosition(StrEnum):
     UNRELATED = "UNRELATED"
 
 
+class ArrivalConflict(StrEnum):
+    CURRENT = "CURRENT"
+    AHEAD = "AHEAD"
+    AT_OBJECTIVE = "AT_OBJECTIVE"
+
+
 class ArrivalState(StrEnum):
     NO_ACTIVE_OBJECTIVE = "NO_ACTIVE_OBJECTIVE"
     OBJECTIVE_ONLY = "OBJECTIVE_ONLY"
@@ -142,6 +148,7 @@ class ArrivalContext:
     confirmations: tuple[Confirmation, ...]
     independent_reaction_origins: int
     reaction_types: tuple[ReactionKind, ...]
+    conflicts: tuple[ArrivalConflict, ...] = ()
 
     @property
     def reactions_beyond(self) -> tuple[PositionedReaction, ...]:
@@ -183,6 +190,7 @@ class SemanticTargetingSnapshot:
 
 
 __all__ = [
+    "ArrivalConflict",
     "ArrivalContext",
     "ArrivalPosition",
     "ArrivalState",
