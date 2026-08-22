@@ -8,9 +8,18 @@ import pandas as pd
 from financial_dashboard.data.analysis_inputs import AnalysisInputSnapshot, TimeframeInputSnapshot
 from financial_dashboard.data.engine_input import prepare_engine_input
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
+from financial_dashboard.engines.volatility_bands_fib_engine import VolatilityState
+from financial_dashboard.engines.volatility_bands_fib_final import VolatilityBandsFibFinalExport
+from financial_dashboard.engines.volatility_direction_transition import (
+    EarlyDirectionEvidence,
+    EarlyDirectionTransition,
+    VolatilityDirectionSnapshot,
+)
 from financial_dashboard.volatility_mtf_replay import (
     VOLATILITY_TIMEFRAMES,
+    VolatilityMTFReplay,
     VolatilityMTFReplayRunner,
+    VolatilityTimeframeReplay,
     direction_lag_records,
 )
 
@@ -80,3 +89,50 @@ def test_direction_lag_diagnostics_are_non_negative(tmp_path) -> None:
             assert record.candidate_lag_bars >= 0
         if record.confirmed_lag_bars is not None:
             assert record.confirmed_lag_bars >= 0
+
+
+def test_direction_lag_reads_canonical_regime_not_coherence_state() -> None:
+    timestamps = pd.date_range("2026-08-01 10:00", periods=4, freq="2h", tz=TZ)
+    regimes = (
+        VolatilityState.BALANCED,
+        VolatilityState.UP_CANDIDATE,
+        VolatilityState.UP_CONFIRMED,
+        VolatilityState.UP_CONFIRMED,
+    )
+    early_states = (
+        EarlyDirectionTransition.EARLY_UP,
+        EarlyDirectionTransition.NONE,
+        EarlyDirectionTransition.NONE,
+        EarlyDirectionTransition.NONE,
+    )
+    snapshots = tuple(
+        VolatilityDirectionSnapshot(
+            timestamp=timestamp,
+            core_result=None,
+            confirmed_export=VolatilityBandsFibFinalExport(regime=int(regime)),
+            early=EarlyDirectionEvidence(state=early),
+        )
+        for timestamp, regime, early in zip(timestamps, regimes, early_states, strict=True)
+    )
+    replay = VolatilityMTFReplay(
+        symbol="ASELS",
+        timeframes=("2h",),
+        by_timeframe=MappingProxyType(
+            {
+                "2h": VolatilityTimeframeReplay(
+                    symbol="ASELS",
+                    timeframe="2h",
+                    snapshots=snapshots,
+                )
+            }
+        ),
+    )
+
+    records = direction_lag_records(replay)
+    assert len(records) == 1
+    record = records[0]
+    assert record.early_index == 0
+    assert record.candidate_index == 1
+    assert record.confirmed_index == 2
+    assert record.candidate_lag_bars == 1
+    assert record.confirmed_lag_bars == 2
