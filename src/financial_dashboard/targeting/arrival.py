@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Iterable
 
+import pandas as pd
+
 from .models import TargetEvidence, TargetSide
 from .semantic_models import (
     ArrivalContext,
@@ -77,6 +79,8 @@ def _arrival_state(
     directions = {reaction_direction(item.zone) for item in all_reactions} - {"NEUTRAL"}
     if len(directions) > 1:
         return ArrivalState.CONFLICTING_ARRIVAL
+    if ahead and not at:
+        return ArrivalState.OBJECTIVE_WITH_OBSTACLE
     origins = {item.zone.source.origin_event_id for item in all_reactions}
     kinds = {item.zone.kind for item in all_reactions}
     if len(origins) > 1 and len(kinds) > 1:
@@ -133,6 +137,20 @@ def build_arrival_context(
         }
     )
     reaction_types = tuple(sorted({item.zone.kind for item in active}, key=lambda kind: kind.value))
+    linked_confirmations = tuple(
+        confirmation
+        for confirmation in confirmations
+        if (
+            _interval_gap(
+                confirmation.low,
+                confirmation.high,
+                objective.low,
+                objective.high,
+            )
+            <= tolerance
+            or confirmation.low <= current_price <= confirmation.high
+        )
+    )
     return ArrivalContext(
         objective=objective,
         state=_arrival_state(
@@ -146,7 +164,7 @@ def build_arrival_context(
         reactions_at=at,
         reactions_beyond=beyond,
         current_reactions=current,
-        confirmations=tuple(confirmations),
+        confirmations=linked_confirmations,
         independent_reaction_origins=independent_origins,
         reaction_types=reaction_types,
     )
@@ -169,7 +187,12 @@ def build_semantic_targeting_snapshot(
     reference_atr: float,
     evidence: Iterable[TargetEvidence],
 ) -> SemanticTargetingSnapshot:
-    items = tuple(evidence)
+    cutoff = pd.Timestamp(as_of)
+    items = tuple(
+        item
+        for item in evidence
+        if pd.Timestamp(item.available_at) <= cutoff
+    )
     objectives = tuple(
         objective
         for item in items
@@ -210,17 +233,20 @@ def build_semantic_targeting_snapshot(
         )
     )
 
+    contexts = (up_context, down_context)
     if nearest_up is None and nearest_down is None:
         state = ArrivalState.REACTION_ZONE_ONLY if reactions else ArrivalState.NO_ACTIVE_OBJECTIVE
-    elif any(context is not None and context.state is ArrivalState.AT_OBJECTIVE for context in (up_context, down_context)):
+    elif any(context is not None and context.state is ArrivalState.AT_OBJECTIVE for context in contexts):
         state = ArrivalState.AT_OBJECTIVE
-    elif any(context is not None and context.state is ArrivalState.IN_REACTION_ZONE for context in (up_context, down_context)):
+    elif any(context is not None and context.state is ArrivalState.IN_REACTION_ZONE for context in contexts):
         state = ArrivalState.IN_REACTION_ZONE
-    elif any(context is not None and context.state is ArrivalState.CONFLICTING_ARRIVAL for context in (up_context, down_context)):
+    elif any(context is not None and context.state is ArrivalState.CONFLICTING_ARRIVAL for context in contexts):
         state = ArrivalState.CONFLICTING_ARRIVAL
-    elif any(context is not None and context.state is ArrivalState.MULTI_DOMAIN_REACTION for context in (up_context, down_context)):
+    elif any(context is not None and context.state is ArrivalState.OBJECTIVE_WITH_OBSTACLE for context in contexts):
+        state = ArrivalState.OBJECTIVE_WITH_OBSTACLE
+    elif any(context is not None and context.state is ArrivalState.MULTI_DOMAIN_REACTION for context in contexts):
         state = ArrivalState.MULTI_DOMAIN_REACTION
-    elif any(context is not None and context.state is ArrivalState.OBJECTIVE_WITH_REACTION for context in (up_context, down_context)):
+    elif any(context is not None and context.state is ArrivalState.OBJECTIVE_WITH_REACTION for context in contexts):
         state = ArrivalState.OBJECTIVE_WITH_REACTION
     else:
         state = ArrivalState.OBJECTIVE_ONLY
