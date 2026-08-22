@@ -9,7 +9,7 @@ import pandas as pd
 
 from .models import EngineResult
 from .volatility_bands_fib import VolatilityBandsFibEngine
-from .volatility_bands_fib_engine import VolatilityBandsConfig
+from .volatility_bands_fib_engine import VolatilityBandsConfig, VolatilityState
 from .volatility_bands_fib_final import VolatilityBandsFibFinalExport
 
 
@@ -31,6 +31,9 @@ class EarlyDirectionEvidence:
     bollinger_position_change: float | None = None
     atr_slope: float | None = None
     width_slope: float | None = None
+    raw_state: EarlyDirectionTransition = EarlyDirectionTransition.NONE
+    episode_started: bool = False
+    episode_id: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,22 +116,46 @@ def _canonical_is_shock(result: EngineResult | None) -> bool:
     return any("ONE_BAR_SHOCK" in reason for reason in result.reasons)
 
 
+def _regime(export: VolatilityBandsFibFinalExport) -> VolatilityState | None:
+    if export.regime is None:
+        return None
+    try:
+        return VolatilityState(int(export.regime))
+    except (TypeError, ValueError):
+        return None
+
+
+def _directional_regime(state: VolatilityState | None) -> EarlyDirectionTransition:
+    if state in {VolatilityState.UP_CANDIDATE, VolatilityState.UP_CONFIRMED}:
+        return EarlyDirectionTransition.EARLY_UP
+    if state in {VolatilityState.DOWN_CANDIDATE, VolatilityState.DOWN_CONFIRMED}:
+        return EarlyDirectionTransition.EARLY_DOWN
+    return EarlyDirectionTransition.NONE
+
+
 class VolatilityDirectionTransitionEngine:
     """Fast descriptive direction-transition track around the canonical engine.
 
-    The wrapped canonical Volatility/Bands/Fib engine remains the sole authority for
-    confirmed volatility, structure and Fibonacci state. This facade adds only
-    reversible EARLY_UP / EARLY_DOWN evidence from completed bars.
+    Raw one-bar evidence is filtered through a small episode lifecycle. Repeated
+    evidence in the same move is not re-emitted as a new transition, and neutral
+    market flip-flops need two consecutive opposite raw observations before re-arm.
+    If the canonical regime is already candidate/confirmed in the same direction,
+    early evidence is suppressed because it is no longer early.
     """
 
     ATR_LENGTH = 14
     MINIMUM_EARLY_HISTORY = 24
+    OPPOSITE_REARM_OBSERVATIONS = 2
 
     def __init__(self, config: VolatilityBandsConfig | None = None) -> None:
         self.config = config or VolatilityBandsConfig()
         self._early_profile = _profile(self.config)
         self._core = VolatilityBandsFibEngine(self.config)
         self._rows: list[dict[str, Any]] = []
+        self._episode_direction = EarlyDirectionTransition.NONE
+        self._episode_id = 0
+        self._pending_opposite = EarlyDirectionTransition.NONE
+        self._pending_opposite_count = 0
         self._snapshot = VolatilityDirectionSnapshot(
             timestamp=None,
             core_result=None,
@@ -225,18 +252,20 @@ class VolatilityDirectionTransitionEngine:
         up_count = sum(map(int, up_context))
         down_count = sum(map(int, down_context))
 
-        # The canonical shock classification keeps authority. A shock is not silently
-        # re-labelled as a directional transition by this faster evidence track.
+        metrics = dict(
+            displacement_atr=displacement,
+            body_atr=body,
+            close_location=close_location,
+            bollinger_position=position,
+            bollinger_position_change=position_change,
+            atr_slope=atr_slope,
+            width_slope=width_slope,
+        )
+
         if _canonical_is_shock(core_result):
             return EarlyDirectionEvidence(
-                displacement_atr=displacement,
-                body_atr=body,
-                close_location=close_location,
-                bollinger_position=position,
-                bollinger_position_change=position_change,
-                atr_slope=atr_slope,
-                width_slope=width_slope,
                 reasons=("canonical_one_bar_shock",),
+                **metrics,
             )
 
         if up_core and up_count >= profile.context_count:
@@ -251,15 +280,10 @@ class VolatilityDirectionTransitionEngine:
                 reasons.append("band_width_rising")
             return EarlyDirectionEvidence(
                 state=EarlyDirectionTransition.EARLY_UP,
+                raw_state=EarlyDirectionTransition.EARLY_UP,
                 evidence_count=3 + up_count,
                 reasons=tuple(reasons),
-                displacement_atr=displacement,
-                body_atr=body,
-                close_location=close_location,
-                bollinger_position=position,
-                bollinger_position_change=position_change,
-                atr_slope=atr_slope,
-                width_slope=width_slope,
+                **metrics,
             )
 
         if down_core and down_count >= profile.context_count:
@@ -274,37 +298,101 @@ class VolatilityDirectionTransitionEngine:
                 reasons.append("band_width_rising")
             return EarlyDirectionEvidence(
                 state=EarlyDirectionTransition.EARLY_DOWN,
+                raw_state=EarlyDirectionTransition.EARLY_DOWN,
                 evidence_count=3 + down_count,
                 reasons=tuple(reasons),
-                displacement_atr=displacement,
-                body_atr=body,
-                close_location=close_location,
-                bollinger_position=position,
-                bollinger_position_change=position_change,
-                atr_slope=atr_slope,
-                width_slope=width_slope,
+                **metrics,
             )
 
+        return EarlyDirectionEvidence(**metrics)
+
+    @staticmethod
+    def _suppressed(raw: EarlyDirectionEvidence, reason: str, episode_id: int) -> EarlyDirectionEvidence:
         return EarlyDirectionEvidence(
-            displacement_atr=displacement,
-            body_atr=body,
-            close_location=close_location,
-            bollinger_position=position,
-            bollinger_position_change=position_change,
-            atr_slope=atr_slope,
-            width_slope=width_slope,
+            state=EarlyDirectionTransition.NONE,
+            raw_state=raw.state,
+            evidence_count=raw.evidence_count,
+            reasons=raw.reasons + (reason,),
+            displacement_atr=raw.displacement_atr,
+            body_atr=raw.body_atr,
+            close_location=raw.close_location,
+            bollinger_position=raw.bollinger_position,
+            bollinger_position_change=raw.bollinger_position_change,
+            atr_slope=raw.atr_slope,
+            width_slope=raw.width_slope,
+            episode_started=False,
+            episode_id=episode_id,
         )
+
+    def _start_episode(self, raw: EarlyDirectionEvidence) -> EarlyDirectionEvidence:
+        self._episode_id += 1
+        self._episode_direction = raw.state
+        self._pending_opposite = EarlyDirectionTransition.NONE
+        self._pending_opposite_count = 0
+        return EarlyDirectionEvidence(
+            state=raw.state,
+            raw_state=raw.state,
+            evidence_count=raw.evidence_count,
+            reasons=raw.reasons + ("episode_started",),
+            displacement_atr=raw.displacement_atr,
+            body_atr=raw.body_atr,
+            close_location=raw.close_location,
+            bollinger_position=raw.bollinger_position,
+            bollinger_position_change=raw.bollinger_position_change,
+            atr_slope=raw.atr_slope,
+            width_slope=raw.width_slope,
+            episode_started=True,
+            episode_id=self._episode_id,
+        )
+
+    def _apply_episode_lifecycle(
+        self,
+        raw: EarlyDirectionEvidence,
+        export: VolatilityBandsFibFinalExport,
+    ) -> EarlyDirectionEvidence:
+        if raw.state is EarlyDirectionTransition.NONE:
+            self._pending_opposite = EarlyDirectionTransition.NONE
+            self._pending_opposite_count = 0
+            return raw
+
+        canonical_direction = _directional_regime(_regime(export))
+        if canonical_direction is raw.state:
+            return self._suppressed(raw, "same_direction_already_candidate_or_confirmed", self._episode_id)
+
+        if self._episode_direction is EarlyDirectionTransition.NONE:
+            return self._start_episode(raw)
+
+        if raw.state is self._episode_direction:
+            self._pending_opposite = EarlyDirectionTransition.NONE
+            self._pending_opposite_count = 0
+            return self._suppressed(raw, "same_episode_duplicate", self._episode_id)
+
+        # A true reversal away from an already directional canonical regime may emit
+        # immediately. In neutral regimes, require two consecutive opposite raw
+        # observations before changing episode direction; this prevents one-bar
+        # UP/DOWN flip-flops from becoming separate transition events.
+        if canonical_direction is self._episode_direction:
+            return self._start_episode(raw)
+
+        if self._pending_opposite is raw.state:
+            self._pending_opposite_count += 1
+        else:
+            self._pending_opposite = raw.state
+            self._pending_opposite_count = 1
+
+        if self._pending_opposite_count >= self.OPPOSITE_REARM_OBSERVATIONS:
+            return self._start_episode(raw)
+        return self._suppressed(raw, "opposite_rearm_pending", self._episode_id)
 
     def update(self, bar: pd.Series | dict[str, Any]) -> VolatilityDirectionSnapshot:
         row = self._normalize_bar(bar)
         if not bool(row.get("is_closed", True)) or not bool(row.get("is_complete", True)):
-            # Keep both clocks frozen. The canonical engine also fail-closes, but the
-            # facade returns before appending so its own evidence history cannot move.
             return self._snapshot
 
         self._rows.append(row)
         core_result = self._core.update(row)
-        early = self._early_evidence(core_result)
+        raw = self._early_evidence(core_result)
+        early = self._apply_episode_lifecycle(raw, self._core.final_export)
         self._snapshot = VolatilityDirectionSnapshot(
             timestamp=row["timestamp"],
             core_result=core_result,
