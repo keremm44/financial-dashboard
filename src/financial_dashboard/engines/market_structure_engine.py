@@ -5,7 +5,20 @@ from typing import Any
 
 import pandas as pd
 
-from .market_structure import MarketStructureConfig, MarketStructureEngine as _SwingCoreEngine, SIDE_HIGH, SIDE_LOW, SwingPoint
+from .market_structure import (
+    SCOPE_EXTERNAL,
+    SCOPE_INTERNAL,
+    SIDE_HIGH,
+    SIDE_LOW,
+    MarketStructureConfig,
+    MarketStructureEngine as _SwingCoreEngine,
+    SwingPoint,
+)
+from .market_structure_events import (
+    MarketStructureEventLedger,
+    MarketStructureEventRecord,
+    MarketStructureScopeSnapshot,
+)
 from .market_structure_runtime_bridge import MarketStructureRuntime
 from .market_structure_state import BreakConfig
 from .models import Direction, EngineResult
@@ -33,6 +46,7 @@ class MarketStructureEngine(_SwingCoreEngine):
     def reset(self) -> None:
         super().reset()
         self._runtime = MarketStructureRuntime(self.break_config)
+        self._event_ledger = MarketStructureEventLedger()
         self._export = None
 
     def _candidate_update(self, candidate, incoming, locked_by_break: bool):
@@ -63,7 +77,7 @@ class MarketStructureEngine(_SwingCoreEngine):
 
     def update(self, bar: pd.Series | dict[str, Any]) -> EngineResult | None:
         row = dict(bar) if isinstance(bar, dict) else bar.to_dict()
-        if not bool(row.get("is_closed", True)):
+        if not bool(row.get("is_closed", True)) or not bool(row.get("is_complete", True)):
             return self._snapshot
 
         base = super().update(row)
@@ -112,9 +126,39 @@ class MarketStructureEngine(_SwingCoreEngine):
             )
         )
 
+        self._event_ledger.extend(structure_events, self._rows)
+        event_history = self._event_ledger.snapshot(current_bar=bar_index)
+
         score = self._runtime.score(bar_index=bar_index)
-        self._export = self._runtime.export(self._external.swings, self._internal.swings, bar_index=bar_index)
+        runtime_export = self._runtime.export(
+            self._external.swings,
+            self._internal.swings,
+            bar_index=bar_index,
+        )
+        latest_external = self._event_ledger.latest(
+            current_bar=bar_index,
+            scope=SCOPE_EXTERNAL,
+        )
+        latest_internal = self._event_ledger.latest(
+            current_bar=bar_index,
+            scope=SCOPE_INTERNAL,
+        )
         external = self._runtime.external.context
+        internal = self._runtime.internal.context
+        self._export = replace(
+            runtime_export,
+            events=event_history,
+            latest_external_event=latest_external,
+            latest_internal_event=latest_internal,
+            external_scope=MarketStructureScopeSnapshot.from_context(
+                external,
+                latest_event=latest_external,
+            ),
+            internal_scope=MarketStructureScopeSnapshot.from_context(
+                internal,
+                latest_event=latest_internal,
+            ),
+        )
 
         if external.direction > 0:
             direction = Direction.UP
@@ -157,6 +201,30 @@ class MarketStructureEngine(_SwingCoreEngine):
             is_confirmed=True,
         )
         return self._snapshot
+
+    @property
+    def event_history(self) -> tuple[MarketStructureEventRecord, ...]:
+        if not self._rows:
+            return ()
+        return self._event_ledger.snapshot(current_bar=len(self._rows) - 1)
+
+    @property
+    def latest_external_event(self) -> MarketStructureEventRecord | None:
+        if not self._rows:
+            return None
+        return self._event_ledger.latest(
+            current_bar=len(self._rows) - 1,
+            scope=SCOPE_EXTERNAL,
+        )
+
+    @property
+    def latest_internal_event(self) -> MarketStructureEventRecord | None:
+        if not self._rows:
+            return None
+        return self._event_ledger.latest(
+            current_bar=len(self._rows) - 1,
+            scope=SCOPE_INTERNAL,
+        )
 
     @property
     def external_context(self):

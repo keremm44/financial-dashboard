@@ -17,6 +17,17 @@ dependencies = [
 dev = [
     "pytest>=8",
 ]
+ui = [
+    "streamlit>=1.40,<2",
+    "plotly>=5.24,<7",
+]
+live = [
+    "tvdatafeed-enhanced==2.2.1",
+    "websocket-client>=1.8,<2",
+]
+
+[project.scripts]
+financial-dashboard-ui = "financial_dashboard.ui.launcher:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

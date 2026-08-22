@@ -102,6 +102,43 @@ def test_pipeline_fetches_caches_and_resamples(tmp_path) -> None:
     assert store.latest_timestamp("THYAO", "15m") == pd.Timestamp("2026-08-19T10:15:00+03:00")
 
 
+def test_incremental_refresh_does_not_backfill_but_full_refresh_extends_left_edge(
+    tmp_path,
+) -> None:
+    full_frame = _base_frame()
+    recent_frame = full_frame.iloc[-2:].reset_index(drop=True)
+    store = ParquetOHLCVStore(tmp_path)
+    store.merge_and_save(
+        recent_frame,
+        symbol="THYAO",
+        timeframe="5m",
+        source="fixture",
+    )
+    pipeline = MarketDataPipeline(_Provider(full_frame), store)
+    requested_start = datetime.fromisoformat("2026-08-19T10:00:00+03:00")
+    end = datetime.fromisoformat("2026-08-19T10:30:00+03:00")
+
+    incremental_start = pipeline.incremental_bist_start(
+        symbol="THYAO",
+        requested_start=requested_start,
+    )
+    assert pd.Timestamp(incremental_start) == pd.Timestamp(
+        "2026-08-19T10:20:00+03:00"
+    )
+    assert pd.Timestamp(incremental_start) > pd.Timestamp(requested_start)
+
+    backfilled = pipeline.refresh_bist_5m(
+        symbol="THYAO",
+        start=requested_start,
+        end=end,
+        target_timeframes=("1h",),
+    )
+    assert len(backfilled.base) == len(full_frame)
+    assert backfilled.base.iloc[0]["timestamp"] == pd.Timestamp(
+        "2026-08-19T10:00:00+03:00"
+    )
+
+
 def test_bist_pipeline_builds_all_default_timeframes(tmp_path) -> None:
     provider = _Provider(_multi_day_bist_5m())
     store = ParquetOHLCVStore(tmp_path)

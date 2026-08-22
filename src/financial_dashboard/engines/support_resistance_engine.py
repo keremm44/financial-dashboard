@@ -9,6 +9,11 @@ import pandas as pd
 
 from .base import BaseEngine
 from .models import Direction, EngineResult
+from .support_resistance_zones import (
+    SupportResistanceZone,
+    SupportResistanceZoneLedger,
+    ZoneLifecycleEvent,
+)
 
 
 class RangeState(StrEnum):
@@ -125,6 +130,10 @@ class SupportResistanceExport:
     role_reversal_support_high: float | None = None
     role_reversal_resistance_low: float | None = None
     role_reversal_resistance_high: float | None = None
+    contract_version: int = 2
+    reference_atr: float | None = None
+    zones: tuple[SupportResistanceZone, ...] = ()
+    zone_lifecycle_events: tuple[ZoneLifecycleEvent, ...] = ()
 
 
 def _clamp100(value: float) -> float:
@@ -218,6 +227,13 @@ class SupportResistanceRangeEngine(BaseEngine):
         self._range_epoch_start = 0
         self._role_support: tuple[float, float] | None = None
         self._role_resistance: tuple[float, float] | None = None
+        self._role_support_identity: int | None = None
+        self._role_resistance_identity: int | None = None
+        self._zone_ledger = SupportResistanceZoneLedger(
+            role_break_confirm_bars=max(2, self.config.breakout_confirm_window),
+            min_tick=self.config.min_tick,
+        )
+        self._zones: tuple[SupportResistanceZone, ...] = ()
         self.export_contract = SupportResistanceExport()
 
     def _reset(self) -> None:
@@ -230,6 +246,10 @@ class SupportResistanceRangeEngine(BaseEngine):
         self._range_epoch_start = 0
         self._role_support = None
         self._role_resistance = None
+        self._role_support_identity = None
+        self._role_resistance_identity = None
+        self._zone_ledger.reset()
+        self._zones = ()
         self.export_contract = SupportResistanceExport()
 
     def _confirm_new_pivot(self) -> None:
@@ -413,8 +433,10 @@ class SupportResistanceRangeEngine(BaseEngine):
             if age >= 1 and age <= self.config.breakout_confirm_window and accepted:
                 if prev.break_direction == 1 and prev.upper_bottom is not None and prev.frozen_upper_top is not None:
                     self._role_support = (prev.upper_bottom, prev.frozen_upper_top)
+                    self._role_support_identity = prev.identity
                 elif prev.break_direction == -1 and prev.frozen_lower_bottom is not None and prev.lower_top is not None:
                     self._role_resistance = (prev.frozen_lower_bottom, prev.lower_top)
+                    self._role_resistance_identity = prev.identity
                 self._range_epoch_start = now
                 return replace(prev, state=RangeState.BREAK_CONFIRMED, known_index=now, break_confirmed_index=now, last_state_change_index=now)
             if returned_inside or strong_opposite or age > self.config.breakout_confirm_window:
@@ -575,6 +597,9 @@ class SupportResistanceRangeEngine(BaseEngine):
             role_reversal_support_high=self._role_support[1] if self._role_support else None,
             role_reversal_resistance_low=self._role_resistance[0] if self._role_resistance else None,
             role_reversal_resistance_high=self._role_resistance[1] if self._role_resistance else None,
+            reference_atr=_atr(self._rows, min_tick=self.config.min_tick) if self._rows else None,
+            zones=self._zones,
+            zone_lifecycle_events=self._zone_ledger.events,
         )
         self._snapshot = result
         return result
@@ -587,6 +612,18 @@ class SupportResistanceRangeEngine(BaseEngine):
         self._confirm_new_pivot()
         geometry = self._build_geometry()
         self._range = self._advance_lifecycle(geometry)
+        reference_atr = _atr(self._rows, min_tick=self.config.min_tick)
+        self._zones = self._zone_ledger.observe(
+            self._range,
+            role_support=self._role_support,
+            role_support_identity=self._role_support_identity,
+            role_resistance=self._role_resistance,
+            role_resistance_identity=self._role_resistance_identity,
+            bar_index=len(self._rows) - 1,
+            timestamp=row.get("timestamp"),
+            close=float(row["close"]),
+            reference_atr=reference_atr,
+        )
         return self._publish(row.get("timestamp"))
 
     def replay(self, frame: pd.DataFrame) -> list[EngineResult]:
@@ -604,3 +641,15 @@ class SupportResistanceRangeEngine(BaseEngine):
     @property
     def confirmed_pivots(self) -> tuple[ConfirmedPivot, ...]:
         return tuple(sorted(self._high_pivots + self._low_pivots, key=lambda p: (p.known_index, p.origin_index, p.side)))
+
+    @property
+    def zones(self) -> tuple[SupportResistanceZone, ...]:
+        return self._zones
+
+    @property
+    def active_zones(self) -> tuple[SupportResistanceZone, ...]:
+        return self._zone_ledger.active()
+
+    @property
+    def zone_lifecycle_events(self) -> tuple[ZoneLifecycleEvent, ...]:
+        return self._zone_ledger.events

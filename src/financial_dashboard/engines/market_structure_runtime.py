@@ -321,10 +321,10 @@ class MarketStructureRuntime:
         sweep_buffer = max(safe_atr * self.break_config.break_buffer_atr * self.break_config.profile_break_mult, self.break_config.min_tick * 3.0)
         if high_target.valid and is_sweep(SIDE_HIGH, float(high_target.price), sweep_buffer, high=high, low=low, close=close):
             runtime.next_event_id += 1
-            events.append(StructureEvent(valid=True, identity=runtime.next_event_id, scope=scope, event_type=EVENT_SWEEP, direction=-1, event_bar=bar_index, broken_swing_identity=high_target.identity, level=high_target.price, quality=45.0, evidence_text="HIGH_SWEEP"))
+            events.append(StructureEvent(valid=True, identity=runtime.next_event_id, scope=scope, event_type=EVENT_SWEEP, direction=-1, candidate_bar=bar_index, event_bar=bar_index, broken_swing_identity=high_target.identity, level=high_target.price, quality=45.0, evidence_text="HIGH_SWEEP"))
         elif low_target.valid and is_sweep(SIDE_LOW, float(low_target.price), sweep_buffer, high=high, low=low, close=close):
             runtime.next_event_id += 1
-            events.append(StructureEvent(valid=True, identity=runtime.next_event_id, scope=scope, event_type=EVENT_SWEEP, direction=1, event_bar=bar_index, broken_swing_identity=low_target.identity, level=low_target.price, quality=45.0, evidence_text="LOW_SWEEP"))
+            events.append(StructureEvent(valid=True, identity=runtime.next_event_id, scope=scope, event_type=EVENT_SWEEP, direction=1, candidate_bar=bar_index, event_bar=bar_index, broken_swing_identity=low_target.identity, level=low_target.price, quality=45.0, evidence_text="LOW_SWEEP"))
 
         if not runtime.candidate.valid:
             runtime.candidate = self._candidate_target(runtime, swings, high_candidate, low_candidate, scope=scope, bar_index=bar_index, close=close, safe_atr=safe_atr, open_=open_, high=high, low=low)
@@ -361,6 +361,7 @@ class MarketStructureRuntime:
                     scope=scope,
                     event_type=EVENT_FALSE_BREAK,
                     direction=-runtime.candidate.direction,
+                    candidate_bar=runtime.candidate.candidate_bar,
                     event_bar=bar_index,
                     broken_swing_identity=runtime.candidate.broken_swing_identity,
                     broken_source_bar=runtime.candidate.broken_source_bar,

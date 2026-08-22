@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from enum import StrEnum
 
 from .market_structure import (
     ROLE_NEUTRAL_HIGH,
@@ -26,6 +27,23 @@ EVENT_CHOCH = "EVENT_CHOCH"
 EVENT_TRANSITION_FAIL = "EVENT_TRANSITION_FAIL"
 EVENT_SWEEP = "EVENT_SWEEP"
 EVENT_FALSE_BREAK = "EVENT_FALSE_BREAK"
+
+EVIDENCE_INITIAL_STRUCTURE_BREAK_CONFIRMED = "INITIAL_STRUCTURE_BREAK_CONFIRMED"
+
+
+class BosMaturity(StrEnum):
+    """Typed maturity of a confirmed BOS event.
+
+    Initial structure establishes the first observed direction from a neutral
+    context.  It is deliberately distinct from both a BOS that confirms a known
+    transition and a continuation BOS in an already directional structure.
+    """
+
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+    INITIAL_STRUCTURE = "INITIAL_STRUCTURE"
+    TRANSITION_CONFIRMATION = "TRANSITION_CONFIRMATION"
+    CONTINUATION = "CONTINUATION"
+
 
 STATE_NEUTRAL = "STATE_NEUTRAL"
 STATE_BULLISH = "STATE_BULLISH"
@@ -76,6 +94,8 @@ class StructureEvent:
     origin_price: float | None = None
     quality: float = 0.0
     evidence_text: str = ""
+    candidate_bar: int | None = None
+    bos_maturity: BosMaturity = BosMaturity.NOT_APPLICABLE
 
 
 @dataclass(slots=True)
@@ -368,20 +388,43 @@ def finalize_confirmed_break(
         raise ValueError("break origin chronology invalid")
 
     q = break_final_quality(candidate, acceptance, follow_through)
-    initial = candidate.intended_event_type == EVENT_BOS and ctx.state == STATE_NEUTRAL and ctx.direction == 0
+    initial = (
+        candidate.intended_event_type == EVENT_BOS
+        and ctx.state == STATE_NEUTRAL
+        and ctx.direction == 0
+    )
+    bos_maturity = (
+        BosMaturity.INITIAL_STRUCTURE
+        if initial
+        else BosMaturity.TRANSITION_CONFIRMATION
+        if candidate.intended_event_type == EVENT_BOS
+        and ctx.state in (STATE_TRANSITION_UP, STATE_TRANSITION_DOWN)
+        else BosMaturity.CONTINUATION
+        if candidate.intended_event_type == EVENT_BOS
+        else BosMaturity.NOT_APPLICABLE
+    )
     evidence = (
-        "INITIAL_STRUCTURE_BREAK_CONFIRMED" if initial else
-        ("TRANSITION_BOS_CONFIRMED" if ctx.state in (STATE_TRANSITION_UP, STATE_TRANSITION_DOWN) else "BOS_CONFIRMED")
-        if candidate.intended_event_type == EVENT_BOS else
-        "CHOCH_CONFIRMED" if candidate.intended_event_type == EVENT_CHOCH else
-        "TRANSITION_FAILED"
+        EVIDENCE_INITIAL_STRUCTURE_BREAK_CONFIRMED
+        if bos_maturity is BosMaturity.INITIAL_STRUCTURE
+        else "TRANSITION_BOS_CONFIRMED"
+        if bos_maturity is BosMaturity.TRANSITION_CONFIRMATION
+        else "BOS_CONFIRMED"
+        if bos_maturity is BosMaturity.CONTINUATION
+        else "CHOCH_CONFIRMED"
+        if candidate.intended_event_type == EVENT_CHOCH
+        else "TRANSITION_FAILED"
     )
     event = StructureEvent(
         valid=True, identity=event_identity, scope=candidate.scope,
         event_type=candidate.intended_event_type, direction=candidate.direction,
-        event_bar=event_bar, broken_swing_identity=broken.identity, broken_source_bar=broken.source_bar,
+        candidate_bar=candidate.candidate_bar, event_bar=event_bar,
+        broken_swing_identity=broken.identity, broken_source_bar=broken.source_bar,
         origin_swing_identity=origin.identity, origin_source_bar=origin.source_bar,
-        level=broken.price, origin_price=origin.price, quality=q, evidence_text=evidence,
+        level=broken.price,
+        origin_price=origin.price,
+        quality=q,
+        evidence_text=evidence,
+        bos_maturity=bos_maturity,
     )
 
     out = replace_context(ctx)

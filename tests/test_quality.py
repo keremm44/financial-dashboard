@@ -45,3 +45,11 @@ def test_quality_marks_zero_volume_limited() -> None:
     report = assess_ohlcv_quality(frame)
     assert report.status == DataQualityStatus.LIMITED
     assert report.can_decide is True
+
+
+def test_quality_marks_open_candle_limited() -> None:
+    frame = _valid_frame()
+    frame["is_closed"] = [True, True, False]
+    report = assess_ohlcv_quality(frame)
+    assert report.status == DataQualityStatus.LIMITED
+    assert "One or more candles are open" in report.warnings

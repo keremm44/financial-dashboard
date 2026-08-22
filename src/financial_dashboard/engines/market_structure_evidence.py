@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .market_structure import SwingPoint
+from .market_structure_events import MarketStructureEventRecord, MarketStructureScopeSnapshot
 from .market_structure_state import (
     EVENT_BOS,
     EVENT_CHOCH,
@@ -35,6 +36,12 @@ class MarketStructureExport:
     internal_weak_low: float | None
     internal_weak_high: float | None
     handshake: float = HANDSHAKE
+    contract_version: int = 3
+    events: tuple[MarketStructureEventRecord, ...] = ()
+    latest_external_event: MarketStructureEventRecord | None = None
+    latest_internal_event: MarketStructureEventRecord | None = None
+    external_scope: MarketStructureScopeSnapshot | None = None
+    internal_scope: MarketStructureScopeSnapshot | None = None
 
 
 def _latest_event(external: StructureEvent | None, internal: StructureEvent | None) -> StructureEvent | None:

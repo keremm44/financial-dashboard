@@ -1,5 +1,6 @@
 from financial_dashboard.engines.market_structure import SCOPE_EXTERNAL, SIDE_HIGH, SIDE_LOW, SWING_CONFIRMED, SwingPoint
 from financial_dashboard.engines.market_structure_state import (
+    BosMaturity,
     EVENT_BOS,
     EVENT_CHOCH,
     EVENT_TRANSITION_FAIL,
@@ -98,7 +99,7 @@ def test_bos_confirms_transition_and_promotes_previous_protected_to_strong() -> 
     swings = [old_low, target, origin]
     ctx = StructureContext(direction=0, state=STATE_TRANSITION_UP, protected_low_identity=1, weak_high_identity=2)
 
-    out, _ = finalize_confirmed_break(
+    out, event = finalize_confirmed_break(
         swings,
         ctx,
         _candidate(EVENT_BOS, 1, target, origin),
@@ -108,11 +109,37 @@ def test_bos_confirms_transition_and_promotes_previous_protected_to_strong() -> 
         follow_through=80,
     )
 
+    assert event.bos_maturity is BosMaturity.TRANSITION_CONFIRMATION
     assert out.state == STATE_BULLISH
     assert out.direction == 1
     assert out.protected_low_identity == 3
     assert out.strong_low_identity == 1
     assert out.evidence_text == "TRANSITION_CONFIRMED_BY_BOS"
+
+
+def test_bos_in_directional_context_is_typed_as_continuation() -> None:
+    protected_low = _s(1, SIDE_LOW, 7, 98, ROLE_PROTECTED_LOW)
+    target = _s(2, SIDE_HIGH, 12, 110, ROLE_WEAK_HIGH)
+    origin = _s(3, SIDE_LOW, 16, 102)
+    swings = [protected_low, target, origin]
+    ctx = StructureContext(
+        direction=1,
+        state=STATE_BULLISH,
+        protected_low_identity=1,
+        weak_high_identity=2,
+    )
+
+    _, event = finalize_confirmed_break(
+        swings,
+        ctx,
+        _candidate(EVENT_BOS, 1, target, origin),
+        event_identity=9,
+        event_bar=20,
+        acceptance=75,
+        follow_through=80,
+    )
+
+    assert event.bos_maturity is BosMaturity.CONTINUATION
 
 
 def test_transition_fail_restores_old_main_direction() -> None:

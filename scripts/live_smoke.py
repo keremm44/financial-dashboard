@@ -18,6 +18,7 @@ from financial_dashboard.engines import (
     SupportResistanceRangeEngine,
     VolumeParticipationEngine,
 )
+from financial_dashboard.volume_mtf_replay import VolumeMTFEvidenceReplayRunner
 
 
 TZ = ZoneInfo("Europe/Istanbul")
@@ -36,33 +37,169 @@ def _summary(frame) -> dict[str, object]:
     }
 
 
+def _run_volume_round2(
+    store: ParquetOHLCVStore,
+    *,
+    symbol: str,
+) -> int:
+    print("\n[volume-round2-mtf]")
+    try:
+        volume = VolumeMTFEvidenceReplayRunner(store).replay(symbol)
+    except Exception as error:
+        print("VOLUME_ROUND2_FAILED")
+        print(f"reason={type(error).__name__}: {error}")
+        return 5
+    for replay in volume.timeframe_replays:
+        print(
+            f"{replay.timeframe}=bars:{replay.bar_count} "
+            f"ready:{replay.ready_bar_count} warmup:{replay.warmup_bar_count} "
+            f"unavailable:{replay.unavailable_bar_count} "
+            f"links:{len(replay.event_links)} quality:{replay.replay_data_quality.value}"
+        )
+    round2 = volume.round2
+    print(
+        f"context={round2.pressure.state.value} "
+        f"score={round2.pressure.directional_score:.4f} "
+        f"coverage={round2.pressure.evidence_coverage:.4f} "
+        f"authority={round2.pressure.decision_authority}"
+    )
+    print(
+        f"event_assessments={len(round2.event_assessments)} "
+        f"risks={len(round2.risks)} shocks={len(round2.shocks)} "
+        f"propagations={len(round2.structural_propagations)}"
+    )
+    dedup = round2.deduplication
+    print(
+        f"dedup_family={dedup.source_family} vote_cap={dedup.independent_vote_cap} "
+        f"raw_mtf_volume_summed={dedup.raw_mtf_volume_summed} policy={dedup.policy}"
+    )
+    unsafe_promotion = any(
+        assessment.lower_timeframe_can_confirm
+        for assessment in round2.event_assessments
+    )
+    if (
+        round2.pressure.raw_volume_summed
+        or dedup.raw_mtf_volume_summed
+        or dedup.independent_vote_cap != 1
+        or unsafe_promotion
+    ):
+        print("VOLUME_ROUND2_FAILED")
+        print("reason=authority or shared-source dedup invariant failed")
+        return 6
+    print("VOLUME_ROUND2_OK")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Real BIST tvDatafeed -> cache -> resample -> engine smoke test")
     parser.add_argument("--symbol", default="THYAO")
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--cache-root", default=".cache/live-smoke")
     parser.add_argument("--max-bars", type=int, default=5000)
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help=(
+            "request the complete provider window and merge it into the existing "
+            "cache; without this flag refresh remains right-edge incremental"
+        ),
+    )
+    parser.add_argument(
+        "--volume-round2",
+        action="store_true",
+        help=(
+            "after cache refresh, replay the five-timeframe Volume Round 2 "
+            "inspection contract and print causal/risk/dedup diagnostics"
+        ),
+    )
+    parser.add_argument(
+        "--cache-only",
+        action="store_true",
+        help=(
+            "skip the provider and validate the five-timeframe Volume replay "
+            "already present under --cache-root; requires --volume-round2"
+        ),
+    )
     args = parser.parse_args()
+    if args.days <= 0:
+        parser.error("--days must be positive")
+    if args.max_bars <= 0:
+        parser.error("--max-bars must be positive")
+    if args.cache_only and not args.volume_round2:
+        parser.error("--cache-only requires --volume-round2")
 
     end = datetime.now(TZ)
     start = end - timedelta(days=args.days)
 
     print("=== ARGENT LIVE SMOKE ===")
-    print(f"symbol={args.symbol} exchange=BIST start={start.isoformat()} end={end.isoformat()}")
+    refresh_mode = (
+        "cache-only"
+        if args.cache_only
+        else "backfill-merge"
+        if args.backfill
+        else "incremental"
+    )
+    print(
+        f"symbol={args.symbol} exchange=BIST start={start.isoformat()} "
+        f"end={end.isoformat()} mode={refresh_mode}"
+    )
+
+    store = ParquetOHLCVStore(Path(args.cache_root))
+    if args.cache_only:
+        print("\n[cached-five-timeframe-input]")
+        for timeframe in ("1d", "4h", "2h", "1h", "30m"):
+            print(f"{timeframe}={_summary(store.load(args.symbol, timeframe))}")
+        status = _run_volume_round2(store, symbol=args.symbol)
+        if status:
+            return status
+        print("\nSMOKE_OK")
+        return 0
 
     provider = TvDatafeedProvider(exchange="BIST", max_bars=args.max_bars)
-    store = ParquetOHLCVStore(Path(args.cache_root))
     pipeline = MarketDataPipeline(provider, store)
-
-    result = pipeline.refresh_bist_5m_incremental(
-        symbol=args.symbol,
-        requested_start=start,
-        end=end,
+    cached_before = store.load(args.symbol, "5m")
+    left_edge_before = (
+        None if cached_before.empty else cached_before.iloc[0]["timestamp"]
     )
+
+    if args.backfill:
+        # A full-window provider request can extend the cache's left edge.  The
+        # Parquet store merges by timestamp, so existing rows are preserved unless
+        # the provider returns a newer value for the same timestamp.
+        result = pipeline.refresh_bist_5m(
+            symbol=args.symbol,
+            start=start,
+            end=end,
+        )
+    else:
+        result = pipeline.refresh_bist_5m_incremental(
+            symbol=args.symbol,
+            requested_start=start,
+            end=end,
+        )
 
     print("\n[provider]")
     print(f"volume_status={provider.last_volume_status} volume_type={provider.volume_type}")
     print(f"5m={_summary(result.base)}")
+    if args.backfill:
+        left_edge_after = (
+            None if result.base.empty else result.base.iloc[0]["timestamp"]
+        )
+        if left_edge_before is None and left_edge_after is not None:
+            left_edge_status = "CACHE_POPULATED"
+        elif (
+            left_edge_before is not None
+            and left_edge_after is not None
+            and left_edge_after < left_edge_before
+        ):
+            left_edge_status = "LEFT_EDGE_EXTENDED"
+        else:
+            left_edge_status = "LEFT_EDGE_UNCHANGED"
+        print(
+            "backfill="
+            f"{left_edge_status} before={left_edge_before} after={left_edge_after} "
+            f"requested_days={args.days} provider_max_bars={args.max_bars}"
+        )
 
     print("\n[derived]")
     for timeframe, frame in result.derived.items():
@@ -135,6 +272,11 @@ def main() -> int:
     print(f"core_export={participation.export_contract}")
     print(f"lifecycle_export={participation.lifecycle_export}")
     print(f"final_export={participation.final_export}")
+
+    if args.volume_round2:
+        status = _run_volume_round2(store, symbol=args.symbol)
+        if status:
+            return status
 
     print("\nSMOKE_OK")
     return 0

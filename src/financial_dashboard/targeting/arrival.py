@@ -1,0 +1,188 @@
+from __future__ import annotations
+
+from collections import defaultdict
+from typing import Iterable
+
+import pandas as pd
+
+from .models import TargetEvidence, TargetSide
+from .semantic_models import (
+    ArrivalConflict,
+    ArrivalContext,
+    ArrivalPosition,
+    ArrivalState,
+    Objective,
+    PositionedReaction,
+    ReactionKind,
+    ReactionZone,
+    SemanticOverallState,
+    SemanticTargetingSnapshot,
+)
+from .semantic_roles import reaction_direction, to_confirmation, to_objective, to_reaction_zone
+
+
+def _interval_gap(a_low: float, a_high: float, b_low: float, b_high: float) -> float:
+    if a_high < b_low:
+        return b_low - a_high
+    if b_high < a_low:
+        return a_low - b_high
+    return 0.0
+
+
+def _distance_to_objective(objective: Objective, current_price: float) -> float:
+    if objective.side is TargetSide.ABOVE:
+        return max(0.0, objective.low - current_price)
+    if objective.side is TargetSide.BELOW:
+        return max(0.0, current_price - objective.high)
+    return 0.0
+
+
+def _reaction_position(zone: ReactionZone, objective: Objective, *, current_price: float, tolerance_price: float) -> ArrivalPosition:
+    if zone.low <= current_price <= zone.high:
+        return ArrivalPosition.CURRENT
+    if _interval_gap(zone.low, zone.high, objective.low, objective.high) <= tolerance_price:
+        return ArrivalPosition.AT_OBJECTIVE
+    if objective.side is TargetSide.ABOVE:
+        if zone.high < objective.low and zone.high >= current_price:
+            return ArrivalPosition.AHEAD
+        if zone.low > objective.high:
+            return ArrivalPosition.BEYOND
+    elif objective.side is TargetSide.BELOW:
+        if zone.low > objective.high and zone.low <= current_price:
+            return ArrivalPosition.AHEAD
+        if zone.high < objective.low:
+            return ArrivalPosition.BEYOND
+    return ArrivalPosition.UNRELATED
+
+
+def _has_direction_conflict(items: tuple[PositionedReaction, ...]) -> bool:
+    directions = {reaction_direction(item.zone) for item in items} - {"NEUTRAL"}
+    return len(directions) > 1
+
+
+def _conflicts(*, current: tuple[PositionedReaction, ...], ahead: tuple[PositionedReaction, ...], at: tuple[PositionedReaction, ...]) -> tuple[ArrivalConflict, ...]:
+    out: list[ArrivalConflict] = []
+    if _has_direction_conflict(current):
+        out.append(ArrivalConflict.CURRENT)
+    if _has_direction_conflict(ahead):
+        out.append(ArrivalConflict.AHEAD)
+    if _has_direction_conflict(at):
+        out.append(ArrivalConflict.AT_OBJECTIVE)
+    return tuple(out)
+
+
+def _arrival_state(objective: Objective, *, current_price: float, at: tuple[PositionedReaction, ...], ahead: tuple[PositionedReaction, ...], current: tuple[PositionedReaction, ...], conflicts: tuple[ArrivalConflict, ...]) -> ArrivalState:
+    if objective.low <= current_price <= objective.high:
+        return ArrivalState.AT_OBJECTIVE
+    if current:
+        return ArrivalState.IN_REACTION_ZONE
+    if not at and not ahead:
+        return ArrivalState.OBJECTIVE_ONLY
+    # Conflict is spatially scoped. Only conflicting reactions at the objective
+    # describe a conflicting arrival. Ahead conflict remains a path/obstacle fact.
+    if ArrivalConflict.AT_OBJECTIVE in conflicts:
+        return ArrivalState.CONFLICTING_ARRIVAL
+    if ahead and not at:
+        return ArrivalState.OBJECTIVE_WITH_OBSTACLE
+    relevant = (*at, *ahead)
+    origins = {item.zone.source.origin_event_id for item in relevant}
+    kinds = {item.zone.kind for item in relevant}
+    if len(origins) > 1 and len(kinds) > 1:
+        return ArrivalState.MULTI_DOMAIN_REACTION
+    return ArrivalState.OBJECTIVE_WITH_REACTION
+
+
+def build_arrival_context(objective: Objective, *, current_price: float, reference_atr: float, reactions: Iterable[ReactionZone], confirmations, proximity_atr: float = 0.25) -> ArrivalContext:
+    atr = max(float(reference_atr), 1e-12)
+    tolerance = atr * max(float(proximity_atr), 0.0)
+    positioned: dict[ArrivalPosition, list[PositionedReaction]] = defaultdict(list)
+    for zone in reactions:
+        position = _reaction_position(zone, objective, current_price=current_price, tolerance_price=tolerance)
+        if position is ArrivalPosition.UNRELATED:
+            continue
+        positioned[position].append(PositionedReaction(
+            zone=zone,
+            position=position,
+            independent_from_objective=(zone.source.origin_event_id != objective.source.origin_event_id),
+            distance_from_objective_atr=_interval_gap(zone.low, zone.high, objective.low, objective.high) / atr,
+        ))
+
+    def ordered(position: ArrivalPosition) -> tuple[PositionedReaction, ...]:
+        return tuple(sorted(positioned.get(position, ()), key=lambda item: (item.distance_from_objective_atr, item.zone.low, item.zone.high, item.zone.identity)))
+
+    ahead = ordered(ArrivalPosition.AHEAD)
+    at = ordered(ArrivalPosition.AT_OBJECTIVE)
+    downstream = ordered(ArrivalPosition.BEYOND)
+    current = ordered(ArrivalPosition.CURRENT)
+    conflicts = _conflicts(current=current, ahead=ahead, at=at)
+    relevant = (*current, *ahead, *at)
+    independent_origins = len({item.zone.source.origin_event_id for item in relevant if item.independent_from_objective})
+    reaction_types = tuple(sorted({item.zone.kind for item in relevant}, key=lambda kind: kind.value))
+    linked_confirmations = tuple(
+        confirmation for confirmation in confirmations
+        if _interval_gap(confirmation.low, confirmation.high, objective.low, objective.high) <= tolerance
+        or confirmation.low <= current_price <= confirmation.high
+    )
+    return ArrivalContext(
+        objective=objective,
+        state=_arrival_state(objective, current_price=current_price, at=at, ahead=ahead, current=current, conflicts=conflicts),
+        reactions_ahead=ahead,
+        reactions_at=at,
+        downstream_reactions=downstream,
+        current_reactions=current,
+        confirmations=linked_confirmations,
+        independent_reaction_origins=independent_origins,
+        reaction_types=reaction_types,
+        conflicts=conflicts,
+    )
+
+
+def _nearest(objectives: Iterable[Objective], side: TargetSide, current_price: float) -> Objective | None:
+    candidates = [objective for objective in objectives if objective.side is side]
+    return min(candidates, key=lambda objective: (_distance_to_objective(objective, current_price), objective.identity), default=None)
+
+
+def _side_state(context: ArrivalContext | None) -> ArrivalState:
+    return ArrivalState.NO_ACTIVE_OBJECTIVE if context is None else context.state
+
+
+def _overall_state(*, upside: ArrivalContext | None, downside: ArrivalContext | None, reactions: tuple[ReactionZone, ...]) -> SemanticOverallState:
+    if upside is None and downside is None:
+        return SemanticOverallState.REACTION_ZONE_ONLY if reactions else SemanticOverallState.NO_ACTIVE_OBJECTIVE
+    if upside is not None and downside is None:
+        return SemanticOverallState.UPSIDE_ONLY
+    if downside is not None and upside is None:
+        return SemanticOverallState.DOWNSIDE_ONLY
+    assert upside is not None and downside is not None
+    return SemanticOverallState.ALIGNED if upside.state is downside.state else SemanticOverallState.MIXED
+
+
+def build_semantic_targeting_snapshot(*, symbol: str, as_of, current_price: float, reference_atr: float, evidence: Iterable[TargetEvidence]) -> SemanticTargetingSnapshot:
+    cutoff = pd.Timestamp(as_of)
+    items = tuple(item for item in evidence if pd.Timestamp(item.available_at) <= cutoff)
+    objectives = tuple(objective for item in items if (objective := to_objective(item, current_price=current_price)) is not None)
+    reactions = tuple(zone for item in items if (zone := to_reaction_zone(item, current_price=current_price)) is not None)
+    confirmations = tuple(confirmation for item in items if (confirmation := to_confirmation(item, current_price=current_price)) is not None)
+    nearest_up = _nearest(objectives, TargetSide.ABOVE, current_price)
+    nearest_down = _nearest(objectives, TargetSide.BELOW, current_price)
+    up_context = None if nearest_up is None else build_arrival_context(nearest_up, current_price=current_price, reference_atr=reference_atr, reactions=reactions, confirmations=confirmations)
+    down_context = None if nearest_down is None else build_arrival_context(nearest_down, current_price=current_price, reference_atr=reference_atr, reactions=reactions, confirmations=confirmations)
+    return SemanticTargetingSnapshot(
+        symbol=symbol,
+        as_of=as_of,
+        current_price=float(current_price),
+        reference_atr=float(reference_atr),
+        objectives=objectives,
+        reaction_zones=reactions,
+        confirmations=confirmations,
+        nearest_upside_objective=nearest_up,
+        nearest_downside_objective=nearest_down,
+        upside_arrival=up_context,
+        downside_arrival=down_context,
+        upside_state=_side_state(up_context),
+        downside_state=_side_state(down_context),
+        overall_state=_overall_state(upside=up_context, downside=down_context, reactions=reactions),
+    )
+
+
+__all__ = ["build_arrival_context", "build_semantic_targeting_snapshot"]

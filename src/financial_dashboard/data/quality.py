@@ -66,6 +66,10 @@ def assess_ohlcv_quality(frame: pd.DataFrame) -> DataQualityReport:
     if not volume.dropna().empty and (volume.dropna() == 0).all():
         warnings.append("Volume is zero for the entire sample")
 
+    if "is_closed" in frame.columns:
+        closed = frame["is_closed"].fillna(False).astype(bool)
+        if not closed.all():
+            warnings.append("One or more candles are open")
     if "is_complete" in frame.columns:
         completeness = frame["is_complete"].fillna(False).astype(bool)
         if not completeness.all():

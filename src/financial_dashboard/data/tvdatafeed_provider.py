@@ -78,8 +78,9 @@ class TvDatafeedProvider(MarketDataProvider):
             from tvDatafeed import Interval, TvDatafeed
         except ImportError as exc:  # pragma: no cover - environment dependent
             raise RuntimeError(
-                "tvDatafeed is not installed. Install a compatible tvDatafeed package "
-                "in the local runtime or inject a client for tests."
+                "tvDatafeed is not installed. Install the project's live-data extra "
+                "with `python -m pip install -e \".[live]\"` in this runtime, or "
+                "inject a compatible client for tests."
             ) from exc
         self._client = TvDatafeed()
         self._interval_enum = Interval
