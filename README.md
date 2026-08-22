@@ -1,6 +1,6 @@
 # Financial Dashboard
 
-Local-first, deterministic OHLCV analysis workspace with independent multi-timeframe Market Structure, typed Support/Resistance location context, Pattern/Compression evidence, Ham and Volume support domains, and a Streamlit inspection UI.
+Local-first, deterministic OHLCV analysis workspace with independent multi-timeframe Market Structure, typed Support/Resistance location context, Pattern/Compression evidence, Ham and Volume support domains, Liquidity/Order Block/FVG-Engulfing evidence, descriptive target clustering, and a Streamlit inspection UI.
 
 ## What is implemented
 
@@ -10,11 +10,12 @@ Local-first, deterministic OHLCV analysis workspace with independent multi-timef
 - One canonical trimmed-uppercase engine/cache symbol identity
 - One shared `AnalysisInputSnapshot` per workspace replay:
   - each requested Parquet timeframe is loaded once
-  - the same prepared closed+complete batch is reused across Observer, Ham, and Volume
+  - the same prepared closed+complete batch is reused across Observer, Ham, Volume, Liquidity, Order Block and supported FVG/Engulfing replays
   - cache fingerprint changes during loading/replay fail closed
 - Causal timestamp discipline:
   - intraday cache bars are left-labelled and become available after their bar duration
   - Yahoo/BIST `1d` cache bars are session-close labelled and are available at the stored close timestamp
+  - target evidence separately preserves `origin_time`, `confirmed_at`, and `available_at`
   - explicit `CausalBarClock` overrides remain supported
 - Persistent internal/external BOS and CHoCH history, with typed BOS maturity (`INITIAL_STRUCTURE`, `TRANSITION_CONFIRMATION`, `CONTINUATION`)
 - Typed Support/Resistance zones, lifecycle, MTF confluence, opposing-zone conflicts, and causal event-location links
@@ -38,18 +39,33 @@ Local-first, deterministic OHLCV analysis workspace with independent multi-timef
   - shock/fake/absorption/follow-through/reclaim histories
   - shared-source volume deduplication
   - Streamlit MTF/link/risk/history diagnostics
+- Target-evidence foundations:
+  - Liquidity BSL/SSL pool lifecycle remains native to `LiquidityEngine`
+  - Order Block lifecycle/fill semantics remain native to `OrderBlockEngine`
+  - FVG/Engulfing keeps its native supported timeframes (`1d`, `4h`, `2h`)
+  - native records are translated through causal adapters rather than rewritten
+  - target roles distinguish `MAGNET`, `SUPPLY`, `DEMAND`, `IMBALANCE`, and `REACTION`
+  - same-origin FVG/OB/Engulfing and same-origin Liquidity/S-R can be deduplicated for independent-evidence counting without deleting source facts
+  - evidence-to-evidence proximity and current-price distance are separate concepts
+  - ATR-normalized proximity uses max-span protection against chaining
+  - clusters expose envelope, core overlap, Liquidity anchor, nearest-edge distance, raw source count, independent origin count, families and timeframes
+  - clusters containing Liquidity are `LIQUIDITY_TARGET`; otherwise they remain `TECHNICAL_ZONE`
+  - nearest target and highest-confluence target are separate outputs
+  - no arbitrary fixed Liquidity/FVG/OB point weights are introduced
 - `MarketAnalysisWorkspace` execution coordinator:
   - Three-Domain foundation is required
-  - Ham and Volume failures are isolated and surfaced as domain health
+  - Ham, Volume, Liquidity, Order Block and FVG/Engulfing failures are isolated and surfaced as domain health
+  - Targeting consumes only evidence causally available at the reference snapshot
   - no domain is allowed to manufacture another domain's authority
 - Modular UI boundaries:
   - domain-specific view-model modules with a backwards-compatible `ui.view_models` facade
-  - composable chart layers for Structure and location overlays
-  - confluence/conflict overlays opt-in by default
+  - targeting summary/evidence view-model foundation
+  - composable chart layers for Structure, location and optional Targeting overlays
+  - confluence/conflict/target overlays remain opt-in by default
 
 The full workspace boundary is documented in [Market Analysis Workspace Contract](docs/market_analysis_workspace_contract.md).
 
-The analytical domains run continuously and independently. Higher-timeframe context does not disable lower-timeframe calculation or evidence retention. Lower-timeframe evidence cannot create a higher-timeframe structural fact. Weakening and recovery remain distinct states. Ham remains supporting evidence and cannot rewrite Market Structure, S/R, blockers, actions, or position state. Volume remains participation evidence and cannot create or replace BOS/CHoCH.
+The analytical domains run continuously and independently. Higher-timeframe context does not disable lower-timeframe calculation or evidence retention. Lower-timeframe evidence cannot create a higher-timeframe structural fact. Weakening and recovery remain distinct states. Ham remains supporting evidence and cannot rewrite Market Structure, S/R, blockers, actions, or position state. Volume remains participation evidence and cannot create or replace BOS/CHoCH. Liquidity, Order Block, FVG and Engulfing retain their native facts; Targeting only composes causally available evidence.
 
 ## Local installation
 
@@ -106,6 +122,8 @@ The cache label must match its provider/resampling contract:
 - Yahoo daily bars are normalized to the BIST session-close timestamp (`18:10 Europe/Istanbul` in the current daily provider contract);
 - causal cross-domain code converts those labels into evidence availability and does not add another day to an already close-labelled daily bar.
 
+A source/formation bar timestamp is not automatically the evidence availability timestamp. Pivot, imbalance, or lifecycle confirmation delays must be represented explicitly before a fact can participate in target clustering.
+
 ### BIST cache backfill
 
 `scripts/live_smoke.py` remains right-edge incremental by default. Increasing `--days` alone on an existing cache does **not** extend its left edge. Use `--backfill` to request the complete available provider window and merge older rows into the existing cache without deleting it:
@@ -143,7 +161,7 @@ Or run the app module directly:
 
 ```bash
 python -m streamlit run src/financial_dashboard/ui/app.py \
-  --server.address=0.0.0.0 \
+  --server.address=0.0.0 \
   --server.headless=true
 ```
 
@@ -154,7 +172,7 @@ Open `http://localhost:8501` in a browser. Use **Cache'i yeniden tara** after fi
 The interface is the inspection surface for `MarketAnalysisWorkspace` and provides:
 
 - descriptive top-level metrics, including `Observer state` rather than a global decision label
-- explicit domain-health status
+- explicit domain-health status, including Liquidity, Order Block, FVG/Engulfing and Targeting
 - the five-timeframe MTF matrix
 - internal/external BOS and CHoCH event history
 - candlesticks with Structure and S/R overlays
@@ -163,5 +181,6 @@ The interface is the inspection surface for `MarketAnalysisWorkspace` and provid
 - cache freshness, usable replay range, source quality, and structural left-boundary diagnostics
 - Ham five-timeframe summary plus latest-indicator and confirmed-history diagnostics
 - Volume five-timeframe summary plus causal Structure links, risk transitions, shock lifecycle, direct progression, history, and dedup diagnostics
+- targeting view-model and chart-overlay foundations for descriptive Liquidity objectives and confluence inspection
 
-It intentionally does **not** produce buy/sell actions, recommendations, predictions, stops, targets, provider-refresh automation, or a global Decision Engine. `Observer state` is descriptive workspace context, not trading authority.
+It intentionally does **not** produce buy/sell actions, recommendations, predictions, entries, stops, take-profit instructions, provider-refresh automation, or a global Decision Engine. A `LIQUIDITY_TARGET` is a descriptive nearby market objective/cluster, not a trade instruction or guaranteed destination.
