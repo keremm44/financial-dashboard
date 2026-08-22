@@ -39,6 +39,26 @@ def _objective_text(objective, current_price: float, atr: float) -> str:
     )
 
 
+def _arrival_text(context) -> str:
+    if context is None:
+        return "NONE"
+    nearest_downstream = (
+        None
+        if not context.downstream_reactions
+        else context.downstream_reactions[0].distance_from_objective_atr
+    )
+    downstream_text = "-" if nearest_downstream is None else f"{nearest_downstream:.3f}"
+    return (
+        f"{context.state.value} "
+        f"current={len(context.current_reactions)} "
+        f"ahead={len(context.reactions_ahead)} "
+        f"at={len(context.reactions_at)} "
+        f"downstream={len(context.downstream_reactions)} "
+        f"nearest_downstream_atr={downstream_text} "
+        f"independent_rx_origins={context.independent_reaction_origins}"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -130,8 +150,12 @@ def main() -> int:
             print("semantic=NONE")
         else:
             print(
-                f"semantic_state={semantic.state.value} objectives={len(semantic.objectives)} "
-                f"reactions={len(semantic.reaction_zones)} confirmations={len(semantic.confirmations)}"
+                f"semantic_overall={semantic.overall_state.value} "
+                f"upside_state={semantic.upside_state.value} "
+                f"downside_state={semantic.downside_state.value} "
+                f"objectives={len(semantic.objectives)} "
+                f"reactions={len(semantic.reaction_zones)} "
+                f"confirmations={len(semantic.confirmations)}"
             )
             print(
                 "objective_up="
@@ -149,24 +173,8 @@ def main() -> int:
                     semantic.reference_atr,
                 )
             )
-            if semantic.upside_arrival is not None:
-                print(
-                    f"arrival_up={semantic.upside_arrival.state.value} "
-                    f"ahead={len(semantic.upside_arrival.reactions_ahead)} "
-                    f"at={len(semantic.upside_arrival.reactions_at)} "
-                    f"beyond={len(semantic.upside_arrival.reactions_beyond)} "
-                    f"current={len(semantic.upside_arrival.current_reactions)} "
-                    f"independent_rx_origins={semantic.upside_arrival.independent_reaction_origins}"
-                )
-            if semantic.downside_arrival is not None:
-                print(
-                    f"arrival_down={semantic.downside_arrival.state.value} "
-                    f"ahead={len(semantic.downside_arrival.reactions_ahead)} "
-                    f"at={len(semantic.downside_arrival.reactions_at)} "
-                    f"beyond={len(semantic.downside_arrival.reactions_beyond)} "
-                    f"current={len(semantic.downside_arrival.current_reactions)} "
-                    f"independent_rx_origins={semantic.downside_arrival.independent_reaction_origins}"
-                )
+            print("arrival_up=" + _arrival_text(semantic.upside_arrival))
+            print("arrival_down=" + _arrival_text(semantic.downside_arrival))
 
         print(f"legacy_nearest_up={_target_text(snapshot.nearest_upside_target)}")
         print(f"legacy_nearest_down={_target_text(snapshot.nearest_downside_target)}")
