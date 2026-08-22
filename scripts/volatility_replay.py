@@ -41,13 +41,15 @@ def main() -> int:
 
     records = direction_lag_records(replay)
     print("[direction-lag]")
-    for row in records[-max(0, args.max_lag_rows):]:
+    limit = max(0, args.max_lag_rows)
+    displayed = records[-limit:] if limit else ()
+    for row in displayed:
         print(
             f"{row.timeframe} {row.direction} early={row.early_index} "
             f"candidate={row.candidate_index} confirmed={row.confirmed_index} "
             f"candidate_lag={row.candidate_lag_bars} confirmed_lag={row.confirmed_lag_bars}"
         )
-    print(f"lag_records={len(records)}")
+    print(f"lag_records={len(records)} displayed={len(displayed)}")
     print("VOLATILITY_REPLAY_OK")
     return 0
 
