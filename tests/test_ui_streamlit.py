@@ -58,6 +58,7 @@ def test_streamlit_app_smoke_renders_workspace_without_decision_actions(
         "Ham evidence",
         "Volume Participation",
         "Stabil Support Lifecycle",
+        "Auction Estimated Profile",
         "Liquidity",
         "Order Block",
         "FVG / Engulfing",
