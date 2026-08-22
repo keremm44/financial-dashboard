@@ -65,9 +65,15 @@ def main() -> int:
         print(
             f"{row.timeframe} {row.direction} early={row.early_index} "
             f"candidate={row.candidate_index} confirmed={row.confirmed_index} "
-            f"candidate_lag={row.candidate_lag_bars} confirmed_lag={row.confirmed_lag_bars}"
+            f"candidate_lag={row.candidate_lag_bars} confirmed_lag={row.confirmed_lag_bars} "
+            f"outcome={row.outcome} window_end={row.window_end_index} "
+            f"horizons={row.candidate_horizon_bars}/{row.confirmation_horizon_bars}"
         )
-    print(f"lag_records={len(records)} displayed={len(displayed)}")
+    counts: dict[str, int] = {}
+    for row in records:
+        counts[row.outcome] = counts.get(row.outcome, 0) + 1
+    summary = ",".join(f"{key}={counts[key]}" for key in sorted(counts)) or "none"
+    print(f"lag_records={len(records)} displayed={len(displayed)} outcomes={summary}")
     print("VOLATILITY_REPLAY_OK")
     return 0
 
