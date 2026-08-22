@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Callable
 
 from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES, normalize_timeframes
 from financial_dashboard.data.identity import normalize_symbol
@@ -20,6 +21,7 @@ def replay_cached_targeting_history(
     minimum_bars_per_timeframe: int = 20,
     step: int = 1,
     max_points: int = 10,
+    progress: Callable[[int, int, Any, str], None] | None = None,
 ) -> TargetingHistoricalReplay:
     normalized = normalize_timeframes(
         timeframes,
@@ -35,6 +37,7 @@ def replay_cached_targeting_history(
         minimum_bars_per_timeframe=minimum_bars_per_timeframe,
         step=step,
         max_points=max_points,
+        progress=progress,
     )
 
 
