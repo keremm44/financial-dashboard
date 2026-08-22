@@ -59,12 +59,34 @@ def _inputs() -> AnalysisInputSnapshot:
     )
 
 
+def _snapshot(
+    timestamp: pd.Timestamp,
+    regime: VolatilityState,
+    *,
+    early: EarlyDirectionTransition = EarlyDirectionTransition.NONE,
+    episode_started: bool = False,
+    episode_id: int = 0,
+) -> VolatilityDirectionSnapshot:
+    return VolatilityDirectionSnapshot(
+        timestamp=timestamp,
+        core_result=None,
+        confirmed_export=VolatilityBandsFibFinalExport(regime=int(regime)),
+        early=EarlyDirectionEvidence(
+            state=early,
+            raw_state=early,
+            episode_started=episode_started,
+            episode_id=episode_id,
+        ),
+    )
+
+
 def test_mtf_replay_reuses_shared_prepared_inputs(tmp_path) -> None:
     inputs = _inputs()
     replay = VolatilityMTFReplayRunner(ParquetOHLCVStore(tmp_path)).replay(
         "ASELS", input_snapshot=inputs
     )
     assert replay.timeframes == VOLATILITY_TIMEFRAMES
+    assert replay.profile == "Dengeli"
     for tf in VOLATILITY_TIMEFRAMES:
         assert replay.for_timeframe(tf).latest is not None
         assert len(replay.for_timeframe(tf).snapshots) == len(inputs.for_timeframe(tf).input_batch.frame)
@@ -109,33 +131,24 @@ def test_direction_lag_diagnostics_are_non_negative(tmp_path) -> None:
     )
     for record in direction_lag_records(replay):
         if record.candidate_lag_bars is not None:
-            assert record.candidate_lag_bars >= 0
+            assert 0 <= record.candidate_lag_bars <= record.candidate_horizon_bars
         if record.confirmed_lag_bars is not None:
-            assert record.confirmed_lag_bars >= 0
+            assert 0 <= record.confirmed_lag_bars <= record.confirmation_horizon_bars
 
 
 def test_direction_lag_reads_canonical_regime_not_coherence_state() -> None:
     timestamps = pd.date_range("2026-08-01 10:00", periods=4, freq="2h", tz=TZ)
-    regimes = (
-        VolatilityState.BALANCED,
-        VolatilityState.UP_CANDIDATE,
-        VolatilityState.UP_CONFIRMED,
-        VolatilityState.UP_CONFIRMED,
-    )
-    early_states = (
-        EarlyDirectionTransition.EARLY_UP,
-        EarlyDirectionTransition.NONE,
-        EarlyDirectionTransition.NONE,
-        EarlyDirectionTransition.NONE,
-    )
-    snapshots = tuple(
-        VolatilityDirectionSnapshot(
-            timestamp=timestamp,
-            core_result=None,
-            confirmed_export=VolatilityBandsFibFinalExport(regime=int(regime)),
-            early=EarlyDirectionEvidence(state=early),
-        )
-        for timestamp, regime, early in zip(timestamps, regimes, early_states, strict=True)
+    snapshots = (
+        _snapshot(
+            timestamps[0],
+            VolatilityState.BALANCED,
+            early=EarlyDirectionTransition.EARLY_UP,
+            episode_started=True,
+            episode_id=1,
+        ),
+        _snapshot(timestamps[1], VolatilityState.UP_CANDIDATE),
+        _snapshot(timestamps[2], VolatilityState.UP_CONFIRMED),
+        _snapshot(timestamps[3], VolatilityState.UP_CONFIRMED),
     )
     replay = VolatilityMTFReplay(
         symbol="ASELS",
@@ -159,3 +172,85 @@ def test_direction_lag_reads_canonical_regime_not_coherence_state() -> None:
     assert record.confirmed_index == 2
     assert record.candidate_lag_bars == 1
     assert record.confirmed_lag_bars == 2
+    assert record.outcome == "CONFIRMED"
+
+
+def test_stale_candidate_is_not_credited_to_old_early_episode() -> None:
+    timestamps = pd.date_range("2026-08-01 10:00", periods=70, freq="2h", tz=TZ)
+    snapshots = []
+    for i, timestamp in enumerate(timestamps):
+        regime = VolatilityState.DOWN_CANDIDATE if i == 59 else VolatilityState.BALANCED
+        snapshots.append(
+            _snapshot(
+                timestamp,
+                regime,
+                early=EarlyDirectionTransition.EARLY_DOWN if i == 0 else EarlyDirectionTransition.NONE,
+                episode_started=i == 0,
+                episode_id=1 if i == 0 else 0,
+            )
+        )
+    replay = VolatilityMTFReplay(
+        symbol="ASELS",
+        timeframes=("2h",),
+        by_timeframe=MappingProxyType(
+            {
+                "2h": VolatilityTimeframeReplay(
+                    symbol="ASELS",
+                    timeframe="2h",
+                    snapshots=tuple(snapshots),
+                )
+            }
+        ),
+        profile="Dengeli",
+    )
+
+    record = direction_lag_records(replay)[0]
+    assert record.candidate_index is None
+    assert record.confirmed_index is None
+    assert record.outcome == "EXPIRED"
+    assert record.window_end_index == 12
+    assert record.candidate_horizon_bars == 8
+    assert record.confirmation_horizon_bars == 12
+
+
+def test_next_episode_bounds_previous_lag_matching() -> None:
+    timestamps = pd.date_range("2026-08-01 10:00", periods=8, freq="2h", tz=TZ)
+    snapshots = (
+        _snapshot(
+            timestamps[0],
+            VolatilityState.BALANCED,
+            early=EarlyDirectionTransition.EARLY_UP,
+            episode_started=True,
+            episode_id=1,
+        ),
+        _snapshot(timestamps[1], VolatilityState.BALANCED),
+        _snapshot(
+            timestamps[2],
+            VolatilityState.BALANCED,
+            early=EarlyDirectionTransition.EARLY_DOWN,
+            episode_started=True,
+            episode_id=2,
+        ),
+        _snapshot(timestamps[3], VolatilityState.UP_CANDIDATE),
+        _snapshot(timestamps[4], VolatilityState.UP_CONFIRMED),
+        _snapshot(timestamps[5], VolatilityState.DOWN_CANDIDATE),
+        _snapshot(timestamps[6], VolatilityState.DOWN_CONFIRMED),
+        _snapshot(timestamps[7], VolatilityState.DOWN_CONFIRMED),
+    )
+    replay = VolatilityMTFReplay(
+        symbol="ASELS",
+        timeframes=("2h",),
+        by_timeframe=MappingProxyType(
+            {"2h": VolatilityTimeframeReplay("ASELS", "2h", snapshots)}
+        ),
+    )
+
+    records = direction_lag_records(replay)
+    assert len(records) == 2
+    assert records[0].candidate_index is None
+    assert records[0].confirmed_index is None
+    assert records[0].outcome == "SUPERSEDED"
+    assert records[0].window_end_index == 1
+    assert records[1].candidate_index == 5
+    assert records[1].confirmed_index == 6
+    assert records[1].outcome == "CONFIRMED"
