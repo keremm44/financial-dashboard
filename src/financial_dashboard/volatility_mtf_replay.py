@@ -6,7 +6,10 @@ from typing import Mapping
 from financial_dashboard.data.analysis_inputs import AnalysisInputSnapshot, load_analysis_inputs
 from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
-from financial_dashboard.engines.volatility_bands_fib_engine import VolatilityBandsConfig
+from financial_dashboard.engines.volatility_bands_fib_engine import (
+    VolatilityBandsConfig,
+    VolatilityState,
+)
 from financial_dashboard.engines.volatility_direction_transition import (
     EarlyDirectionTransition,
     VolatilityDirectionSnapshot,
@@ -48,11 +51,25 @@ class DirectionLagRecord:
     confirmed_lag_bars: int | None
 
 
-def _state(snapshot: VolatilityDirectionSnapshot) -> str:
-    return "" if snapshot.core_result is None else str(snapshot.core_result.state)
+def _volatility_state(snapshot: VolatilityDirectionSnapshot) -> VolatilityState | None:
+    regime = snapshot.confirmed_export.regime
+    if regime is None:
+        return None
+    try:
+        return VolatilityState(int(regime))
+    except (TypeError, ValueError):
+        return None
 
 
 def direction_lag_records(replay: VolatilityMTFReplay) -> tuple[DirectionLagRecord, ...]:
+    """Measure early-direction lead versus canonical volatility confirmation.
+
+    The final engine's ``EngineResult.state`` is a coherence state, not the canonical
+    volatility regime. Lag diagnostics therefore read ``confirmed_export.regime``
+    directly so candidate/confirmed timings cannot be confused with coherence or
+    internal Structure/Fibonacci states.
+    """
+
     records: list[DirectionLagRecord] = []
     for timeframe in replay.timeframes:
         snapshots = replay.for_timeframe(timeframe).snapshots
@@ -62,21 +79,25 @@ def direction_lag_records(replay: VolatilityMTFReplay) -> tuple[DirectionLagReco
                 continue
             if i > 0 and snapshots[i - 1].early.state is early:
                 continue
-            direction = "UP" if early is EarlyDirectionTransition.EARLY_UP else "DOWN"
-            candidate_token = f"{direction}_CANDIDATE"
-            confirmed_token = f"{direction}_CONFIRMED"
+
+            is_up = early is EarlyDirectionTransition.EARLY_UP
+            direction = "UP" if is_up else "DOWN"
+            candidate_state = VolatilityState.UP_CANDIDATE if is_up else VolatilityState.DOWN_CANDIDATE
+            confirmed_state = VolatilityState.UP_CONFIRMED if is_up else VolatilityState.DOWN_CONFIRMED
+            opposite_early = EarlyDirectionTransition.EARLY_DOWN if is_up else EarlyDirectionTransition.EARLY_UP
+
             candidate_index = None
             confirmed_index = None
             for j in range(i, len(snapshots)):
-                state = _state(snapshots[j])
-                if candidate_index is None and candidate_token in state:
+                state = _volatility_state(snapshots[j])
+                if candidate_index is None and state is candidate_state:
                     candidate_index = j
-                if confirmed_token in state:
+                if state is confirmed_state:
                     confirmed_index = j
                     break
-                opposite = "EARLY_DOWN" if direction == "UP" else "EARLY_UP"
-                if j > i and snapshots[j].early.state.value == opposite:
+                if j > i and snapshots[j].early.state is opposite_early:
                     break
+
             records.append(
                 DirectionLagRecord(
                     timeframe=timeframe,
