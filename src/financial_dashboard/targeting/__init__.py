@@ -32,6 +32,7 @@ from .semantic_models import (
     PositionedReaction,
     ReactionKind,
     ReactionZone,
+    SemanticOverallState,
     SemanticRole,
     SemanticTargetingSnapshot,
 )
@@ -60,6 +61,7 @@ __all__ = [
     "PositionedReaction",
     "ReactionKind",
     "ReactionZone",
+    "SemanticOverallState",
     "SemanticRole",
     "SemanticTargetingSnapshot",
     "TargetCluster",
