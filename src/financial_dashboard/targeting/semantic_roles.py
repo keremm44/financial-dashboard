@@ -44,10 +44,32 @@ def semantic_roles(item: TargetEvidence) -> tuple[SemanticRole, ...]:
     return (SemanticRole.STRUCTURAL_CONTEXT,)
 
 
+def is_objective_eligible(item: TargetEvidence) -> bool:
+    # Legacy `target_eligible` is treated only as native lifecycle activity here;
+    # semantic authority comes from evidence type + this derived axis.
+    return item.evidence_type is TargetEvidenceType.LIQUIDITY and bool(item.target_eligible)
+
+
+def is_reaction_eligible(item: TargetEvidence) -> bool:
+    return (
+        item.evidence_type
+        in {
+            TargetEvidenceType.ORDER_BLOCK,
+            TargetEvidenceType.FVG,
+            TargetEvidenceType.SUPPORT_RESISTANCE,
+        }
+        and bool(item.target_eligible)
+    )
+
+
+def is_confirmation_eligible(item: TargetEvidence) -> bool:
+    return item.evidence_type is TargetEvidenceType.ENGULFING and bool(item.target_eligible)
+
+
 def to_objective(item: TargetEvidence, *, current_price: float) -> Objective | None:
     # Phase-1 policy: only active/tested Liquidity is an objective. FVG refill
     # stays schema-supported but disabled until replay validates it independently.
-    if item.evidence_type is not TargetEvidenceType.LIQUIDITY or not item.target_eligible:
+    if not is_objective_eligible(item):
         return None
     anchor = float(item.anchor_price if item.anchor_price is not None else item.midpoint)
     return Objective(
@@ -63,16 +85,14 @@ def to_objective(item: TargetEvidence, *, current_price: float) -> Objective | N
 
 
 def to_reaction_zone(item: TargetEvidence, *, current_price: float) -> ReactionZone | None:
-    if not item.target_eligible:
+    if not is_reaction_eligible(item):
         return None
     if item.evidence_type is TargetEvidenceType.ORDER_BLOCK:
         kind = ReactionKind.ORDER_BLOCK
     elif item.evidence_type is TargetEvidenceType.FVG:
         kind = ReactionKind.FVG
-    elif item.evidence_type is TargetEvidenceType.SUPPORT_RESISTANCE:
-        kind = ReactionKind.SUPPORT_RESISTANCE
     else:
-        return None
+        kind = ReactionKind.SUPPORT_RESISTANCE
     return ReactionZone(
         identity=f"RX:{item.uid}",
         kind=kind,
@@ -86,7 +106,7 @@ def to_reaction_zone(item: TargetEvidence, *, current_price: float) -> ReactionZ
 
 
 def to_confirmation(item: TargetEvidence, *, current_price: float) -> Confirmation | None:
-    if item.evidence_type is not TargetEvidenceType.ENGULFING or not item.target_eligible:
+    if not is_confirmation_eligible(item):
         return None
     return Confirmation(
         identity=f"CF:{item.uid}",
@@ -106,6 +126,9 @@ def reaction_direction(zone: ReactionZone) -> str:
 __all__ = [
     "evidence_behavior",
     "evidence_side",
+    "is_confirmation_eligible",
+    "is_objective_eligible",
+    "is_reaction_eligible",
     "reaction_direction",
     "semantic_roles",
     "to_confirmation",
