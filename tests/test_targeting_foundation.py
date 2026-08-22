@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pandas as pd
 import pytest
 
@@ -23,6 +25,7 @@ from financial_dashboard.targeting.models import (
 
 
 TZ = "Europe/Istanbul"
+TARGET_AS_OF = pd.Timestamp("2026-08-20 13:00", tz=TZ)
 
 
 def _evidence(
@@ -86,7 +89,7 @@ def test_cluster_uses_nearest_edge_distance_and_liquidity_anchor() -> None:
     )
     snapshot = build_targeting_snapshot(
         symbol="TEST",
-        as_of=pd.Timestamp("2026-08-20 12:00", tz=TZ),
+        as_of=TARGET_AS_OF,
         current_price=100.0,
         reference_timeframe="1h",
         reference_atr=2.0,
@@ -112,7 +115,7 @@ def test_max_span_prevents_single_linkage_chaining() -> None:
     )
     snapshot = build_targeting_snapshot(
         symbol="TEST",
-        as_of="t",
+        as_of=TARGET_AS_OF,
         current_price=100.0,
         reference_timeframe="1h",
         reference_atr=1.0,
@@ -125,7 +128,6 @@ def test_max_span_prevents_single_linkage_chaining() -> None:
 
 
 def test_same_origin_fvg_ob_engulfing_do_not_count_as_three_independent_events() -> None:
-    stamp = pd.Timestamp("2026-08-20 10:00", tz=TZ)
     common = {
         "timeframe": "1h",
         "origin_index": 10,
@@ -177,7 +179,7 @@ def test_technical_cluster_without_liquidity_is_not_promoted_to_liquidity_target
     )
     snapshot = build_targeting_snapshot(
         symbol="TEST",
-        as_of="t",
+        as_of=TARGET_AS_OF,
         current_price=100.0,
         reference_timeframe="1h",
         reference_atr=1.0,
@@ -193,7 +195,7 @@ def test_internal_and_external_liquidity_resolvers_remain_separate() -> None:
     external = _evidence("external", low=104.0, scope=LiquidityScope.EXTERNAL)
     snapshot = build_targeting_snapshot(
         symbol="TEST",
-        as_of="t",
+        as_of=TARGET_AS_OF,
         current_price=100.0,
         reference_timeframe="1h",
         reference_atr=1.0,
@@ -201,6 +203,25 @@ def test_internal_and_external_liquidity_resolvers_remain_separate() -> None:
     )
     assert snapshot.nearest_internal_upside_liquidity == internal
     assert snapshot.nearest_external_upside_liquidity == external
+
+
+def test_future_available_evidence_is_not_visible_in_current_target_snapshot() -> None:
+    known = _evidence("known", low=102.0)
+    future = replace(
+        _evidence("future", low=101.0),
+        available_at=TARGET_AS_OF + pd.Timedelta(hours=1),
+    )
+    snapshot = build_targeting_snapshot(
+        symbol="TEST",
+        as_of=TARGET_AS_OF,
+        current_price=100.0,
+        reference_timeframe="1h",
+        reference_atr=1.0,
+        evidence=(known, future),
+    )
+    assert snapshot.nearest_upside_target is not None
+    assert snapshot.nearest_upside_target.liquidity_anchor == pytest.approx(102.0)
+    assert all(item.uid != "future" for cluster in snapshot.clusters for item in cluster.evidence)
 
 
 def _save(store: ParquetOHLCVStore, rows: list[dict], timeframe: str = "1h") -> None:
