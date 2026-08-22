@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .analysis_config import ANALYSIS_TIMEFRAMES, normalize_timeframes
+from .data.identity import normalize_symbol
 from .data.parquet_store import ParquetOHLCVStore
 from .engines.market_structure import MarketStructureConfig
 from .engines.market_structure_history import (
@@ -22,7 +24,6 @@ from .engines.structure_location import StructureZoneLinkConfig, ZoneConfluenceC
 from .engines.support_resistance_engine import SupportResistanceConfig
 from .engines.three_domain_observer import (
     CausalStructureEventObservation,
-    FOUNDATION_OBSERVER_TIMEFRAMES,
     LocationContextSnapshot,
     MTFPressureSnapshot,
     OpposingZoneConflictConfig,
@@ -71,12 +72,12 @@ class ThreeDomainReplayResult:
 
 
 class CachedThreeDomainObserverRunner:
-    """Replay all three domains continuously, then combine their immutable facts.
+    """Replay the frozen observer domains, then combine their immutable facts.
 
-    Market Structure and S/R are replayed independently by the causal Round-2
-    runner. Pattern/Compression receives every same closed+complete timeframe bar
-    separately. Cross-domain combination happens only after all engines finish; no
-    domain or higher timeframe can gate another engine's calculation or retention.
+    Market Structure and S/R are replayed independently by the causal runner.
+    Pattern/Compression receives every same closed+complete timeframe bar separately.
+    Cross-domain combination happens only after all engines finish; no domain or
+    higher timeframe can gate another engine's calculation or retention.
     """
 
     def __init__(
@@ -110,21 +111,16 @@ class CachedThreeDomainObserverRunner:
         self,
         *,
         symbol: str,
-        timeframes: tuple[str, ...] = FOUNDATION_OBSERVER_TIMEFRAMES,
+        timeframes: tuple[str, ...] = ANALYSIS_TIMEFRAMES,
     ) -> ThreeDomainReplayResult:
-        normalized = tuple(timeframe.strip().lower() for timeframe in timeframes)
-        unsupported = tuple(
-            timeframe
-            for timeframe in normalized
-            if timeframe not in FOUNDATION_OBSERVER_TIMEFRAMES
+        normalized_symbol = normalize_symbol(symbol)
+        normalized = normalize_timeframes(
+            timeframes,
+            supported=ANALYSIS_TIMEFRAMES,
+            label="three-domain observer",
         )
-        if unsupported:
-            raise ValueError(
-                "unsupported three-domain observer timeframes: "
-                + ", ".join(unsupported)
-            )
         structure_location = self.structure_location_runner.run(
-            symbol=symbol,
+            symbol=normalized_symbol,
             timeframes=normalized,
         )
 
@@ -142,7 +138,7 @@ class CachedThreeDomainObserverRunner:
             pattern_result = engine.snapshot()
             pattern_export = engine.export_contract
             pattern_snapshot = PatternTimeframeSnapshot(
-                symbol=symbol,
+                symbol=normalized_symbol,
                 timeframe=timeframe,
                 as_of=None if pattern_result is None else pattern_result.timestamp,
                 bar_count=len(replay.input_batch.frame),
@@ -190,7 +186,7 @@ class CachedThreeDomainObserverRunner:
             observed_events,
             as_of=as_of,
             timeframes=normalized,
-            symbol=symbol,
+            symbol=normalized_symbol,
         )
         current_progression_event_uids = tuple(
             event.event_uid for event in structure.latest_external_events
@@ -201,7 +197,7 @@ class CachedThreeDomainObserverRunner:
             frame = replay.input_batch.frame
             structure_history_rows.append(
                 assess_structure_history(
-                    symbol=symbol,
+                    symbol=normalized_symbol,
                     timeframe=timeframe,
                     input_bar_count=len(frame),
                     input_start=frame.iloc[0]["timestamp"],
@@ -215,18 +211,18 @@ class CachedThreeDomainObserverRunner:
             established_zones,
             structure_location.confluence,
             structure_location.location_outcomes,
-            symbol=symbol,
+            symbol=normalized_symbol,
             conflict_config=self.opposing_zone_config,
         )
         observation = combine_three_domains(
-            symbol=symbol,
+            symbol=normalized_symbol,
             as_of=as_of,
             pressure=pressure,
             structure=structure,
             location=location,
         )
         return ThreeDomainReplayResult(
-            symbol=symbol,
+            symbol=normalized_symbol,
             timeframes=normalized,
             structure_location=structure_location,
             pattern_snapshots=tuple(pattern_snapshots),
@@ -238,7 +234,7 @@ class CachedThreeDomainObserverRunner:
         )
 
     def run_foundation(self, *, symbol: str) -> ThreeDomainReplayResult:
-        return self.run(symbol=symbol, timeframes=FOUNDATION_OBSERVER_TIMEFRAMES)
+        return self.run(symbol=symbol, timeframes=ANALYSIS_TIMEFRAMES)
 
 
 def replay_foundation_three_domains(
