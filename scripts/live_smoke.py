@@ -22,6 +22,10 @@ from financial_dashboard.volume_mtf_replay import VolumeMTFEvidenceReplayRunner
 
 
 TZ = ZoneInfo("Europe/Istanbul")
+TARGET_HISTORY_TRADING_DAYS = 100
+BIST_5M_BARS_PER_FULL_SESSION = 96  # 10:00 inclusive -> 18:00 exclusive
+DEFAULT_PROVIDER_MAX_BARS = 10_000  # 9,600 for 100 sessions + partial-session headroom
+DEFAULT_CALENDAR_LOOKBACK_DAYS = 180  # weekends/holidays must not trim the 100-session target
 
 
 def _summary(frame) -> dict[str, object]:
@@ -35,6 +39,15 @@ def _summary(frame) -> dict[str, object]:
         "complete": int(frame["is_complete"].fillna(False).astype(bool).sum()) if "is_complete" in frame.columns else None,
         "volume_zero_or_missing": int(((frame["volume"].isna()) | (frame["volume"] <= 0)).sum()) if "volume" in frame.columns else None,
     }
+
+
+def _completed_daily_rows(frame) -> int:
+    if frame.empty:
+        return 0
+    mask = frame["is_closed"].fillna(False).astype(bool)
+    if "is_complete" in frame.columns:
+        mask &= frame["is_complete"].fillna(False).astype(bool)
+    return int(mask.sum())
 
 
 def _run_volume_round2(
@@ -93,9 +106,25 @@ def _run_volume_round2(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Real BIST tvDatafeed -> cache -> resample -> engine smoke test")
     parser.add_argument("--symbol", default="THYAO")
-    parser.add_argument("--days", type=int, default=30)
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=DEFAULT_CALENDAR_LOOKBACK_DAYS,
+        help=(
+            "calendar-day provider window; default is intentionally wider than "
+            "100 trading sessions so weekends/holidays do not truncate history"
+        ),
+    )
     parser.add_argument("--cache-root", default=".cache/live-smoke")
-    parser.add_argument("--max-bars", type=int, default=5000)
+    parser.add_argument(
+        "--max-bars",
+        type=int,
+        default=DEFAULT_PROVIDER_MAX_BARS,
+        help=(
+            "tvDatafeed 5m bar cap; BIST has 96 full-session 5m bars, so the "
+            "10,000 default covers at least about 100 completed trading sessions"
+        ),
+    )
     parser.add_argument(
         "--backfill",
         action="store_true",
@@ -132,6 +161,12 @@ def main() -> int:
     start = end - timedelta(days=args.days)
 
     print("=== ARGENT LIVE SMOKE ===")
+    print(
+        "history_policy="
+        f"target_completed_1d:{TARGET_HISTORY_TRADING_DAYS} "
+        f"bist_5m_per_full_session:{BIST_5M_BARS_PER_FULL_SESSION} "
+        f"provider_max_bars:{args.max_bars} calendar_lookback:{args.days}"
+    )
     refresh_mode = (
         "cache-only"
         if args.cache_only
@@ -198,12 +233,24 @@ def main() -> int:
         print(
             "backfill="
             f"{left_edge_status} before={left_edge_before} after={left_edge_after} "
-            f"requested_days={args.days} provider_max_bars={args.max_bars}"
+            f"requested_calendar_days={args.days} provider_max_bars={args.max_bars}"
         )
 
     print("\n[derived]")
     for timeframe, frame in result.derived.items():
         print(f"{timeframe}={_summary(frame)}")
+
+    daily = result.derived.get("1d")
+    completed_daily = 0 if daily is None else _completed_daily_rows(daily)
+    history_status = (
+        "HISTORY_100D_OK"
+        if completed_daily >= TARGET_HISTORY_TRADING_DAYS
+        else "HISTORY_100D_SHORT"
+    )
+    print(
+        f"{history_status} completed_1d={completed_daily} "
+        f"target={TARGET_HISTORY_TRADING_DAYS}"
+    )
 
     if result.base.empty:
         print("\nSMOKE_NO_DATA")
