@@ -54,9 +54,9 @@ def test_support_availability_is_independent_from_legacy_trend_warmup() -> None:
     assert snapshot.support_origin_at < snapshot.support_confirmed_at <= snapshot.support_available_at
 
 
-def test_default_tvdatafeed_capacity_covers_100_full_bist_5m_sessions() -> None:
+def test_default_tvdatafeed_capacity_covers_100_full_bist_15m_sessions() -> None:
     provider = TvDatafeedProvider(client=object())
 
-    # BIST continuous session is 10:00-18:00: 480 / 5 = 96 bars per full day.
-    assert provider.max_bars >= 100 * 96
+    # BIST continuous session is 10:00-18:00: 480 / 15 = 32 bars per full day.
+    assert provider.max_bars >= 100 * 32
     assert provider.max_bars == 10_000
