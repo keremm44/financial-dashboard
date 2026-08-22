@@ -112,7 +112,7 @@ class EstimatedAuctionProfileEngine:
         engine = AuctionVolumeProfileEngine(self.config)
         results = engine.replay(clean)
         result = results[-1] if results else engine.snapshot()
-        export = engine.export
+        export = engine.export_contract or AuctionExport()
         expected = self.config.preset.lookback
         fraction = min(1.0, profile.bars_used / float(expected)) if expected else 1.0
         if not profile.valid or profile.source_volume <= 0:
