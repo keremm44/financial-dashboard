@@ -12,7 +12,6 @@ from .stabil_trend_engine import (
     _atr,
     _clean,
     _confirmed_pivots,
-    _ema,
 )
 
 
@@ -165,10 +164,13 @@ def build_daily_support_observations(
     config: StabilTrendConfig | None = None,
     as_of: Any | None = None,
 ) -> tuple[DailySupportObservation, ...]:
-    """Build causal observations for the same daily structural support used by Stabil.
+    """Build causal observations for Stabil's confirmed daily pivot-low support.
 
-    The support source remains Stabil's confirmed daily pivot-low stepline. This
-    intentionally does not switch the observed line to Market Structure or S/R.
+    Support availability is intentionally independent from the legacy Stabil trend
+    warm-up (EMA, slope, acceptance and pullback lookback). Those are context inputs,
+    not prerequisites for a confirmed structural support. We still preserve the
+    existing pivot source, causal confirmation boundary, two-pivot structural ordering
+    and ATR-derived support floor.
     """
     cfg = config or StabilTrendConfig()
     clean = _clean(frame, as_of=as_of)
@@ -176,10 +178,6 @@ def build_daily_support_observations(
         return ()
 
     atr = _atr(clean)
-    ema = _ema(clean["close"], cfg.daily_ema_len)
-    acceptance = (
-        clean["close"].astype(float) > ema
-    ).astype(float).rolling(cfg.acceptance_len).mean()
     highs, lows = _confirmed_pivots(clean, cfg.daily_pivot_len, atr)
 
     out: list[DailySupportObservation] = []
@@ -190,26 +188,9 @@ def build_daily_support_observations(
         known_l = [pivot for pivot in lows if pivot.known_index <= i]
         enough = len(known_h) >= 2 and len(known_l) >= 2
         atr_i = atr[i]
-        acceptance_i = None if pd.isna(acceptance.iloc[i]) else float(acceptance.iloc[i])
-        ema_past = (
-            float(ema.iloc[i - cfg.slope_lookback])
-            if i >= cfg.slope_lookback
-            else None
-        )
-        history_ready = i > (
-            max(cfg.daily_ema_len + cfg.slope_lookback, cfg.pullback_lookback)
-            + cfg.daily_pivot_len * 8
-        )
-        data_ready = (
-            history_ready
-            and enough
-            and atr_i is not None
-            and ema_past is not None
-            and acceptance_i is not None
-        )
 
         support: ConfirmedStabilPivot | None = None
-        if enough and data_ready:
+        if enough:
             last_h, previous_h = known_h[-1], known_h[-2]
             last_l, previous_l = known_l[-1], known_l[-2]
             usable = (
