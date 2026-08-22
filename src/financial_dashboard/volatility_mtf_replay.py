@@ -62,13 +62,7 @@ def _volatility_state(snapshot: VolatilityDirectionSnapshot) -> VolatilityState 
 
 
 def direction_lag_records(replay: VolatilityMTFReplay) -> tuple[DirectionLagRecord, ...]:
-    """Measure early-direction lead versus canonical volatility confirmation.
-
-    The final engine's ``EngineResult.state`` is a coherence state, not the canonical
-    volatility regime. Lag diagnostics therefore read ``confirmed_export.regime``
-    directly so candidate/confirmed timings cannot be confused with coherence or
-    internal Structure/Fibonacci states.
-    """
+    """Measure early-direction lead versus canonical volatility confirmation."""
 
     records: list[DirectionLagRecord] = []
     for timeframe in replay.timeframes:
@@ -123,12 +117,15 @@ class VolatilityMTFReplayRunner:
         input_snapshot: AnalysisInputSnapshot | None = None,
         timeframes: tuple[str, ...] = VOLATILITY_TIMEFRAMES,
         profile: str = "Dengeli",
+        max_bars: int | None = None,
     ) -> VolatilityMTFReplay:
         normalized_symbol = normalize_symbol(symbol)
         requested = tuple(tf.strip().lower() for tf in timeframes)
         unsupported = tuple(tf for tf in requested if tf not in VOLATILITY_TIMEFRAMES)
         if unsupported:
             raise ValueError(f"unsupported volatility timeframe(s): {unsupported!r}")
+        if max_bars is not None and max_bars < 1:
+            raise ValueError("max_bars must be >= 1 when provided")
         if input_snapshot is None:
             inputs = load_analysis_inputs(self.store, symbol=normalized_symbol, timeframes=requested)
         else:
@@ -138,6 +135,8 @@ class VolatilityMTFReplayRunner:
         by_timeframe: dict[str, VolatilityTimeframeReplay] = {}
         for timeframe in requested:
             frame = inputs.for_timeframe(timeframe).input_batch.frame
+            if max_bars is not None and len(frame) > max_bars:
+                frame = frame.tail(max_bars).copy()
             engine = VolatilityDirectionTransitionEngine(
                 VolatilityBandsConfig(profile=profile, timeframe=timeframe)
             )
