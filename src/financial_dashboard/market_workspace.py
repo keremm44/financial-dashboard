@@ -11,7 +11,10 @@ from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.engines.pattern_compression_core import PatternCompressionConfig
 from financial_dashboard.ham_mtf_replay import HamMTFEvidenceReplay, HamMTFEvidenceReplayRunner
-from financial_dashboard.structure_location_replay import CausalBarClock
+from financial_dashboard.structure_location_replay import (
+    CachedStructureLocationMTFRunner,
+    CausalBarClock,
+)
 from financial_dashboard.target_evidence_replay import (
     FvgEngulfingMTFReplayRunner,
     LiquidityMTFReplayRunner,
@@ -19,6 +22,7 @@ from financial_dashboard.target_evidence_replay import (
     TargetEvidenceMTFReplay,
 )
 from financial_dashboard.targeting.adapters import support_resistance_evidence
+from financial_dashboard.targeting.causal_inputs import clip_analysis_inputs_at_cutoff
 from financial_dashboard.targeting.clustering import build_targeting_snapshot
 from financial_dashboard.targeting.enrichment import enrich_liquidity_scope
 from financial_dashboard.targeting.models import TargetingSnapshot
@@ -108,9 +112,11 @@ class MarketAnalysisWorkspaceRunner:
     """Execution coordinator for independent analysis domains.
 
     The coordinator has no trading authority. It shares one immutable prepared input
-    snapshot, isolates optional-domain failures, and only combines already-causal
-    evidence in the targeting layer. Targeting is descriptive: nearest/confluence
-    targets are not BUY/SELL, stop, or execution instructions.
+    snapshot, isolates optional-domain failures, and combines only causal evidence.
+    Target sources are replayed again on the reference snapshot's causal prefix so a
+    later bar cannot rewrite target state that was not yet knowable at that moment.
+    Targeting is descriptive: nearest/confluence targets are not BUY/SELL, stop, or
+    execution instructions.
     """
 
     def __init__(self, store: ParquetOHLCVStore) -> None:
@@ -170,96 +176,119 @@ class MarketAnalysisWorkspaceRunner:
         except Exception as error:
             volume = WorkspaceDomainResult.failed(error)
 
+        target_clock = CausalBarClock()
+        reference_timeframe = "1h" if "1h" in normalized_timeframes else normalized_timeframes[0]
+        reference_full_frame = inputs.for_timeframe(reference_timeframe).input_batch.frame
+        reference_bar_time = reference_full_frame.iloc[-1]["timestamp"]
+        target_as_of = target_clock.available_at(reference_bar_time, reference_timeframe)
+
         try:
-            liquidity = WorkspaceDomainResult.ready(
-                LiquidityMTFReplayRunner(self.store).replay(
-                    normalized_symbol,
-                    timeframes=normalized_timeframes,
-                    input_snapshot=inputs,
-                )
+            target_inputs = clip_analysis_inputs_at_cutoff(
+                inputs,
+                cutoff=target_as_of,
+                clock=target_clock,
             )
         except Exception as error:
             liquidity = WorkspaceDomainResult.failed(error)
-
-        try:
-            order_block = WorkspaceDomainResult.ready(
-                OrderBlockMTFReplayRunner(self.store).replay(
-                    normalized_symbol,
-                    timeframes=normalized_timeframes,
-                    input_snapshot=inputs,
-                )
-            )
-        except Exception as error:
             order_block = WorkspaceDomainResult.failed(error)
-
-        try:
-            fvg_engulfing = WorkspaceDomainResult.ready(
-                FvgEngulfingMTFReplayRunner(self.store).replay(
-                    normalized_symbol,
-                    timeframes=normalized_timeframes,
-                    input_snapshot=inputs,
-                )
-            )
-        except Exception as error:
             fvg_engulfing = WorkspaceDomainResult.failed(error)
-
-        try:
-            reference_timeframe = "1h" if "1h" in normalized_timeframes else normalized_timeframes[0]
-            reference_frame = inputs.for_timeframe(reference_timeframe).input_batch.frame
-            reference_price = float(reference_frame.iloc[-1]["close"])
-            reference_atr = wilder_atr(reference_frame)
-            reference_bar_time = reference_frame.iloc[-1]["timestamp"]
-            target_clock = CausalBarClock()
-            as_of = target_clock.available_at(reference_bar_time, reference_timeframe)
-
-            evidence = []
-            structure_by_timeframe = {
-                timeframe: observer.structure_location.replay_for(timeframe).market_structure
-                for timeframe in normalized_timeframes
-            }
-            if liquidity.is_ready and isinstance(liquidity.result, TargetEvidenceMTFReplay):
-                atr_by_timeframe = {
-                    timeframe: liquidity.result.for_timeframe(timeframe).atr
-                    for timeframe in liquidity.result.timeframes
-                }
-                evidence.extend(
-                    enrich_liquidity_scope(
-                        liquidity.result.evidence,
-                        structure_by_timeframe=structure_by_timeframe,
-                        atr_by_timeframe=atr_by_timeframe,
-                    )
-                )
-
-            # S/R is already part of the required observer foundation. It joins the
-            # target layer through an adapter rather than becoming a new authority.
-            for timeframe in normalized_timeframes:
-                replay = observer.structure_location.replay_for(timeframe)
-                evidence.extend(
-                    support_resistance_evidence(
-                        symbol=normalized_symbol,
-                        timeframe=timeframe,
-                        snapshot=replay.support_resistance,
-                        clock=target_clock,
-                    )
-                )
-
-            if order_block.is_ready and isinstance(order_block.result, TargetEvidenceMTFReplay):
-                evidence.extend(order_block.result.evidence)
-            if fvg_engulfing.is_ready and isinstance(fvg_engulfing.result, TargetEvidenceMTFReplay):
-                evidence.extend(fvg_engulfing.result.evidence)
-
-            targeting = WorkspaceDomainResult.ready(
-                build_targeting_snapshot(
-                    symbol=normalized_symbol,
-                    as_of=as_of,
-                    current_price=reference_price,
-                    reference_timeframe=reference_timeframe,
-                    reference_atr=reference_atr,
-                    evidence=evidence,
-                )
-            )
-        except Exception as error:
             targeting = WorkspaceDomainResult.failed(error)
+        else:
+            try:
+                liquidity = WorkspaceDomainResult.ready(
+                    LiquidityMTFReplayRunner(self.store, clock=target_clock).replay(
+                        normalized_symbol,
+                        timeframes=normalized_timeframes,
+                        input_snapshot=target_inputs,
+                    )
+                )
+            except Exception as error:
+                liquidity = WorkspaceDomainResult.failed(error)
+
+            try:
+                order_block = WorkspaceDomainResult.ready(
+                    OrderBlockMTFReplayRunner(self.store, clock=target_clock).replay(
+                        normalized_symbol,
+                        timeframes=normalized_timeframes,
+                        input_snapshot=target_inputs,
+                    )
+                )
+            except Exception as error:
+                order_block = WorkspaceDomainResult.failed(error)
+
+            try:
+                fvg_engulfing = WorkspaceDomainResult.ready(
+                    FvgEngulfingMTFReplayRunner(self.store, clock=target_clock).replay(
+                        normalized_symbol,
+                        timeframes=normalized_timeframes,
+                        input_snapshot=target_inputs,
+                    )
+                )
+            except Exception as error:
+                fvg_engulfing = WorkspaceDomainResult.failed(error)
+
+            try:
+                target_structure = CachedStructureLocationMTFRunner(
+                    self.store,
+                    clock=target_clock,
+                ).run(
+                    symbol=normalized_symbol,
+                    timeframes=normalized_timeframes,
+                    input_snapshot=target_inputs,
+                )
+                reference_frame = target_inputs.for_timeframe(reference_timeframe).input_batch.frame
+                reference_price = float(reference_frame.iloc[-1]["close"])
+                reference_atr = wilder_atr(reference_frame)
+
+                evidence = []
+                structure_by_timeframe = {
+                    timeframe: target_structure.replay_for(timeframe).market_structure
+                    for timeframe in normalized_timeframes
+                }
+                if liquidity.is_ready and isinstance(liquidity.result, TargetEvidenceMTFReplay):
+                    atr_by_timeframe = {
+                        timeframe: liquidity.result.for_timeframe(timeframe).atr
+                        for timeframe in liquidity.result.timeframes
+                    }
+                    evidence.extend(
+                        enrich_liquidity_scope(
+                            liquidity.result.evidence,
+                            structure_by_timeframe=structure_by_timeframe,
+                            atr_by_timeframe=atr_by_timeframe,
+                        )
+                    )
+
+                # S/R is already an independent structural domain. Replaying it on
+                # the same causal prefix prevents future lifecycle transitions from
+                # rewriting the target snapshot.
+                for timeframe in normalized_timeframes:
+                    replay = target_structure.replay_for(timeframe)
+                    evidence.extend(
+                        support_resistance_evidence(
+                            symbol=normalized_symbol,
+                            timeframe=timeframe,
+                            snapshot=replay.support_resistance,
+                            clock=target_clock,
+                        )
+                    )
+
+                if order_block.is_ready and isinstance(order_block.result, TargetEvidenceMTFReplay):
+                    evidence.extend(order_block.result.evidence)
+                if fvg_engulfing.is_ready and isinstance(fvg_engulfing.result, TargetEvidenceMTFReplay):
+                    evidence.extend(fvg_engulfing.result.evidence)
+
+                targeting = WorkspaceDomainResult.ready(
+                    build_targeting_snapshot(
+                        symbol=normalized_symbol,
+                        as_of=target_as_of,
+                        current_price=reference_price,
+                        reference_timeframe=reference_timeframe,
+                        reference_atr=reference_atr,
+                        evidence=evidence,
+                    )
+                )
+            except Exception as error:
+                targeting = WorkspaceDomainResult.failed(error)
 
         after = cache_fingerprint(
             self.store,
