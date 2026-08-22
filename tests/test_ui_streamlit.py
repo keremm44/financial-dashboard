@@ -38,6 +38,7 @@ def test_streamlit_app_smoke_renders_workspace_without_decision_actions(
         "Zones & location",
         "Ham evidence",
         "Volume Participation",
+        "Targeting",
         "Diagnostics",
     }
 
@@ -61,8 +62,21 @@ def test_streamlit_app_smoke_renders_workspace_without_decision_actions(
     conflict_toggle = next(
         checkbox for checkbox in app.checkbox if checkbox.label == "Opposing conflicts"
     )
+    nearest_targets = next(
+        checkbox for checkbox in app.checkbox if checkbox.label == "Nearest targets"
+    )
+    all_target_clusters = next(
+        checkbox for checkbox in app.checkbox if checkbox.label == "All target clusters"
+    )
     assert not confluence_toggle.value
     assert not conflict_toggle.value
+    assert nearest_targets.value
+    assert not all_target_clusters.value
+
+    targeting_tab = next(tab for tab in app.tabs if tab.label == "Targeting")
+    assert not targeting_tab.metric
+    assert not targeting_tab.button
+    assert targeting_tab.json
 
     ham_tab = next(tab for tab in app.tabs if tab.label == "Ham evidence")
     assert not ham_tab.metric
@@ -90,6 +104,7 @@ def test_streamlit_app_smoke_renders_workspace_without_decision_actions(
     rendered_text = " ".join(warning.value for warning in app.warning).lower()
     assert "al/sat" in rendered_text
     assert "öneri" in rendered_text
+    assert "take-profit" in rendered_text
 
     all_history = next(
         checkbox for checkbox in ham_tab.checkbox if checkbox.label == "Tüm geçmiş"
