@@ -6,6 +6,7 @@ from typing import Any
 import pandas as pd
 
 from .analysis_config import CLOSE_LABELLED_TIMEFRAMES, LEFT_LABEL_DURATIONS
+from .data.analysis_inputs import AnalysisInputSnapshot
 from .data.engine_input import EngineInputBatch, prepare_engine_input
 from .data.identity import normalize_symbol
 from .data.parquet_store import ParquetOHLCVStore
@@ -213,6 +214,7 @@ class CachedStructureLocationMTFRunner:
         *,
         symbol: str,
         timeframes: tuple[str, ...] = FOUNDATION_MARKET_STRUCTURE_TIMEFRAMES,
+        input_snapshot: AnalysisInputSnapshot | None = None,
     ) -> StructureLocationMTFResult:
         normalized_symbol = normalize_symbol(symbol)
         normalized_timeframes = tuple(timeframe.strip().lower() for timeframe in timeframes)
@@ -220,6 +222,11 @@ class CachedStructureLocationMTFRunner:
             raise ValueError("at least one non-empty timeframe is required")
         if len(set(normalized_timeframes)) != len(normalized_timeframes):
             raise ValueError("timeframes must be unique after normalization")
+        if input_snapshot is not None:
+            input_snapshot.validate_request(
+                symbol=normalized_symbol,
+                timeframes=normalized_timeframes,
+            )
         configured_timeframes = set(dict(self.clock.durations)) | set(
             self.clock.close_labelled_timeframes
         )
@@ -240,7 +247,10 @@ class CachedStructureLocationMTFRunner:
         final_active_zones: list[SupportResistanceZone] = []
 
         for timeframe in normalized_timeframes:
-            batch = prepare_engine_input(self.store.load(normalized_symbol, timeframe))
+            if input_snapshot is None:
+                batch = prepare_engine_input(self.store.load(normalized_symbol, timeframe))
+            else:
+                batch = input_snapshot.for_timeframe(timeframe).input_batch
             market_engine = MarketStructureEngine(
                 config=self.market_structure_config,
                 break_config=self.break_config,
