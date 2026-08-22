@@ -5,17 +5,15 @@ from pathlib import Path
 
 import streamlit as st
 
+from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES
 from financial_dashboard.engines.market_structure_state import EVENT_BOS, EVENT_CHOCH
 from financial_dashboard.engines.pattern_compression_core import PROFILE_VALUES
-from financial_dashboard.engines.three_domain_observer import FOUNDATION_OBSERVER_TIMEFRAMES
 from financial_dashboard.ui.charts import make_market_figure
 from financial_dashboard.ui.runtime import (
     cache_fingerprint,
     discover_cached_symbols,
     inspect_symbol_cache,
-    replay_cached_ham,
-    replay_cached_observer,
-    replay_cached_volume,
+    replay_cached_workspace,
     runnable_timeframes,
 )
 from financial_dashboard.ui.view_models import (
@@ -42,10 +40,11 @@ from financial_dashboard.ui.view_models import (
     volume_shocks_frame,
     zones_frame,
 )
+from financial_dashboard.ui.workspace_view_models import workspace_domain_status_frame
 
 
 st.set_page_config(
-    page_title="Financial Dashboard · Three-Domain Observer",
+    page_title="Financial Dashboard · Market Analysis Workspace",
     page_icon="◈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -85,8 +84,8 @@ def _cached_inspection(
     return inspect_symbol_cache(cache_root, symbol=symbol)
 
 
-@st.cache_data(show_spinner="Kapalı ve tamamlanmış mumlar yeniden oynatılıyor…")
-def _cached_replay(
+@st.cache_data(show_spinner="Analiz workspace yeniden oynatılıyor…")
+def _cached_workspace(
     cache_root: str,
     symbol: str,
     timeframes: tuple[str, ...],
@@ -95,45 +94,11 @@ def _cached_replay(
     epoch: int,
 ):
     del fingerprint, epoch
-    return replay_cached_observer(
+    return replay_cached_workspace(
         cache_root,
         symbol=symbol,
         timeframes=timeframes,
         pattern_profile=profile,
-    )
-
-
-@st.cache_data(show_spinner="Ham MTF evidence geçmişi yeniden oynatılıyor…")
-def _cached_ham_replay(
-    cache_root: str,
-    symbol: str,
-    timeframes: tuple[str, ...],
-    fingerprint: tuple[tuple[str, int, int], ...],
-    epoch: int,
-):
-    del fingerprint, epoch
-    return replay_cached_ham(
-        cache_root,
-        symbol=symbol,
-        timeframes=timeframes,
-    )
-
-
-@st.cache_data(show_spinner="Volume Participation MTF geçmişi yeniden oynatılıyor…")
-def _cached_volume_replay(
-    cache_root: str,
-    symbol: str,
-    timeframes: tuple[str, ...],
-    fingerprint: tuple[tuple[str, int, int], ...],
-    epoch: int,
-    _structure_replay,
-):
-    del fingerprint, epoch
-    return replay_cached_volume(
-        cache_root,
-        symbol=symbol,
-        timeframes=timeframes,
-        structure_replay=_structure_replay,
     )
 
 
@@ -157,6 +122,12 @@ def _show_empty_state(cache_root: str) -> None:
         f"{cache_root}/BTC-USD__30m.parquet",
         language="text",
     )
+
+
+def _domain_error(domain) -> str:
+    if domain.error_type is None:
+        return "unknown workspace error"
+    return f"{domain.error_type}: {domain.error_message}"
 
 
 def main() -> None:
@@ -186,23 +157,23 @@ def main() -> None:
             "Pattern/Compression profili",
             PROFILE_VALUES,
             index=1,
-            help="Bu ayar yalnızca deterministik Pattern/Compression motoruna gider.",
+            help="Bu ayar yalnız deterministik Pattern/Compression motoruna gider.",
         )
         st.divider()
-        st.caption("Temel zaman dilimleri")
-        st.code(" · ".join(FOUNDATION_OBSERVER_TIMEFRAMES), language="text")
+        st.caption("Canonical analiz zaman dilimleri")
+        st.code(" · ".join(ANALYSIS_TIMEFRAMES), language="text")
         st.caption(
             "Otomatik veri çekme yoktur. Açık veya eksik mumlar analitik durumu ilerletmez."
         )
 
-    st.title("Three-Domain Market Observer")
+    st.title("Financial Dashboard · Market Analysis Workspace")
     st.markdown(
-        "<div class='fd-subtle'>MTF baskı bağlamı, Market Structure ilerlemesi ve "
-        "Support/Resistance konumu — birbirinden ayrı, sürekli ve paralel.</div>",
+        "<div class='fd-subtle'>Bağımsız motor replay'leri, causal ilişkiler ve "
+        "inspection katmanı. Workspace yalnız execution coordinator'dır.</div>",
         unsafe_allow_html=True,
     )
     st.warning(
-        "Inspection/debug v0.1 · Bu arayüz al/sat sinyali, öneri, stop veya hedef üretmez.",
+        "Inspection/debug · Bu arayüz al/sat sinyali, öneri, stop veya hedef üretmez.",
         icon="🔎",
     )
 
@@ -227,15 +198,15 @@ def main() -> None:
         st.dataframe(cache_status_frame(statuses), width="stretch", hide_index=True)
         st.stop()
 
-    missing = tuple(tf for tf in FOUNDATION_OBSERVER_TIMEFRAMES if tf not in runnable)
+    missing = tuple(tf for tf in ANALYSIS_TIMEFRAMES if tf not in runnable)
     if missing:
         st.warning(
-            "Eksik veya geçersiz zaman dilimleri devre dışı bırakılmadı; "
-            f"matriste açıkça MISSING/INVALID gösterilir: {', '.join(missing)}"
+            "Eksik veya geçersiz zaman dilimleri nötr sayılmaz; matriste açıkça "
+            f"MISSING/INVALID gösterilir: {', '.join(missing)}"
         )
 
     try:
-        result = _cached_replay(
+        workspace = _cached_workspace(
             cache_root,
             symbol,
             runnable,
@@ -243,43 +214,21 @@ def main() -> None:
             fingerprint,
             st.session_state.cache_epoch,
         )
-    except Exception as error:  # Streamlit boundary: retain quality diagnostics.
-        st.error(f"Deterministik replay tamamlanamadı: {type(error).__name__}: {error}")
+    except Exception as error:
+        st.error(f"Workspace replay tamamlanamadı: {type(error).__name__}: {error}")
         st.subheader("Veri kalitesi")
         st.dataframe(cache_status_frame(statuses), width="stretch", hide_index=True)
         st.stop()
 
-    ham_result = None
-    ham_error: Exception | None = None
-    try:
-        ham_result = _cached_ham_replay(
-            cache_root,
-            symbol,
-            runnable,
-            fingerprint,
-            st.session_state.cache_epoch,
-        )
-    except Exception as error:  # Ham inspection must not hide the other domains.
-        ham_error = error
-
-    volume_result = None
-    volume_error: Exception | None = None
-    try:
-        volume_result = _cached_volume_replay(
-            cache_root,
-            symbol,
-            runnable,
-            fingerprint,
-            st.session_state.cache_epoch,
-            result.structure_location,
-        )
-    except Exception as error:  # Volume inspection must not hide the other domains.
-        volume_error = error
+    result = workspace.observer
+    ham_result = workspace.ham_result
+    volume_result = workspace.volume_result
 
     st.caption(
-        f"{symbol} · replay: {', '.join(result.timeframes)} · as-of: "
+        f"{workspace.symbol} · replay: {', '.join(workspace.timeframes)} · as-of: "
         f"{result.observation.as_of}"
     )
+
     boundary_active = tuple(
         diagnostic.timeframe
         for diagnostic in result.structure_history
@@ -288,27 +237,22 @@ def main() -> None:
     if boundary_active:
         st.warning(
             "Market Structure sol-sınır bağımlılığı: "
-            f"{', '.join(boundary_active)}. Bu zaman dilimlerindeki güncel ilerleme, "
-            "cache içinde nötr başlangıçtan kurulan ilk yöne dayanıyor. Cache öncesi "
-            "yapı gözlenmediği için önceki bearish/bullish bağlam veya ARGENT ile "
-            "CHoCH eşliği bu pencereyle kanıtlanamaz.",
+            f"{', '.join(boundary_active)}. Güncel ilerleme cache içindeki ilk yön "
+            "kurulumuna dayanıyor; cache öncesi yapı bu pencereyle kanıtlanamaz.",
             icon="⚠️",
         )
+
     values = overview_values(result)
-    card_columns = st.columns(6)
-    for column, label in zip(
-        card_columns,
-        (
-            "MTF pressure",
-            "Recovery evidence",
-            "Up structure",
-            "Down structure",
-            "Location",
-            "Combined state",
-        ),
-        strict=True,
-    ):
-        column.metric(label, values[label])
+    metric_specs = (
+        ("MTF pressure", values["MTF pressure"]),
+        ("Recovery evidence", values["Recovery evidence"]),
+        ("Up structure", values["Up structure"]),
+        ("Down structure", values["Down structure"]),
+        ("Location", values["Location"]),
+        ("Observer state", values["Combined state"]),
+    )
+    for column, (label, value) in zip(st.columns(6), metric_specs, strict=True):
+        column.metric(label, value)
 
     (
         overview_tab,
@@ -317,7 +261,7 @@ def main() -> None:
         location_tab,
         ham_tab,
         volume_tab,
-        quality_tab,
+        diagnostics_tab,
     ) = st.tabs(
         (
             "Genel görünüm",
@@ -326,21 +270,27 @@ def main() -> None:
             "Zones & location",
             "Ham evidence",
             "Volume Participation",
-            "Data quality",
+            "Diagnostics",
         )
     )
 
     with overview_tab:
+        st.subheader("Domain durumu")
+        st.dataframe(
+            workspace_domain_status_frame(workspace),
+            width="stretch",
+            hide_index=True,
+        )
         st.subheader("Bağımsız MTF matrisi")
         st.caption(
-            "Beş temel zaman dilimi her zaman görünür. Eksik veri, nötr görüş gibi yorumlanmaz."
+            "Beş temel zaman dilimi görünür kalır. Eksik veri nötr görüş değildir."
         )
         st.dataframe(
             mtf_matrix_frame(result, statuses),
             width="stretch",
             hide_index=True,
         )
-        st.subheader("Birleşik betimleyici gerçekler")
+        st.subheader("Observer gerçekleri")
         facts = observer_facts_frame(result)
         if facts.empty:
             st.info("Bu replay kesitinde ek gerilim veya açıklama gerçeği yok.")
@@ -363,8 +313,8 @@ def main() -> None:
             bar_limit = st.slider("Mum sayısı", 50, 1000, 300, step=50)
         option_columns = st.columns(3)
         show_events = option_columns[0].checkbox("BOS/CHoCH", value=True)
-        show_confluence = option_columns[1].checkbox("Confluence", value=True)
-        show_conflicts = option_columns[2].checkbox("Opposing conflicts", value=True)
+        show_confluence = option_columns[1].checkbox("Confluence", value=False)
+        show_conflicts = option_columns[2].checkbox("Opposing conflicts", value=False)
         figure = make_market_figure(
             result,
             timeframe=chart_timeframe,
@@ -378,10 +328,6 @@ def main() -> None:
 
     with structure_tab:
         st.subheader("History boundary & warm-up")
-        st.caption(
-            "Bu tablo keyfi bir minimum-bar eşiği uygulamaz; replay'in gerçekten "
-            "gördüğü ilk/son kapalı mumu ve teyitli external olay kronolojisini raporlar."
-        )
         st.dataframe(
             structure_history_frame(result),
             width="stretch",
@@ -405,8 +351,8 @@ def main() -> None:
             & event_frame["Timeframe"].isin(event_timeframes)
         ]
         st.caption(
-            "Causal available at, eventin ilgili zaman diliminde ancak hangi anda "
-            "diğer domainlerce bilinebildiğini gösterir."
+            "Causal available at, olayın diğer domainlerce ancak hangi anda "
+            "bilinebildiğini gösterir."
         )
         st.dataframe(filtered_events, width="stretch", hide_index=True)
 
@@ -435,40 +381,28 @@ def main() -> None:
             ("Confluence", "Opposing conflicts", "Causal outcomes", "Event-zone links")
         )
         with confluence_view:
-            st.dataframe(
-                confluence_frame(result), width="stretch", hide_index=True
-            )
+            st.dataframe(confluence_frame(result), width="stretch", hide_index=True)
         with conflict_view:
             st.dataframe(
-                opposing_conflicts_frame(result),
-                width="stretch",
-                hide_index=True,
+                opposing_conflicts_frame(result), width="stretch", hide_index=True
             )
         with outcomes_view:
             st.dataframe(
-                location_outcomes_frame(result),
-                width="stretch",
-                hide_index=True,
+                location_outcomes_frame(result), width="stretch", hide_index=True
             )
         with links_view:
             st.dataframe(
-                event_zone_links_frame(result),
-                width="stretch",
-                hide_index=True,
+                event_zone_links_frame(result), width="stretch", hide_index=True
             )
 
     with ham_tab:
         st.subheader("Ham Indicator Dashboard v2.3.7 · nötr evidence")
         st.caption(
-            "Bu görünüm karar üretmez. Ham system_state/system_bias kullanılmaz; "
-            "yalnızca kapalı + tamamlanmış mumların Tur-1 bileşenleri ve "
-            "PRICE/MOMENTUM/TIMING/FLOW özetleri gösterilir."
+            "Summary önce gelir; ayrıntılı indikatör ve geçmiş verisi inspection içindir. "
+            "Ham system_state/system_bias karar otoritesi olarak kullanılmaz."
         )
-        if ham_error is not None:
-            st.error(
-                "Ham evidence replay tamamlanamadı: "
-                f"{type(ham_error).__name__}: {ham_error}"
-            )
+        if not workspace.ham.is_ready:
+            st.error(f"Ham evidence replay tamamlanamadı: {_domain_error(workspace.ham)}")
         elif ham_result is None:
             st.info("Ham evidence replay sonucu bulunmuyor.")
         else:
@@ -476,12 +410,6 @@ def main() -> None:
                 ham_mtf_evidence_frame(ham_result, statuses),
                 width="stretch",
                 hide_index=True,
-            )
-            st.info(
-                "±5 Ham adaptörü yalnızca otoritatif core direction + confidence "
-                "oluştuktan sonra çalışır. Three-domain pressure burada karar yönü "
-                "yerine kullanılmaz.",
-                icon="ℹ️",
             )
             detail_tab, history_tab = st.tabs(
                 ("Latest indicator detail", "Confirmed history")
@@ -517,7 +445,6 @@ def main() -> None:
                     "Tüm geçmiş",
                     value=False,
                     key="ham_history_all",
-                    help="Kapalı ve tamamlanmış cache geçmişinin tamamını gösterir.",
                 )
                 recent_limit = history_columns[2].number_input(
                     "Son mum",
@@ -535,22 +462,20 @@ def main() -> None:
                 )
                 history_total = ham_result.replay_for(history_timeframe).bar_count
                 st.caption(
-                    f"Gösterilen {len(history)} / {history_total} teyitli mum. "
-                    "Varsayılan görünüm son 100 mumdur; Tüm geçmiş isteğe bağlıdır."
+                    f"Gösterilen {len(history)} / {history_total} teyitli mum."
                 )
                 st.dataframe(history, width="stretch", hide_index=True)
 
     with volume_tab:
         st.subheader("Volume Participation · causal MTF inspection")
         st.caption(
-            "Bu sekme yalnızca teyitli kapalı mum kanıtını, Structure bağlantılarını, "
-            "domain risklerini ve tanıları gösterir. Al/sat, giriş, öneri veya karar "
-            "otoritesi yoktur."
+            "Same-TF Structure otoritesi korunur; lower-TF Volume yalnız destekler, "
+            "karşı çıkar veya izler. Ham MTF hacimler toplanmaz."
         )
-        if volume_error is not None:
+        if not workspace.volume.is_ready:
             st.error(
                 "Volume Participation replay tamamlanamadı: "
-                f"{type(volume_error).__name__}: {volume_error}"
+                f"{_domain_error(workspace.volume)}"
             )
         elif volume_result is None:
             st.info("Volume Participation replay sonucu bulunmuyor.")
@@ -560,7 +485,7 @@ def main() -> None:
                 f"MTF bağlam={pressure.state.value} · yönsel skor="
                 f"{pressure.directional_score:.3f} · coverage="
                 f"{pressure.evidence_coverage:.3f} · authority="
-                f"{pressure.decision_authority}. Ham hacimler toplanmaz."
+                f"{pressure.decision_authority}"
             )
             st.dataframe(
                 volume_mtf_matrix_frame(volume_result, statuses),
@@ -583,19 +508,10 @@ def main() -> None:
                 )
             )
             with volume_links_tab:
-                st.caption(
-                    "Same-TF ilişki otoritatiftir. Lower-TF inflow yalnızca zenginleştirir, "
-                    "karşı çıkar veya izler; hedef timeframe teyidi üretemez."
-                )
                 st.dataframe(
                     volume_event_links_frame(volume_result),
                     width="stretch",
                     hide_index=True,
-                )
-                st.caption(
-                    "Opposition weakening bir release değildir. Yalnız aligned recovery, "
-                    "authoritative Structure supersession veya tamamlanmış fake/reclaim "
-                    "resolution blok riskini serbest bırakabilir."
                 )
                 st.dataframe(
                     volume_risk_transitions_frame(volume_result),
@@ -603,21 +519,12 @@ def main() -> None:
                     hide_index=True,
                 )
             with volume_shock_tab:
-                st.caption(
-                    "Tek-mum hacim patlaması DETECTED_UNCONFIRMED başlar; aynı mumda "
-                    "confirmation veya entry authority kazanmaz."
-                )
                 st.dataframe(
                     volume_shocks_frame(volume_result),
                     width="stretch",
                     hide_index=True,
                 )
             with volume_progression_tab:
-                st.caption(
-                    "PARTICIPATION_WITHOUT_STRUCTURE originleri için yalnız doğrudan "
-                    "teyit edilmiş i/eCHoCH ve i/eBOS dağılımı gösterilir; üst timeframe "
-                    "Structure icat edilmez."
-                )
                 st.dataframe(
                     volume_propagations_frame(volume_result),
                     width="stretch",
@@ -634,7 +541,6 @@ def main() -> None:
                     "Tüm Volume geçmişi",
                     value=False,
                     key="volume_history_all",
-                    help="Kapalı ve tamamlanmış Volume geçmişinin tamamını gösterir.",
                 )
                 volume_recent_limit = history_columns[2].number_input(
                     "Volume son mum",
@@ -659,8 +565,7 @@ def main() -> None:
                 ).bar_count
                 st.caption(
                     f"Gösterilen {len(volume_history)} / {volume_history_total} teyitli "
-                    "Volume mumu. Varsayılan görünüm son 100 mumdur; tüm geçmiş "
-                    "isteğe bağlıdır."
+                    "Volume mumu."
                 )
                 st.dataframe(volume_history, width="stretch", hide_index=True)
             with volume_diagnostics_tab:
@@ -674,30 +579,24 @@ def main() -> None:
                     width="stretch",
                     hide_index=True,
                 )
-                st.caption(
-                    "Ham FLOW, Volume Participation ve gelecekteki Auction aynı kaynak "
-                    "hacim ailesindedir; bağımsız oy gibi üst üste bindirilemez."
-                )
 
-    with quality_tab:
-        st.subheader("Cache freshness & source quality")
+    with diagnostics_tab:
+        st.subheader("Workspace domain health")
         st.dataframe(
-            cache_status_frame(statuses), width="stretch", hide_index=True
+            workspace_domain_status_frame(workspace),
+            width="stretch",
+            hide_index=True,
         )
+        st.subheader("Cache freshness & source quality")
+        st.dataframe(cache_status_frame(statuses), width="stretch", hide_index=True)
         st.caption(
-            "Replay girdisi yalnızca `is_closed=True` ve `is_complete=True` satırlardır. "
-            "Cache dosyasındaki açık/eksik satırlar sayılır fakat motor durumunu ilerletmez."
+            "Replay girdisi yalnız `is_closed=True` ve `is_complete=True` satırlardır."
         )
         st.subheader("Usable replay range & structural warm-up")
         st.dataframe(
             structure_history_frame(result),
             width="stretch",
             hide_index=True,
-        )
-        st.caption(
-            "LEFT_BOUNDARY_ACTIVE, güncel yapının cache içindeki ilk yön kurulumuna "
-            "dayandığını söyler; daha fazla barın otomatik olarak yeterli olduğunu veya "
-            "cache öncesinde kesin bir CHoCH bulunduğunu söylemez."
         )
 
 
