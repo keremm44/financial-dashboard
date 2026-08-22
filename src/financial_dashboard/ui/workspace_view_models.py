@@ -27,6 +27,7 @@ def workspace_domain_status_frame(workspace: MarketAnalysisWorkspace) -> pd.Data
         _row("Ham evidence", workspace.ham),
         _row("Volume Participation", workspace.volume),
         _row("Stabil Support Lifecycle", workspace.stabil_support),
+        _row("Auction Estimated Profile", workspace.auction),
         _row("Liquidity", workspace.liquidity),
         _row("Order Block", workspace.order_block),
         _row("FVG / Engulfing", workspace.fvg_engulfing),
