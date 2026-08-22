@@ -7,6 +7,7 @@ from typing import Iterable
 import pandas as pd
 
 from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES, normalize_timeframes
+from financial_dashboard.data.analysis_inputs import AnalysisInputSnapshot
 from financial_dashboard.data.engine_input import EngineInputBatch, prepare_engine_input
 from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
@@ -21,20 +22,13 @@ from financial_dashboard.engines.volume_evidence import (
     find_participation_without_structure,
     link_structure_events_to_volume,
 )
-from financial_dashboard.engines.volume_participation_engine import (
-    VolumeParticipationConfig,
-)
-from financial_dashboard.engines.volume_participation_lifecycle import (
-    ParticipationLifecycleConfig,
-)
+from financial_dashboard.engines.volume_participation_engine import VolumeParticipationConfig
+from financial_dashboard.engines.volume_participation_lifecycle import ParticipationLifecycleConfig
 from financial_dashboard.engines.volume_round2 import (
     VolumeRound2Assessment,
     build_volume_round2_assessment,
 )
-from financial_dashboard.mtf_replay import (
-    CachedMarketStructureMTFRunner,
-    MTFReplayResult,
-)
+from financial_dashboard.mtf_replay import CachedMarketStructureMTFRunner, MTFReplayResult
 from financial_dashboard.structure_location_replay import (
     CausalBarClock,
     StructureLocationMTFResult,
@@ -111,17 +105,11 @@ class VolumeTimeframeEvidenceReplay:
 
     @property
     def ready_bar_count(self) -> int:
-        return sum(
-            snapshot.status is VolumeEvidenceStatus.READY
-            for snapshot in self.history
-        )
+        return sum(snapshot.status is VolumeEvidenceStatus.READY for snapshot in self.history)
 
     @property
     def warmup_bar_count(self) -> int:
-        return sum(
-            snapshot.status is VolumeEvidenceStatus.WARMUP
-            for snapshot in self.history
-        )
+        return sum(snapshot.status is VolumeEvidenceStatus.WARMUP for snapshot in self.history)
 
     @property
     def unavailable_bar_count(self) -> int:
@@ -181,13 +169,10 @@ class VolumeMTFEvidenceReplayRunner:
     ) -> None:
         if normalize_symbol(structure_replay.symbol) != symbol:
             raise ValueError(
-                f"Structure/Volume symbol mismatch: "
-                f"{structure_replay.symbol!r} != {symbol!r}"
+                f"Structure/Volume symbol mismatch: {structure_replay.symbol!r} != {symbol!r}"
             )
         missing = tuple(
-            timeframe
-            for timeframe in timeframes
-            if timeframe not in structure_replay.replays
+            timeframe for timeframe in timeframes if timeframe not in structure_replay.replays
         )
         if missing:
             raise ValueError(
@@ -209,10 +194,7 @@ class VolumeMTFEvidenceReplayRunner:
         timeframes: tuple[str, ...],
     ) -> tuple:
         return tuple(
-            VolumeMTFEvidenceReplayRunner._structure_snapshot(
-                structure_replay,
-                timeframe,
-            )
+            VolumeMTFEvidenceReplayRunner._structure_snapshot(structure_replay, timeframe)
             for timeframe in timeframes
         )
 
@@ -222,9 +204,15 @@ class VolumeMTFEvidenceReplayRunner:
         *,
         timeframes: Iterable[str] = VOLUME_EVIDENCE_TIMEFRAMES,
         structure_replay: MTFReplayResult | StructureLocationMTFResult | None = None,
+        input_snapshot: AnalysisInputSnapshot | None = None,
     ) -> VolumeMTFEvidenceReplay:
         normalized_symbol = normalize_symbol(symbol)
         normalized_timeframes = _normalize_timeframes(timeframes)
+        if input_snapshot is not None:
+            input_snapshot.validate_request(
+                symbol=normalized_symbol,
+                timeframes=normalized_timeframes,
+            )
 
         if structure_replay is None:
             structure_replay = CachedMarketStructureMTFRunner(self.store).run(
@@ -239,22 +227,21 @@ class VolumeMTFEvidenceReplayRunner:
 
         timeframe_replays: list[VolumeTimeframeEvidenceReplay] = []
         for timeframe in normalized_timeframes:
-            cached = self.store.load(normalized_symbol, timeframe)
-            batch = prepare_engine_input(cached)
+            if input_snapshot is None:
+                cached = self.store.load(normalized_symbol, timeframe)
+                batch = prepare_engine_input(cached)
+            else:
+                input_row = input_snapshot.for_timeframe(timeframe)
+                cached = input_row.raw_frame
+                batch = input_row.input_batch
             structure_timeframe = structure_replay.replays[timeframe]
             if _timestamps(batch.frame) != _timestamps(structure_timeframe.input_batch.frame):
                 raise ValueError(
-                    f"Structure/Volume closed-bar cache mismatch for "
-                    f"{normalized_symbol} {timeframe}"
+                    f"Structure/Volume closed-bar cache mismatch for {normalized_symbol} {timeframe}"
                 )
-            structure_snapshot = self._structure_snapshot(
-                structure_replay,
-                timeframe,
-            )
+            structure_snapshot = self._structure_snapshot(structure_replay, timeframe)
             if normalize_symbol(structure_snapshot.symbol) != normalized_symbol:
-                raise ValueError(
-                    f"Market Structure namespace mismatch for {timeframe}"
-                )
+                raise ValueError(f"Market Structure namespace mismatch for {timeframe}")
 
             engine = VolumeEvidenceEngine(
                 symbol=normalized_symbol,
@@ -266,8 +253,7 @@ class VolumeMTFEvidenceReplayRunner:
             latest = engine.snapshot
             if latest is None or not history:
                 raise ValueError(
-                    f"no closed and complete Volume evidence bars for "
-                    f"{normalized_symbol} {timeframe}"
+                    f"no closed and complete Volume evidence bars for {normalized_symbol} {timeframe}"
                 )
             links = link_structure_events_to_volume(
                 structure_snapshot.events,
