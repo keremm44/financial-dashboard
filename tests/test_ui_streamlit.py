@@ -8,6 +8,14 @@ from _ui_test_data import make_ui_store
 
 
 APP_PATH = Path(__file__).parents[1] / "src" / "financial_dashboard" / "ui" / "app.py"
+STABIL_PAGE_PATH = (
+    Path(__file__).parents[1]
+    / "src"
+    / "financial_dashboard"
+    / "ui"
+    / "pages"
+    / "2_Stabil_Support.py"
+)
 
 
 def test_streamlit_app_smoke_renders_workspace_without_decision_actions(
@@ -49,6 +57,7 @@ def test_streamlit_app_smoke_renders_workspace_without_decision_actions(
         "Observer foundation",
         "Ham evidence",
         "Volume Participation",
+        "Stabil Support Lifecycle",
         "Liquidity",
         "Order Block",
         "FVG / Engulfing",
@@ -126,6 +135,46 @@ def test_streamlit_app_smoke_renders_workspace_without_decision_actions(
     volume_tab = next(tab for tab in app.tabs if tab.label == "Volume Participation")
     assert len(volume_tab.dataframe[5].value) == 160
     assert any("160 / 160" in caption.value for caption in volume_tab.caption)
+
+
+def test_stabil_support_page_renders_typed_lifecycle_without_trading_authority(
+    tmp_path, monkeypatch
+) -> None:
+    make_ui_store(tmp_path)
+    monkeypatch.setenv("FINANCIAL_DASHBOARD_CACHE", str(tmp_path))
+
+    app = AppTest.from_file(str(STABIL_PAGE_PATH), default_timeout=120).run()
+
+    assert not app.exception
+    assert [title.value for title in app.title] == [
+        "Stabil · Günlük Yapısal Destek Yaşam Döngüsü"
+    ]
+    labels = [metric.label for metric in app.metric]
+    assert labels == [
+        "Durum",
+        "Günlük destek",
+        "Mesafe %",
+        "Mesafe ATR",
+        "Altında bar",
+        "Progression",
+    ]
+    assert {tab.label for tab in app.tabs} == {
+        "Lifecycle timeline",
+        "Event ledger",
+        "Breach / reclaim",
+        "Test / hold",
+        "Rebase",
+        "Provenance",
+    }
+    rendered = " ".join(
+        [caption.value for caption in app.caption]
+        + [warning.value for warning in app.warning]
+        + [info.value for info in app.info]
+    ).lower()
+    assert "ana trend dönüşü" in rendered
+    assert "7–8" in rendered or "7-8" in rendered
+    assert "al/sat" in rendered
+    assert not app.button
 
 
 def test_streamlit_app_explains_empty_cache_instead_of_failing(

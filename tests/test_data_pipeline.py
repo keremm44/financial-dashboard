@@ -17,9 +17,11 @@ class _Provider(MarketDataProvider):
     def __init__(self, frame: pd.DataFrame) -> None:
         self.frame = frame
         self.calls = 0
+        self.timeframes: list[str] = []
 
     def get_ohlcv(self, symbol: str, timeframe: str, start: datetime, end: datetime) -> pd.DataFrame:
         self.calls += 1
+        self.timeframes.append(timeframe)
         return canonicalize_ohlcv(
             self.frame,
             symbol=symbol,
@@ -42,15 +44,15 @@ def _base_frame() -> pd.DataFrame:
     )
 
 
-def _multi_day_bist_5m() -> pd.DataFrame:
+def _multi_day_bist(minutes: int, bars_per_day: int) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     trading_days = pd.bdate_range("2026-07-20", periods=12)
     k = 0
     for day_idx, day in enumerate(trading_days):
         session_start = pd.Timestamp(day.date()).tz_localize("Europe/Istanbul") + pd.Timedelta(hours=10)
-        for bar_idx in range(96):
-            ts = session_start + pd.Timedelta(minutes=5 * bar_idx)
-            wave = ((bar_idx % 24) - 12) * 0.08
+        for bar_idx in range(bars_per_day):
+            ts = session_start + pd.Timedelta(minutes=minutes * bar_idx)
+            wave = ((bar_idx % max(4, bars_per_day // 4)) - max(2, bars_per_day // 8)) * 0.08
             day_wave = ((day_idx % 4) - 1.5) * 0.7
             trend = day_idx * 0.45
             base = 100.0 + trend + day_wave + wave
@@ -66,6 +68,14 @@ def _multi_day_bist_5m() -> pd.DataFrame:
             )
             k += 1
     return pd.DataFrame(rows)
+
+
+def _multi_day_bist_5m() -> pd.DataFrame:
+    return _multi_day_bist(5, 96)
+
+
+def _multi_day_bist_15m() -> pd.DataFrame:
+    return _multi_day_bist(15, 32)
 
 
 def test_pipeline_fetches_caches_and_resamples(tmp_path) -> None:
@@ -161,12 +171,55 @@ def test_bist_pipeline_builds_all_default_timeframes(tmp_path) -> None:
         assert frame["is_closed"].all()
 
 
-def test_bist_pipeline_one_hour_output_replays_in_market_structure(tmp_path) -> None:
-    provider = _Provider(_multi_day_bist_5m())
+def test_bist_15m_pipeline_builds_analysis_timeframes(tmp_path) -> None:
+    provider = _Provider(_multi_day_bist_15m())
     store = ParquetOHLCVStore(tmp_path)
     pipeline = MarketDataPipeline(provider, store)
 
-    result = pipeline.refresh_bist_5m(
+    result = pipeline.refresh_bist_15m(
+        symbol="THYAO",
+        start=datetime.fromisoformat("2026-07-20T10:00:00+03:00"),
+        end=datetime.fromisoformat("2026-08-04T18:00:00+03:00"),
+    )
+
+    assert provider.calls == 1
+    assert provider.timeframes == ["15m"]
+    assert set(result.derived) == {"30m", "1h", "2h", "4h", "1d"}
+    assert len(result.base) == 12 * 32
+    assert len(result.derived["30m"]) == 12 * 16
+    assert len(result.derived["1h"]) == 12 * 8
+    assert len(result.derived["2h"]) == 12 * 4
+    assert len(result.derived["4h"]) == 12 * 2
+    assert len(result.derived["1d"]) == 12
+    for frame in result.derived.values():
+        assert frame["is_complete"].all()
+        assert frame["is_closed"].all()
+
+
+def test_bist_15m_incremental_overlap_uses_15_minutes(tmp_path) -> None:
+    frame = _multi_day_bist_15m().iloc[:8].reset_index(drop=True)
+    store = ParquetOHLCVStore(tmp_path)
+    store.merge_and_save(frame, symbol="THYAO", timeframe="15m", source="fixture")
+    pipeline = MarketDataPipeline(_Provider(frame), store)
+
+    start = pipeline.incremental_bist_start(
+        symbol="THYAO",
+        requested_start=datetime.fromisoformat("2026-07-20T10:00:00+03:00"),
+        base_timeframe="15m",
+        overlap_bars=1,
+    )
+
+    latest = store.latest_timestamp("THYAO", "15m")
+    assert latest is not None
+    assert pd.Timestamp(start) == latest - pd.Timedelta(minutes=15)
+
+
+def test_bist_pipeline_one_hour_output_replays_in_market_structure(tmp_path) -> None:
+    provider = _Provider(_multi_day_bist_15m())
+    store = ParquetOHLCVStore(tmp_path)
+    pipeline = MarketDataPipeline(provider, store)
+
+    result = pipeline.refresh_bist_15m(
         symbol="THYAO",
         start=datetime.fromisoformat("2026-07-20T10:00:00+03:00"),
         end=datetime.fromisoformat("2026-08-04T18:00:00+03:00"),

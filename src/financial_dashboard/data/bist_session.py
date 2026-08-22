@@ -38,9 +38,19 @@ _TARGET_MINUTES = {
     "4h": 240,
 }
 
+_BASE_MINUTES = {
+    "5m": 5,
+    "15m": 15,
+}
 
-def bist_target_timeframes() -> tuple[str, ...]:
-    return ("15m", "30m", "1h", "2h", "4h", "1d")
+
+def bist_target_timeframes(base_timeframe: str = "5m") -> tuple[str, ...]:
+    key = base_timeframe.strip().lower()
+    if key == "5m":
+        return ("15m", "30m", "1h", "2h", "4h", "1d")
+    if key == "15m":
+        return ("30m", "1h", "2h", "4h", "1d")
+    raise ValueError(f"unsupported BIST base timeframe: {base_timeframe}")
 
 
 def _localized_timestamp_series(frame: pd.DataFrame, timezone: str) -> pd.Series:
@@ -90,24 +100,29 @@ def _bucket_expected_count(
     return max(0, span_minutes // base_minutes)
 
 
-def resample_bist_5m(
+def resample_bist(
     frame: pd.DataFrame,
     target_timeframe: str,
     *,
+    base_timeframe: str,
     session: BistEquitySession | None = None,
 ) -> pd.DataFrame:
-    """Resample canonical 5m BIST bars without crossing session boundaries.
+    """Resample canonical BIST intraday bars without crossing session boundaries.
 
-    Each trading day is anchored at 10:00. The final bucket of an explicitly
-    overridden half-day may be shorter than the nominal target timeframe and is still
-    considered complete when every expected 5m source bar for that shortened session
-    bucket is present.
+    Supported base timeframes are 5m and 15m. Each trading day is anchored at 10:00.
+    Completeness is evaluated against the selected base timeframe, so a normal daily
+    bar expects 96 source bars from 5m input and 32 source bars from 15m input.
     """
 
     session = session or BistEquitySession()
+    base_key = base_timeframe.strip().lower()
+    if base_key not in _BASE_MINUTES:
+        raise ValueError(f"unsupported BIST base timeframe: {base_timeframe}")
     key = target_timeframe.strip().lower()
-    if key not in bist_target_timeframes():
-        raise ValueError(f"unsupported BIST target timeframe: {target_timeframe}")
+    if key not in bist_target_timeframes(base_key):
+        raise ValueError(
+            f"unsupported BIST target timeframe {target_timeframe} for base {base_timeframe}"
+        )
     if frame.empty:
         return _empty_resample()
 
@@ -117,6 +132,7 @@ def resample_bist_5m(
     if work["timestamp"].duplicated().any():
         raise ValueError("duplicate timestamps must be resolved before BIST resampling")
 
+    base_minutes = _BASE_MINUTES[base_key]
     target_minutes = _TARGET_MINUTES.get(key)
     outputs: list[dict[str, object]] = []
     for session_date, day in work.groupby(work["timestamp"].dt.date, sort=True):
@@ -135,7 +151,7 @@ def resample_bist_5m(
             expected = _bucket_expected_count(
                 bucket_start,
                 target_minutes=target_minutes,
-                base_minutes=5,
+                base_minutes=base_minutes,
                 session_close=close_ts,
             )
             source_count = len(bucket)
@@ -160,3 +176,19 @@ def resample_bist_5m(
             )
 
     return pd.DataFrame(outputs).loc[:, (*CANONICAL_COLUMNS, "source_count", "expected_source_count")]
+
+
+def resample_bist_5m(
+    frame: pd.DataFrame,
+    target_timeframe: str,
+    *,
+    session: BistEquitySession | None = None,
+) -> pd.DataFrame:
+    """Backward-compatible 5m BIST resampling wrapper."""
+
+    return resample_bist(
+        frame,
+        target_timeframe,
+        base_timeframe="5m",
+        session=session,
+    )

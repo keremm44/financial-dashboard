@@ -15,12 +15,14 @@ canonical Parquet cache
      -> Pattern/Compression + MTF story/pressure
   -> Ham evidence
   -> Volume Participation
+  -> Stabil Daily Support Lifecycle (1d)
   -> Liquidity evidence
   -> Order Block evidence
   -> FVG / Engulfing evidence
   -> causal TargetEvidence adapters
   -> origin-event dedup + proximity clustering
   -> descriptive TargetingSnapshot
+  -> semantic Objective / Reaction / Confirmation snapshot
   -> domain view models
   -> Streamlit inspection UI
 ```
@@ -53,16 +55,47 @@ origin_time != confirmed_at != available_at
 
 A Liquidity pivot can originate on an earlier bar but is not evidence until the right-hand pivot confirmation exists. An Order Block source candle can also precede the later imbalance confirmation. Cross-domain targeting must use `available_at`, never the historical origin timestamp, as its knowledge boundary.
 
+Stabil Daily Support preserves the same distinction for its stepline source:
+
+```text
+support_origin_at != support_confirmed_at <= support_available_at
+```
+
+The support pivot must never be projected backward into bars before it was causally available.
+
 ## One input snapshot per replay
 
 A workspace loads every requested timeframe once into `AnalysisInputSnapshot`:
 
 - the original cached frame is retained for source/tail diagnostics;
 - `EngineInputBatch` contains the validated closed+complete replay rows;
-- Observer, Ham, Volume, Liquidity, Order Block and FVG/Engulfing replay from the same prepared snapshot where their timeframe contracts permit it;
+- Observer, Ham, Volume, Stabil Support, Liquidity, Order Block and FVG/Engulfing replay from the same prepared snapshot where their timeframe contracts permit it;
+- Stabil Support consumes only the already prepared `1d` batch and performs no second cache load;
 - FVG/Engulfing keeps its native supported-timeframe contract (`1d`, `4h`, `2h`) rather than inventing lower-timeframe behavior;
 - the cache fingerprint is captured before loading and verified again after the complete workspace replay;
 - a cache mutation during loading or replay fails closed instead of returning a mixed-snapshot result.
+
+## Stabil Daily Support domain
+
+Stabil Support is an independent descriptive workspace domain. Its observed line remains the existing Stabil confirmed daily pivot-low stepline; it is not silently replaced by Market Structure or Support/Resistance geometry.
+
+It answers one question:
+
+> How is price behaving relative to the causally available daily Stabil support over time?
+
+It exposes:
+
+- support validity (`NO_SUPPORT`, `ACTIVE`, `BREACHED`, `BELOW_FLOOR`);
+- price-to-support dynamics (`AT_SUPPORT`, `EXPANDING`, `CONTRACTING`, `FLAT`, `BELOW_SUPPORT`);
+- higher/lower support rebase progression;
+- `%` and ATR-normalized support distance;
+- bars above/below support and reclaim count;
+- wick/close-below diagnostics;
+- append-only support lifecycle events and provenance timestamps.
+
+It does not calculate Volume Participation, BOS/CHoCH/HH-HL, Weekly trend, H4 recovery, gap narrative, targets, probability or trade actions. `support held + price expanding` is not `main trend reversed`.
+
+The manual `%5/%10/%20` expansion observations and 7–8 bars-below observation remain replay hypotheses, not hard-coded thresholds.
 
 ## Target evidence contract
 
@@ -80,6 +113,8 @@ Each evidence record preserves:
 - timeframe and optional Liquidity internal/external classification.
 
 Liquidity remains the target anchor. A cluster with Liquidity is a `LIQUIDITY_TARGET`; a nearby FVG/Order Block/Engulfing-only group is a `TECHNICAL_ZONE`, not silently promoted into Liquidity.
+
+Semantic Targeting keeps Objective / Reaction / Confirmation roles separate from legacy cluster geometry. Stabil Support is not a target evidence source in this phase.
 
 ## Proximity and clustering
 
@@ -105,7 +140,7 @@ Important rules:
 - `raw_source_count` is never treated as independent evidence count;
 - FVG, Order Block and Engulfing from the same origin move may share one `origin_event_id`;
 - typed quality (`SINGLE`, `SUPPORTED`, `MULTI_EVIDENCE`, `DENSE`) is based on independent origins; there is no fixed Liquidity/FVG/OB point score;
-- nearest target and highest-confluence target remain separate outputs.
+- nearest target and highest-confluence target remain separate legacy outputs.
 
 A target snapshot may only include evidence whose `available_at <= snapshot.as_of`. Later confirmation cannot rewrite an earlier targeting snapshot.
 
@@ -115,11 +150,13 @@ Liquidity is calculated independently from Market Structure. The targeting layer
 
 Lower-timeframe Liquidity cannot manufacture or promote a higher-timeframe structural fact.
 
+Stabil Support likewise cannot manufacture BOS/CHoCH/HH-HL or redefine Market Structure. A later composition layer may place independent Stabil, Structure and Volume facts side by side without merging their authority.
+
 ## Authority and isolation
 
 Three-Domain observer foundation is required. A foundation failure invalidates the workspace replay.
 
-Ham, Volume, Liquidity, Order Block and FVG/Engulfing are independent support/inspection domains. Their runtime failures are isolated. Targeting can be built from the causal domains that remain available; domain-health output exposes partial coverage instead of hiding failures.
+Ham, Volume, Stabil Support, Liquidity, Order Block and FVG/Engulfing are independent support/inspection domains. Their runtime failures are isolated. Targeting can be built from the causal target-evidence domains that remain available; domain-health output exposes partial coverage instead of hiding failures.
 
 Permanent rules remain:
 
@@ -127,6 +164,7 @@ Permanent rules remain:
 - weakening is not recovery or reversal;
 - Volume cannot create or replace BOS/CHoCH;
 - Ham cannot rewrite Market Structure or S/R;
+- Stabil Support cannot create Market Structure, Volume or main-trend-reversal facts;
 - FVG, Order Block and Engulfing cannot rewrite Liquidity facts;
 - open/incomplete candles do not advance confirmed engine state;
 - the workspace produces no BUY/SELL/WAIT, entry, stop, take-profit instruction, recommendation, or global confidence.
@@ -138,18 +176,19 @@ Permanent rules remain:
 The UI is a read-only inspection surface over workspace results.
 
 - top-level observer metrics remain descriptive;
-- domain health includes Liquidity, Order Block, FVG/Engulfing and Targeting;
-- target view models expose nearest and highest-confluence outputs separately;
+- domain health includes Stabil Support, Liquidity, Order Block, FVG/Engulfing and Targeting;
+- Stabil Support has a dedicated inspection page for lifecycle timeline, breach/reclaim, retest/hold, rebase and provenance diagnostics;
+- target view models expose legacy and semantic targeting inspection without trading authority;
 - diagnostics can expose origin/confirmation/availability timestamps and dedup identities;
 - detailed Ham/Volume histories remain diagnostics rather than top-level authority;
 - chart overlays remain composable and opt-in to avoid visual overload.
 
 ## Validation requirements
 
-Targeting foundations must preserve the existing replay guarantees and add focused controls:
+Workspace and targeting foundations must preserve the existing replay guarantees and add focused controls:
 
 1. pivot/source origin cannot become evidence before confirmation;
-2. future `available_at` evidence is excluded from the current target snapshot;
+2. future `available_at` evidence is excluded from the current snapshot;
 3. replay prefix results are not rewritten by a future tail;
 4. same-origin FVG/Order Block/Engulfing are not counted as three independent events;
 5. max-span prevents chaining clusters;
@@ -157,8 +196,12 @@ Targeting foundations must preserve the existing replay guarantees and add focus
 7. technical zones without Liquidity are not promoted to Liquidity targets;
 8. internal/external Liquidity remain separate outputs;
 9. cache input remains one shared snapshot;
-10. future evaluation should compare real clusters against distance-matched control levels, plus ablation/walk-forward tests, before introducing calibrated numerical weights.
+10. Stabil Support reuses the shared `1d` prepared batch without an extra cache load;
+11. support origin/confirmation/availability remain distinct and prefix-safe;
+12. wick penetration alone does not become a confirmed support breach;
+13. bars-below/reclaim/rebase remain factual diagnostics without a hard-coded 7–8 bar rule;
+14. future evaluation should use walk-forward/out-of-sample replay before introducing calibrated thresholds or numerical weights.
 
 ## Extension rule
 
-Auction/Volume Profile, Volatility/Bands/Fibonacci, Stabil Trend and later engines should remain independent workspace domains. New target evidence sources should join through adapters rather than being inserted into Liquidity, Market Structure, or `ThreeDomainObserver`.
+Stabil Daily Support Lifecycle is now an independent workspace domain. Auction/Volume Profile, Volatility/Bands/Fibonacci and later engines should follow the same independence rule. New target evidence sources should join through adapters rather than being inserted into Liquidity, Market Structure, Stabil Support or `ThreeDomainObserver`.
