@@ -4,7 +4,8 @@ from hashlib import sha1
 from typing import Any, Mapping
 
 from financial_dashboard.engines.fvg_engulfing_models import EngulfingState, FvgState
-from financial_dashboard.engines.liquidity_models import LiquidityPoolState, LiquiditySide
+from financial_dashboard.engines.liquidity_models import LiquidityPoolState
+from financial_dashboard.engines.support_resistance_zones import ZoneLifecycle, ZoneSide
 
 from .models import (
     LiquidityScope,
@@ -47,7 +48,6 @@ def liquidity_evidence(
             fallback=pool.updated_at,
         )
         first_touch = pool.touches[0]
-        role = TargetRole.MAGNET
         out.append(
             TargetEvidence(
                 uid=f"TE-{_uid(symbol, timeframe, 'LIQ', pool.identity)}",
@@ -55,7 +55,7 @@ def liquidity_evidence(
                 timeframe=timeframe,
                 evidence_type=TargetEvidenceType.LIQUIDITY,
                 family=TargetEvidenceFamily.STRUCTURAL,
-                roles=(role,),
+                roles=(TargetRole.MAGNET,),
                 low=float(pool.level),
                 high=float(pool.level),
                 anchor_price=float(pool.level),
@@ -71,6 +71,68 @@ def liquidity_evidence(
                 formation_atr=None,
                 source_quality=None,
                 liquidity_scope=scope_by_identity.get(pool.identity, LiquidityScope.UNCLASSIFIED),
+            )
+        )
+    return tuple(out)
+
+
+def support_resistance_evidence(
+    *,
+    symbol: str,
+    timeframe: str,
+    snapshot,
+    clock,
+) -> tuple[TargetEvidence, ...]:
+    eligible_lifecycles = {
+        ZoneLifecycle.CONFIRMED,
+        ZoneLifecycle.ACTIVE,
+        ZoneLifecycle.WEAK,
+        ZoneLifecycle.BREAK_ATTEMPT,
+        ZoneLifecycle.BREAK_CANDIDATE,
+        ZoneLifecycle.BREAK_FAILED,
+    }
+    events_by_zone: dict[str, list[Any]] = {}
+    for event in snapshot.lifecycle_events:
+        events_by_zone.setdefault(event.zone_uid, []).append(event)
+
+    out: list[TargetEvidence] = []
+    for zone in snapshot.zones:
+        zone_events = sorted(events_by_zone.get(zone.zone_uid, []), key=lambda event: event.event_bar)
+        first_eligible = next(
+            (event for event in zone_events if event.lifecycle in eligible_lifecycles),
+            None,
+        )
+        confirmed_at = zone.created_at if first_eligible is None else first_eligible.event_at
+        available_at = clock.available_at(confirmed_at, timeframe)
+        origin_index = int(zone.origin_bar if zone.origin_bar is not None else zone.created_bar)
+        roles = (
+            (TargetRole.DEMAND, TargetRole.REACTION)
+            if zone.side is ZoneSide.SUPPORT
+            else (TargetRole.SUPPLY, TargetRole.REACTION)
+        )
+        identity = f"SR:{timeframe}:{zone.zone_uid}"
+        out.append(
+            TargetEvidence(
+                uid=f"TE-{_uid(symbol, identity)}",
+                symbol=symbol,
+                timeframe=timeframe,
+                evidence_type=TargetEvidenceType.SUPPORT_RESISTANCE,
+                family=TargetEvidenceFamily.STRUCTURAL,
+                roles=roles,
+                low=float(zone.low),
+                high=float(zone.high),
+                anchor_price=float(zone.center),
+                origin_index=origin_index,
+                origin_time=zone.created_at,
+                confirmed_at=confirmed_at,
+                available_at=available_at,
+                source_state=zone.lifecycle.value,
+                target_eligible=zone.lifecycle in eligible_lifecycles,
+                native_origin_id=identity,
+                origin_event_id=identity,
+                source_identity=zone.zone_uid,
+                formation_atr=float(zone.reference_atr),
+                source_quality=float(zone.quality),
             )
         )
     return tuple(out)
@@ -237,4 +299,5 @@ __all__ = [
     "fvg_engulfing_evidence",
     "liquidity_evidence",
     "order_block_evidence",
+    "support_resistance_evidence",
 ]
