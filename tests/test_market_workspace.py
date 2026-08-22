@@ -68,6 +68,7 @@ def test_workspace_runs_foundation_once_and_exposes_isolated_domain_health(tmp_p
     assert workspace.observer.structure_location.symbol == "THYAO"
     assert workspace.ham.status is WorkspaceDomainStatus.READY
     assert workspace.volume.status is WorkspaceDomainStatus.READY
+    assert workspace.stabil_support.status is WorkspaceDomainStatus.READY
     assert workspace.liquidity.status is WorkspaceDomainStatus.READY
     assert workspace.order_block.status is WorkspaceDomainStatus.READY
     assert workspace.fvg_engulfing.status is WorkspaceDomainStatus.READY
@@ -75,12 +76,15 @@ def test_workspace_runs_foundation_once_and_exposes_isolated_domain_health(tmp_p
     assert workspace.semantic_targeting.status is WorkspaceDomainStatus.READY
     assert workspace.ham_result is not None
     assert workspace.volume_result is not None
+    assert workspace.stabil_support_result is not None
     assert workspace.liquidity_result is not None
     assert workspace.order_block_result is not None
     assert workspace.fvg_engulfing_result is not None
     assert workspace.targeting_result is not None
     assert workspace.semantic_targeting_result is not None
     assert workspace.volume_result.symbol == workspace.symbol
+    assert workspace.stabil_support_result.symbol == workspace.symbol
+    assert workspace.stabil_support_result.timeframe == "1d"
     assert tuple(row[0] for row in workspace.fingerprint) == ANALYSIS_TIMEFRAMES
 
     health = workspace_domain_status_frame(workspace)
@@ -88,6 +92,7 @@ def test_workspace_runs_foundation_once_and_exposes_isolated_domain_health(tmp_p
         "Observer foundation",
         "Ham evidence",
         "Volume Participation",
+        "Stabil Support Lifecycle",
         "Liquidity",
         "Order Block",
         "FVG / Engulfing",
@@ -123,6 +128,9 @@ def test_workspace_loads_each_timeframe_once_and_reuses_prepared_batches(
         volume_batch = workspace.volume_result.replay_for(timeframe).input_batch
         assert observer_batch is ham_batch
         assert observer_batch is volume_batch
+    assert workspace.stabil_support_result.input_batch is workspace.observer.structure_location.replay_for(
+        "1d"
+    ).input_batch
 
 
 def test_workspace_keeps_optional_domain_failure_from_hiding_other_domains(
@@ -156,12 +164,14 @@ def test_workspace_keeps_optional_domain_failure_from_hiding_other_domains(
     assert workspace.ham.error_type == "RuntimeError"
     assert workspace.ham_result is None
     assert workspace.volume.status is WorkspaceDomainStatus.READY
+    assert workspace.stabil_support.status is WorkspaceDomainStatus.READY
     assert workspace.liquidity.status is WorkspaceDomainStatus.READY
     assert workspace.order_block.status is WorkspaceDomainStatus.READY
     assert workspace.fvg_engulfing.status is WorkspaceDomainStatus.READY
     assert workspace.targeting.status is WorkspaceDomainStatus.READY
     assert workspace.semantic_targeting.status is WorkspaceDomainStatus.READY
     assert workspace.volume_result is not None
+    assert workspace.stabil_support_result is not None
 
 
 def test_workspace_rejects_cache_mutation_during_one_replay(
