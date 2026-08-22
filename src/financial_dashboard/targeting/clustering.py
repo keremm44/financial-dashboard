@@ -13,7 +13,6 @@ from .models import (
     TargetClusterQuality,
     TargetEvidence,
     TargetEvidenceType,
-    TargetRole,
     TargetSide,
     TargetingSnapshot,
 )
@@ -48,27 +47,41 @@ def _interval_gap(a_low: float, a_high: float, b_low: float, b_high: float) -> f
     return 0.0
 
 
+def _origin_group(item: TargetEvidence) -> str | None:
+    if item.evidence_type in {
+        TargetEvidenceType.FVG,
+        TargetEvidenceType.ORDER_BLOCK,
+        TargetEvidenceType.ENGULFING,
+    }:
+        return "IMPULSE"
+    if item.evidence_type in {
+        TargetEvidenceType.LIQUIDITY,
+        TargetEvidenceType.SUPPORT_RESISTANCE,
+    }:
+        return "STRUCTURAL"
+    return None
+
+
 def deduplicate_origin_events(
     evidence: Iterable[TargetEvidence],
     *,
     reference_atr: float,
     config: TargetClusterConfig | None = None,
 ) -> tuple[TargetEvidence, ...]:
-    """Conservatively collapse correlated technical evidence into origin events.
+    """Collapse obviously correlated facts without deleting source evidence.
 
-    Only FVG/Order Block/Engulfing evidence on the same timeframe is eligible for
-    same-origin grouping. Liquidity remains a separate structural fact. Groups are
-    max-diameter constrained in origin-bar and price space so pairwise chaining
-    cannot turn one impulse into a broad synthetic event.
+    Two conservative origin groups are allowed:
+    - IMPULSE: FVG / Order Block / Engulfing from the same local impulse;
+    - STRUCTURAL: Liquidity / S-R derived from the same local structural price area.
+
+    Cross-group facts are never collapsed. Same-timeframe, origin-bar proximity,
+    interval proximity and a maximum price diameter are all required. The evidence
+    objects remain separate; only ``origin_event_id`` is shared for independent-count
+    purposes.
     """
     cfg = config or TargetClusterConfig()
     atr = max(float(reference_atr), 1e-12)
     items = list(evidence)
-    technical = {
-        TargetEvidenceType.FVG,
-        TargetEvidenceType.ORDER_BLOCK,
-        TargetEvidenceType.ENGULFING,
-    }
     grouped_indices: set[int] = set()
     replacements: dict[int, str] = {}
 
@@ -85,7 +98,8 @@ def deduplicate_origin_events(
         if seed_idx in grouped_indices:
             continue
         seed = items[seed_idx]
-        if seed.evidence_type not in technical:
+        group_kind = _origin_group(seed)
+        if group_kind is None:
             continue
         group = [seed_idx]
         grouped_indices.add(seed_idx)
@@ -96,7 +110,7 @@ def deduplicate_origin_events(
             if candidate_idx in grouped_indices:
                 continue
             candidate = items[candidate_idx]
-            if candidate.evidence_type not in technical or candidate.timeframe != seed.timeframe:
+            if candidate.timeframe != seed.timeframe or _origin_group(candidate) != group_kind:
                 continue
             next_min_origin = min(min_origin, candidate.origin_index)
             next_max_origin = max(max_origin, candidate.origin_index)
@@ -119,7 +133,7 @@ def deduplicate_origin_events(
             group,
             key=lambda idx: (pd.Timestamp(items[idx].confirmed_at), items[idx].uid),
         )
-        event_id = f"EVT:{seed.timeframe}:{items[anchor_idx].native_origin_id}"
+        event_id = f"EVT:{group_kind}:{seed.timeframe}:{items[anchor_idx].native_origin_id}"
         for idx in group:
             replacements[idx] = event_id
 
