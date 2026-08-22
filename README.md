@@ -1,35 +1,55 @@
 # Financial Dashboard
 
-Local-first, deterministic OHLCV analysis foundation with independent multi-timeframe Market Structure, typed Support/Resistance location context, Pattern/Compression evidence, and a Streamlit inspection UI.
+Local-first, deterministic OHLCV analysis workspace with independent multi-timeframe Market Structure, typed Support/Resistance location context, Pattern/Compression evidence, Ham and Volume support domains, and a Streamlit inspection UI.
 
 ## What is implemented
 
 - Canonical OHLCV cache and data-quality gates
 - Closed + complete candle filtering (`is_closed=True`, `is_complete=True`)
-- Independent `1d`, `4h`, `2h`, `1h`, and `30m` replay
-- Ham Indicator Dashboard v2.3.7 end-to-end support layers:
-  - all ten Tur-1 components, exact neutral PRICE/MOMENTUM/TIMING/FLOW families, matching timeframe profiles, and full closed-bar history
-  - pure post-core, symmetric confidence support bounded to `ham_delta ∈ [-5, +5]`
-  - deterministic fixed-facts narration payload (no provider/Groq integration)
-  - Streamlit MTF/detail/history inspection with recent 100 rows by default and explicit all-history mode
-- Volume Participation completed evidence layers:
-  - independent `1d/4h/2h/1h/30m` replay with full immutable confirmed-bar history
-  - explicit warmup, low-participation, unavailable-volume, limited-data, and incomplete-tail boundaries
-  - causal same-timeframe BOS/CHoCH links across `PRE_EVENT → AT_EVENT → FOLLOW_THROUGH`
-  - bounded lower-timeframe inflow and direct i/eCHoCH/i/eBOS progression without higher-timeframe promotion
-  - strict confirmed-opposition blocking risk plus typed recovery/supersession/fake-reclaim release routes
-  - one-bar shock/fake/absorption/follow-through/reclaim histories and shared-source volume deduplication
-  - Streamlit MTF/link/risk/history diagnostics with the last 100 bars by default and optional all-history mode
+- One canonical analysis-timeframe contract: `1d`, `4h`, `2h`, `1h`, `30m`
+- One canonical trimmed-uppercase engine/cache symbol identity
+- One shared `AnalysisInputSnapshot` per workspace replay:
+  - each requested Parquet timeframe is loaded once
+  - the same prepared closed+complete batch is reused across Observer, Ham, and Volume
+  - cache fingerprint changes during loading/replay fail closed
+- Causal timestamp discipline:
+  - intraday cache bars are left-labelled and become available after their bar duration
+  - Yahoo/BIST `1d` cache bars are session-close labelled and are available at the stored close timestamp
+  - explicit `CausalBarClock` overrides remain supported
 - Persistent internal/external BOS and CHoCH history, with typed BOS maturity (`INITIAL_STRUCTURE`, `TRANSITION_CONFIRMATION`, `CONTINUATION`)
-- Typed Support/Resistance zones, lifecycle, MTF confluence, and opposing-zone conflicts
-- Causal event-location links with explicit no-match outcomes
-- Action-free three-domain observation:
-  - broad MTF pressure and recovery evidence
+- Typed Support/Resistance zones, lifecycle, MTF confluence, opposing-zone conflicts, and causal event-location links
+- Frozen Three-Domain observer foundation:
+  - MTF pressure/recovery context
   - Market Structure progression
   - Support/Resistance location context
-- Streamlit v0.1 local inspection/debug interface with Plotly charts
+  - Pattern/Compression remains part of the existing MTF Story input contract
+- Ham Indicator Dashboard v2.3.7 support layers:
+  - all ten Tur-1 components and PRICE/MOMENTUM/TIMING/FLOW families
+  - matching timeframe profiles and full closed-bar history
+  - bounded post-core confidence support
+  - deterministic fixed-facts narration payload
+  - Streamlit MTF/detail/history inspection
+- Volume Participation completed evidence layers:
+  - independent five-timeframe history
+  - explicit warmup, low-participation, unavailable-volume, limited-data, and incomplete-tail boundaries
+  - causal same-timeframe BOS/CHoCH links across `PRE_EVENT → AT_EVENT → FOLLOW_THROUGH`
+  - bounded lower-timeframe inflow without higher-timeframe promotion
+  - confirmed-opposition blocking risk plus typed recovery/supersession/fake-reclaim release routes
+  - shock/fake/absorption/follow-through/reclaim histories
+  - shared-source volume deduplication
+  - Streamlit MTF/link/risk/history diagnostics
+- `MarketAnalysisWorkspace` execution coordinator:
+  - Three-Domain foundation is required
+  - Ham and Volume failures are isolated and surfaced as domain health
+  - no domain is allowed to manufacture another domain's authority
+- Modular UI boundaries:
+  - domain-specific view-model modules with a backwards-compatible `ui.view_models` facade
+  - composable chart layers for Structure and location overlays
+  - confluence/conflict overlays opt-in by default
 
-The three analytical domains run continuously and in parallel. Higher-timeframe context does not disable lower-timeframe calculation or evidence retention. Weakening and recovery remain distinct states. Ham follows the same isolation rule and remains supporting evidence: it can adjust only an already-authoritative core confidence, never direction/action/status, blockers, Market Structure, or S/R. See the Ham [Round 1 evidence contract](docs/ham_evidence_round1_contract.md) and [Round 2 support contract](docs/ham_evidence_round2_contract.md). Volume remains neutral participation evidence and cannot create or replace BOS/CHoCH; see the [Volume Round 1 evidence contract](docs/volume_evidence_round1_contract.md) and [Round 2 MTF/risk/UI contract](docs/volume_evidence_round2_contract.md).
+The full workspace boundary is documented in [Market Analysis Workspace Contract](docs/market_analysis_workspace_contract.md).
+
+The analytical domains run continuously and independently. Higher-timeframe context does not disable lower-timeframe calculation or evidence retention. Lower-timeframe evidence cannot create a higher-timeframe structural fact. Weakening and recovery remain distinct states. Ham remains supporting evidence and cannot rewrite Market Structure, S/R, blockers, actions, or position state. Volume remains participation evidence and cannot create or replace BOS/CHoCH.
 
 ## Local installation
 
@@ -42,12 +62,14 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[ui]"
 ```
 
-For development and tests:
+For development and the complete repository test suite:
 
 ```bash
 python -m pip install -e ".[dev,ui]"
 python -m pytest
 ```
+
+GitHub Actions uses the same `.[dev,ui]` dependency set so Streamlit/Plotly tests are part of the normal CI gate.
 
 For BIST/tvDatafeed refresh scripts, install the optional live-data dependencies in the same virtual environment used to run the script:
 
@@ -74,7 +96,15 @@ Cache files use the store's `SYMBOL__timeframe.parquet` convention:
 └── THYAO__30m.parquet
 ```
 
-Required market columns are `timestamp`, `open`, `high`, `low`, `close`, and `volume`. Canonical cache files also preserve `symbol`, `timeframe`, `source`, `is_closed`, and `is_complete`. Missing or invalid foundation timeframes remain visible in the UI as unavailable; they are not silently treated as neutral or switched off.
+Required market columns are `timestamp`, `open`, `high`, `low`, `close`, and `volume`. Canonical cache files also preserve `symbol`, `timeframe`, `source`, `is_closed`, and `is_complete`. Missing or invalid foundation timeframes remain visible in the UI as unavailable; they are never silently treated as neutral.
+
+### Timestamp contract
+
+The cache label must match its provider/resampling contract:
+
+- intraday TradingView-derived bars use left-labelled starts;
+- Yahoo daily bars are normalized to the BIST session-close timestamp (`18:10 Europe/Istanbul` in the current daily provider contract);
+- causal cross-domain code converts those labels into evidence availability and does not add another day to an already close-labelled daily bar.
 
 ### BIST cache backfill
 
@@ -89,7 +119,7 @@ Required market columns are `timestamp`, `open`, `high`, `low`, `close`, and `vo
   --backfill
 ```
 
-Add `--volume-round2` to the same command to run the five-timeframe Volume authority, risk, shock, propagation, and shared-source dedup acceptance after refresh. To validate an already populated five-timeframe cache without making another provider request:
+Add `--volume-round2` to run the five-timeframe Volume authority/risk/shock/propagation/dedup acceptance after refresh. To validate an already populated five-timeframe cache without another provider request:
 
 ```powershell
 .\.venv\Scripts\python.exe .\scripts\live_smoke.py `
@@ -99,7 +129,7 @@ Add `--volume-round2` to the same command to run the five-timeframe Volume autho
   --volume-round2
 ```
 
-The actual history can still be shorter than `--days`: tvDatafeed first returns at most the latest `--max-bars` bars and then the adapter applies the requested date window. The UI therefore reports observed usable first/last candles, closed+complete counts, first external structure event, typed BOS maturity, and left-boundary status. A requested bar count is never treated as proof that pre-cache structure was observed.
+The actual history can still be shorter than `--days`: tvDatafeed first returns at most the latest `--max-bars` bars and then the adapter applies the requested date window. The UI reports observed usable first/last candles, closed+complete counts, first external structure event, BOS maturity, and left-boundary status. A requested bar count is never treated as proof that pre-cache structure was observed.
 
 ## Run Streamlit
 
@@ -117,20 +147,21 @@ python -m streamlit run src/financial_dashboard/ui/app.py \
   --server.headless=true
 ```
 
-Open `http://localhost:8501` in a browser. Use **Cache'i yeniden tara** after files are added or replaced; replay caching is keyed by the cache path, symbol, engine profile, and each Parquet file's size/modification timestamp.
+Open `http://localhost:8501` in a browser. Use **Cache'i yeniden tara** after files are added or replaced. Streamlit replay caching is keyed by cache path, symbol, profile, requested timeframes, and Parquet fingerprint metadata.
 
-## Streamlit v0.1 scope
+## Streamlit scope
 
-The interface provides:
+The interface is the inspection surface for `MarketAnalysisWorkspace` and provides:
 
-- combined descriptive observation cards and facts
+- descriptive top-level metrics, including `Observer state` rather than a global decision label
+- explicit domain-health status
 - the five-timeframe MTF matrix
 - internal/external BOS and CHoCH event history
-- candlesticks with event, zone, confluence, and conflict overlays
-- typed zone lifecycle and confluence/conflict tables
-- causal event-location outcomes and links
-- cache freshness, usable replay range, row filtering, source-quality, and structural left-boundary diagnostics
-- Ham five-timeframe quality/family matrix, all ten latest indicator details, and confirmed history (recent 100 by default; all rows on explicit request)
-- Volume five-timeframe participation matrix, causal Structure links, opposition/shock lifecycles, direct structural progression, dedup diagnostics, and confirmed history (recent 100 by default; all rows on explicit request)
+- candlesticks with Structure and S/R overlays
+- opt-in confluence and opposing-conflict overlays
+- typed zone lifecycle, confluence/conflict, causal outcome, and event-zone link tables
+- cache freshness, usable replay range, source quality, and structural left-boundary diagnostics
+- Ham five-timeframe summary plus latest-indicator and confirmed-history diagnostics
+- Volume five-timeframe summary plus causal Structure links, risk transitions, shock lifecycle, direct progression, history, and dedup diagnostics
 
-It intentionally does **not** produce buy/sell actions, recommendations, predictions, stops, targets, provider-refresh automation, Groq narration, or a global Decision Engine. Since this UI has no authoritative global core direction/confidence, it also does not fabricate one merely to display the Ham `±5` adapter.
+It intentionally does **not** produce buy/sell actions, recommendations, predictions, stops, targets, provider-refresh automation, or a global Decision Engine. `Observer state` is descriptive workspace context, not trading authority.
