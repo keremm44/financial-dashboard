@@ -22,9 +22,10 @@ from financial_dashboard.volume_mtf_replay import VolumeMTFEvidenceReplayRunner
 
 
 TZ = ZoneInfo("Europe/Istanbul")
+BASE_TIMEFRAME = "15m"
 TARGET_HISTORY_TRADING_DAYS = 100
-BIST_5M_BARS_PER_FULL_SESSION = 96  # 10:00 inclusive -> 18:00 exclusive
-DEFAULT_PROVIDER_MAX_BARS = 10_000  # 9,600 for 100 sessions + partial-session headroom
+BIST_15M_BARS_PER_FULL_SESSION = 32  # 10:00 inclusive -> 18:00 exclusive
+DEFAULT_PROVIDER_MAX_BARS = 10_000  # provider may cap lower; 3,200 is enough for 100 full 15m sessions
 DEFAULT_CALENDAR_LOOKBACK_DAYS = 180  # weekends/holidays must not trim the 100-session target
 
 
@@ -121,8 +122,8 @@ def main() -> int:
         type=int,
         default=DEFAULT_PROVIDER_MAX_BARS,
         help=(
-            "tvDatafeed 5m bar cap; BIST has 96 full-session 5m bars, so the "
-            "10,000 default covers at least about 100 completed trading sessions"
+            "tvDatafeed 15m bar request cap; BIST has 32 full-session 15m bars, so "
+            "3,200 bars cover 100 completed trading sessions"
         ),
     )
     parser.add_argument(
@@ -164,7 +165,8 @@ def main() -> int:
     print(
         "history_policy="
         f"target_completed_1d:{TARGET_HISTORY_TRADING_DAYS} "
-        f"bist_5m_per_full_session:{BIST_5M_BARS_PER_FULL_SESSION} "
+        f"base_timeframe:{BASE_TIMEFRAME} "
+        f"bist_15m_per_full_session:{BIST_15M_BARS_PER_FULL_SESSION} "
         f"provider_max_bars:{args.max_bars} calendar_lookback:{args.days}"
     )
     refresh_mode = (
@@ -192,22 +194,19 @@ def main() -> int:
 
     provider = TvDatafeedProvider(exchange="BIST", max_bars=args.max_bars)
     pipeline = MarketDataPipeline(provider, store)
-    cached_before = store.load(args.symbol, "5m")
+    cached_before = store.load(args.symbol, BASE_TIMEFRAME)
     left_edge_before = (
         None if cached_before.empty else cached_before.iloc[0]["timestamp"]
     )
 
     if args.backfill:
-        # A full-window provider request can extend the cache's left edge.  The
-        # Parquet store merges by timestamp, so existing rows are preserved unless
-        # the provider returns a newer value for the same timestamp.
-        result = pipeline.refresh_bist_5m(
+        result = pipeline.refresh_bist_15m(
             symbol=args.symbol,
             start=start,
             end=end,
         )
     else:
-        result = pipeline.refresh_bist_5m_incremental(
+        result = pipeline.refresh_bist_15m_incremental(
             symbol=args.symbol,
             requested_start=start,
             end=end,
@@ -215,7 +214,7 @@ def main() -> int:
 
     print("\n[provider]")
     print(f"volume_status={provider.last_volume_status} volume_type={provider.volume_type}")
-    print(f"5m={_summary(result.base)}")
+    print(f"{BASE_TIMEFRAME}={_summary(result.base)}")
     if args.backfill:
         left_edge_after = (
             None if result.base.empty else result.base.iloc[0]["timestamp"]
