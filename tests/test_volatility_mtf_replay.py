@@ -70,6 +70,29 @@ def test_mtf_replay_reuses_shared_prepared_inputs(tmp_path) -> None:
         assert len(replay.for_timeframe(tf).snapshots) == len(inputs.for_timeframe(tf).input_batch.frame)
 
 
+def test_mtf_replay_can_limit_to_one_timeframe_and_latest_bars(tmp_path) -> None:
+    inputs = _inputs()
+    replay = VolatilityMTFReplayRunner(ParquetOHLCVStore(tmp_path)).replay(
+        "ASELS",
+        input_snapshot=inputs,
+        timeframes=("2h",),
+        max_bars=130,
+    )
+    assert replay.timeframes == ("2h",)
+    assert len(replay.for_timeframe("2h").snapshots) == 130
+    assert replay.for_timeframe("2h").latest is not None
+
+
+def test_mtf_replay_rejects_invalid_max_bars(tmp_path) -> None:
+    runner = VolatilityMTFReplayRunner(ParquetOHLCVStore(tmp_path))
+    try:
+        runner.replay("ASELS", input_snapshot=_inputs(), timeframes=("2h",), max_bars=0)
+    except ValueError as error:
+        assert "max_bars" in str(error)
+    else:
+        raise AssertionError("max_bars=0 must fail closed")
+
+
 def test_mtf_replay_rejects_unsupported_timeframes(tmp_path) -> None:
     runner = VolatilityMTFReplayRunner(ParquetOHLCVStore(tmp_path))
     try:
