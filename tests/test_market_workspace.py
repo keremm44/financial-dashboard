@@ -82,13 +82,48 @@ def test_workspace_runs_foundation_once_and_exposes_isolated_domain_health(tmp_p
     assert set(health["Status"]) == {"READY"}
 
 
+def test_workspace_loads_each_timeframe_once_and_reuses_prepared_batches(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = make_ui_store(tmp_path)
+    real_load = store.load
+    loads: list[tuple[str, str]] = []
+
+    def counted_load(symbol: str, timeframe: str):
+        loads.append((symbol, timeframe))
+        return real_load(symbol, timeframe)
+
+    monkeypatch.setattr(store, "load", counted_load)
+    workspace = MarketAnalysisWorkspaceRunner(store).run(
+        symbol="THYAO",
+        timeframes=ANALYSIS_TIMEFRAMES,
+    )
+
+    assert loads == [("THYAO", timeframe) for timeframe in ANALYSIS_TIMEFRAMES]
+    for timeframe in ANALYSIS_TIMEFRAMES:
+        observer_batch = workspace.observer.structure_location.replay_for(
+            timeframe
+        ).input_batch
+        ham_batch = workspace.ham_result.replay_for(timeframe).input_batch
+        volume_batch = workspace.volume_result.replay_for(timeframe).input_batch
+        assert observer_batch is ham_batch
+        assert observer_batch is volume_batch
+
+
 def test_workspace_keeps_optional_domain_failure_from_hiding_other_domains(
     tmp_path,
     monkeypatch,
 ) -> None:
     store = make_ui_store(tmp_path)
 
-    def fail_ham(self, symbol, *, timeframes=HAM_EVIDENCE_TIMEFRAMES):
+    def fail_ham(
+        self,
+        symbol,
+        *,
+        timeframes=HAM_EVIDENCE_TIMEFRAMES,
+        input_snapshot=None,
+    ):
         raise RuntimeError("synthetic Ham failure")
 
     monkeypatch.setattr(
@@ -118,8 +153,19 @@ def test_workspace_rejects_cache_mutation_during_one_replay(
     real_replay = workspace_module.HamMTFEvidenceReplayRunner.replay
     target = store.path_for("THYAO", "30m")
 
-    def replay_and_touch(self, symbol, *, timeframes=HAM_EVIDENCE_TIMEFRAMES):
-        result = real_replay(self, symbol, timeframes=timeframes)
+    def replay_and_touch(
+        self,
+        symbol,
+        *,
+        timeframes=HAM_EVIDENCE_TIMEFRAMES,
+        input_snapshot=None,
+    ):
+        result = real_replay(
+            self,
+            symbol,
+            timeframes=timeframes,
+            input_snapshot=input_snapshot,
+        )
         stat = target.stat()
         os.utime(
             target,
