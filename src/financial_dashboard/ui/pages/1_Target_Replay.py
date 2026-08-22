@@ -18,11 +18,17 @@ from financial_dashboard.ui.runtime import (
 )
 from financial_dashboard.ui.targeting_replay_runtime import replay_cached_targeting_history
 from financial_dashboard.ui.targeting_replay_view_models import (
+    arrival_context_frame,
     cluster_anatomy_frame,
     cluster_stability_values,
+    confirmations_frame,
     distance_bands_frame,
+    objectives_frame,
+    reaction_zones_frame,
     replay_points_frame,
+    semantic_targeting_summary_values,
     semantic_transitions_frame,
+    shadow_comparison_frame,
 )
 from financial_dashboard.ui.targeting_view_models import (
     target_clusters_frame,
@@ -112,8 +118,9 @@ def _causal_figure(cache_root: str, symbol: str, point, cluster) -> go.Figure:
 
 st.title("Target Replay · causal diagnostics")
 st.caption(
-    "Liquidity / S-R / Order Block / FVG / Engulfing target kümelerini tarihsel "
-    "bilgi sınırıyla yeniden oynatır. Bu sayfa işlem veya take-profit önerisi üretmez."
+    "Yeni semantic model shadow mode'da çalışır: Liquidity objective; OB/FVG/S-R reaction; "
+    "Engulfing confirmation. Eski TargetCluster çıktısı migration karşılaştırması için korunur. "
+    "Bu sayfa işlem veya take-profit önerisi üretmez."
 )
 
 cache_root = str(
@@ -220,11 +227,73 @@ point_index = st.slider(
 )
 point = replay.points[point_index]
 snapshot = point.snapshot
+semantic_snapshot = point.semantic_snapshot
 st.caption(
     f"Point {point_index + 1}/{len(replay.points)} · available={point.available_at} · "
     f"price={snapshot.current_price:.4f} · ATR={snapshot.reference_atr:.4f}"
 )
 
+st.header("Semantic shadow model")
+if semantic_snapshot is None:
+    st.warning("Bu replay noktasında semantic shadow snapshot üretilemedi.")
+else:
+    semantic_summary = semantic_targeting_summary_values(semantic_snapshot)
+    summary_columns = st.columns(len(semantic_summary))
+    for column, (label, value) in zip(summary_columns, semantic_summary.items(), strict=True):
+        column.metric(label, value)
+
+    up_tab, down_tab, evidence_tab, shadow_tab = st.tabs(
+        ("Upside arrival", "Downside arrival", "Semantic evidence", "Legacy vs semantic")
+    )
+    with up_tab:
+        if semantic_snapshot.upside_arrival is None:
+            st.info("Aktif upside objective yok.")
+        else:
+            st.caption(
+                f"State={semantic_snapshot.upside_arrival.state.value} · "
+                f"independent reaction origins={semantic_snapshot.upside_arrival.independent_reaction_origins}"
+            )
+            frame = arrival_context_frame(semantic_snapshot.upside_arrival)
+            if frame.empty:
+                st.info("Upside objective yolunda/varışında reaction zone yok.")
+            else:
+                st.dataframe(frame, width="stretch", hide_index=True)
+    with down_tab:
+        if semantic_snapshot.downside_arrival is None:
+            st.info("Aktif downside objective yok.")
+        else:
+            st.caption(
+                f"State={semantic_snapshot.downside_arrival.state.value} · "
+                f"independent reaction origins={semantic_snapshot.downside_arrival.independent_reaction_origins}"
+            )
+            frame = arrival_context_frame(semantic_snapshot.downside_arrival)
+            if frame.empty:
+                st.info("Downside objective yolunda/varışında reaction zone yok.")
+            else:
+                st.dataframe(frame, width="stretch", hide_index=True)
+    with evidence_tab:
+        st.subheader("Objectives · Liquidity only in Phase 1")
+        st.dataframe(objectives_frame(semantic_snapshot), width="stretch", hide_index=True)
+        st.subheader("Reaction zones · OB / FVG / S-R")
+        st.dataframe(reaction_zones_frame(semantic_snapshot), width="stretch", hide_index=True)
+        st.subheader("Confirmations · Engulfing")
+        confirmations = confirmations_frame(semantic_snapshot)
+        if confirmations.empty:
+            st.info("Aktif confirmation yok.")
+        else:
+            st.dataframe(confirmations, width="stretch", hide_index=True)
+    with shadow_tab:
+        st.caption(
+            "Legacy Technical Zone sayısı ile yeni ReactionZone sayısı aynı kavram değildir; "
+            "bu tablo migration davranışını yan yana izlemek içindir."
+        )
+        st.dataframe(shadow_comparison_frame(replay), width="stretch", hide_index=True)
+
+st.divider()
+st.header("Legacy TargetCluster diagnostics")
+st.caption(
+    "Bu bölüm backward-compatibility ve migration audit içindir. Yeni semantic modelde OB/FVG/S-R target değildir."
+)
 summary = targeting_summary_values(snapshot)
 for column, (label, value) in zip(st.columns(4), summary.items(), strict=True):
     column.metric(label, value)
@@ -238,17 +307,17 @@ with left:
         hide_index=True,
     )
 with right:
-    st.subheader("Semantic transitions")
+    st.subheader("Legacy semantic transitions")
     semantic = semantic_transitions_frame(replay)
     if semantic.empty:
-        st.info("Semantic target transition yok.")
+        st.info("Legacy semantic target transition yok.")
     else:
         st.dataframe(semantic, width="stretch", hide_index=True)
 
-st.subheader("Cluster seçimi")
+st.subheader("Legacy cluster seçimi")
 clusters = target_clusters_frame(snapshot)
 if clusters.empty:
-    st.info("Bu replay noktasında target cluster yok.")
+    st.info("Bu replay noktasında legacy target cluster yok.")
     st.stop()
 
 cluster_by_id = {cluster.identity: cluster for cluster in snapshot.clusters}
@@ -270,7 +339,7 @@ st.plotly_chart(
     width="stretch",
 )
 
-st.subheader("Cluster stability")
+st.subheader("Legacy cluster stability")
 st.json(
     cluster_stability_values(
         replay,
@@ -279,7 +348,7 @@ st.json(
     )
 )
 
-st.subheader("Cluster anatomy")
+st.subheader("Legacy cluster anatomy")
 st.caption(
     f"Envelope={selected_cluster.envelope_low:.4f}–{selected_cluster.envelope_high:.4f} · "
     f"core={selected_cluster.core_low}–{selected_cluster.core_high} · "
@@ -295,5 +364,5 @@ st.dataframe(
     hide_index=True,
 )
 
-st.subheader("Bu snapshot'taki tüm cluster'lar")
+st.subheader("Bu snapshot'taki tüm legacy cluster'lar")
 st.dataframe(clusters, width="stretch", hide_index=True)
