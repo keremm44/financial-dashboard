@@ -5,8 +5,13 @@ from typing import Iterable
 import pandas as pd
 import plotly.graph_objects as go
 
+from financial_dashboard.targeting.models import TargetingSnapshot
 from financial_dashboard.three_domain_replay import ThreeDomainReplayResult
-from financial_dashboard.ui.chart_layers import add_location_layers, add_structure_events
+from financial_dashboard.ui.chart_layers import (
+    add_location_layers,
+    add_structure_events,
+    add_targeting_layers,
+)
 
 
 def make_market_figure(
@@ -18,6 +23,9 @@ def make_market_figure(
     show_events: bool = True,
     show_confluence: bool = False,
     show_conflicts: bool = False,
+    targeting: TargetingSnapshot | None = None,
+    show_nearest_targets: bool = False,
+    show_all_target_clusters: bool = False,
 ) -> go.Figure:
     """Compose a read-only market chart from independent domain overlays."""
 
@@ -54,6 +62,13 @@ def make_market_figure(
     )
     if show_events:
         add_structure_events(figure, result, timeframe=timeframe)
+    if targeting is not None and (show_nearest_targets or show_all_target_clusters):
+        add_targeting_layers(
+            figure,
+            targeting,
+            show_nearest=show_nearest_targets,
+            show_all_clusters=show_all_target_clusters,
+        )
 
     figure.update_layout(
         title={
