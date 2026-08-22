@@ -8,6 +8,7 @@ import pytest
 import financial_dashboard.market_workspace as workspace_module
 from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES
 from financial_dashboard.data.identity import normalize_symbol
+from financial_dashboard.engines.auction_estimated_profile import AuctionProfileSource
 from financial_dashboard.engines.three_domain_observer import FOUNDATION_OBSERVER_TIMEFRAMES
 from financial_dashboard.ham_mtf_replay import HAM_EVIDENCE_TIMEFRAMES
 from financial_dashboard.market_workspace import (
@@ -69,6 +70,7 @@ def test_workspace_runs_foundation_once_and_exposes_isolated_domain_health(tmp_p
     assert workspace.ham.status is WorkspaceDomainStatus.READY
     assert workspace.volume.status is WorkspaceDomainStatus.READY
     assert workspace.stabil_support.status is WorkspaceDomainStatus.READY
+    assert workspace.auction.status is WorkspaceDomainStatus.READY
     assert workspace.liquidity.status is WorkspaceDomainStatus.READY
     assert workspace.order_block.status is WorkspaceDomainStatus.READY
     assert workspace.fvg_engulfing.status is WorkspaceDomainStatus.READY
@@ -77,6 +79,7 @@ def test_workspace_runs_foundation_once_and_exposes_isolated_domain_health(tmp_p
     assert workspace.ham_result is not None
     assert workspace.volume_result is not None
     assert workspace.stabil_support_result is not None
+    assert workspace.auction_result is not None
     assert workspace.liquidity_result is not None
     assert workspace.order_block_result is not None
     assert workspace.fvg_engulfing_result is not None
@@ -85,6 +88,9 @@ def test_workspace_runs_foundation_once_and_exposes_isolated_domain_health(tmp_p
     assert workspace.volume_result.symbol == workspace.symbol
     assert workspace.stabil_support_result.symbol == workspace.symbol
     assert workspace.stabil_support_result.timeframe == "1d"
+    for timeframe in ANALYSIS_TIMEFRAMES:
+        auction = workspace.auction_result.for_timeframe(timeframe)
+        assert auction.snapshot.provenance.source is AuctionProfileSource.OHLCV_ESTIMATED
     assert tuple(row[0] for row in workspace.fingerprint) == ANALYSIS_TIMEFRAMES
 
     health = workspace_domain_status_frame(workspace)
@@ -93,6 +99,7 @@ def test_workspace_runs_foundation_once_and_exposes_isolated_domain_health(tmp_p
         "Ham evidence",
         "Volume Participation",
         "Stabil Support Lifecycle",
+        "Auction Estimated Profile",
         "Liquidity",
         "Order Block",
         "FVG / Engulfing",
@@ -126,8 +133,10 @@ def test_workspace_loads_each_timeframe_once_and_reuses_prepared_batches(
         ).input_batch
         ham_batch = workspace.ham_result.replay_for(timeframe).input_batch
         volume_batch = workspace.volume_result.replay_for(timeframe).input_batch
+        auction_batch = workspace.auction_result.for_timeframe(timeframe).input_batch
         assert observer_batch is ham_batch
         assert observer_batch is volume_batch
+        assert observer_batch is auction_batch
     assert workspace.stabil_support_result.input_batch is workspace.observer.structure_location.replay_for(
         "1d"
     ).input_batch
@@ -165,6 +174,7 @@ def test_workspace_keeps_optional_domain_failure_from_hiding_other_domains(
     assert workspace.ham_result is None
     assert workspace.volume.status is WorkspaceDomainStatus.READY
     assert workspace.stabil_support.status is WorkspaceDomainStatus.READY
+    assert workspace.auction.status is WorkspaceDomainStatus.READY
     assert workspace.liquidity.status is WorkspaceDomainStatus.READY
     assert workspace.order_block.status is WorkspaceDomainStatus.READY
     assert workspace.fvg_engulfing.status is WorkspaceDomainStatus.READY
@@ -172,6 +182,7 @@ def test_workspace_keeps_optional_domain_failure_from_hiding_other_domains(
     assert workspace.semantic_targeting.status is WorkspaceDomainStatus.READY
     assert workspace.volume_result is not None
     assert workspace.stabil_support_result is not None
+    assert workspace.auction_result is not None
 
 
 def test_workspace_rejects_cache_mutation_during_one_replay(
