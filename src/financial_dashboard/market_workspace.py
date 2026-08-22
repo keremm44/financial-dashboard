@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES, normalize_timeframes
+from financial_dashboard.auction_profile_replay import AuctionProfileMTFReplay, AuctionProfileMTFReplayRunner
 from financial_dashboard.data.analysis_inputs import cache_fingerprint, load_analysis_inputs
 from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
@@ -78,6 +79,7 @@ class MarketAnalysisWorkspace:
     ham: WorkspaceDomainResult
     volume: WorkspaceDomainResult
     stabil_support: WorkspaceDomainResult
+    auction: WorkspaceDomainResult
     liquidity: WorkspaceDomainResult
     order_block: WorkspaceDomainResult
     fvg_engulfing: WorkspaceDomainResult
@@ -98,6 +100,11 @@ class MarketAnalysisWorkspace:
     def stabil_support_result(self) -> StabilSupportReplayResult | None:
         result = self.stabil_support.result
         return result if isinstance(result, StabilSupportReplayResult) else None
+
+    @property
+    def auction_result(self) -> AuctionProfileMTFReplay | None:
+        result = self.auction.result
+        return result if isinstance(result, AuctionProfileMTFReplay) else None
 
     @property
     def liquidity_result(self) -> TargetEvidenceMTFReplay | None:
@@ -134,10 +141,11 @@ class MarketAnalysisWorkspaceRunner:
 
     The coordinator has no trading authority. It shares one immutable prepared input
     snapshot, isolates optional-domain failures, and combines only causal evidence.
-    Stabil Support is an independent daily support-lifecycle domain and cannot create
-    Market Structure, Volume or trading authority. Legacy TargetCluster and the
-    semantic Objective/Reaction/Confirmation model are emitted in parallel during
-    migration; neither creates BUY/SELL authority.
+    Stabil Support is an independent daily support-lifecycle domain. Auction is an
+    independent OHLCV-estimated profile domain and never claims true exchange
+    price-at-volume. Neither can create Market Structure, Volume or trading authority.
+    Legacy TargetCluster and the semantic Objective/Reaction/Confirmation model are
+    emitted in parallel during migration; neither creates BUY/SELL authority.
     """
 
     def __init__(self, store: ParquetOHLCVStore) -> None:
@@ -206,6 +214,17 @@ class MarketAnalysisWorkspaceRunner:
             )
         except Exception as error:
             stabil_support = WorkspaceDomainResult.failed(error)
+
+        try:
+            auction = WorkspaceDomainResult.ready(
+                AuctionProfileMTFReplayRunner(self.store).replay(
+                    normalized_symbol,
+                    timeframes=normalized_timeframes,
+                    input_snapshot=inputs,
+                )
+            )
+        except Exception as error:
+            auction = WorkspaceDomainResult.failed(error)
 
         target_clock = CausalBarClock()
         reference_timeframe = "1h" if "1h" in normalized_timeframes else normalized_timeframes[0]
@@ -349,6 +368,7 @@ class MarketAnalysisWorkspaceRunner:
             ham=ham,
             volume=volume,
             stabil_support=stabil_support,
+            auction=auction,
             liquidity=liquidity,
             order_block=order_block,
             fvg_engulfing=fvg_engulfing,
