@@ -397,12 +397,18 @@ class VolatilityDirectionTransitionEngine:
         return kind
 
     def _start_episode(self, raw: EarlyDirectionEvidence) -> EarlyDirectionEvidence:
+        blocked_direction = self._rearm_block_direction
         self._episode_id += 1
         self._episode_direction = raw.state
         self._episode_last_raw_index = len(self._rows) - 1
         self._pending_opposite = EarlyDirectionTransition.NONE
         self._pending_opposite_count = 0
-        self._clear_reset_observation()
+        # Preserve a reset observation that belongs to a different blocked direction.
+        # Example: an UP re-arm block should remember the first DOWN observation even
+        # when that DOWN bar starts its own episode; the second consecutive DOWN bar
+        # can then satisfy the two-bar semantic-reset requirement for the old UP block.
+        if blocked_direction in {EarlyDirectionTransition.NONE, raw.state}:
+            self._clear_reset_observation()
         if self._rearm_block_direction is raw.state:
             self._rearm_block_direction = EarlyDirectionTransition.NONE
         return replace(
