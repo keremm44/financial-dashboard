@@ -5,7 +5,7 @@ from typing import Any
 
 import pandas as pd
 
-from .analysis_config import CLOSE_LABELLED_TIMEFRAMES, LEFT_LABEL_DURATIONS
+from .analysis_config import BAR_DURATIONS, CLOSE_LABELLED_TIMEFRAMES, LEFT_LABEL_DURATIONS
 from .data.analysis_inputs import AnalysisInputSnapshot
 from .data.engine_input import EngineInputBatch, prepare_engine_input
 from .data.identity import normalize_symbol
@@ -43,16 +43,11 @@ from .mtf_replay import (
 
 @dataclass(frozen=True, slots=True)
 class CausalBarClock:
-    """Convert canonical bar labels into conservative evidence availability.
-
-    Intraday caches are left-labelled and therefore become available after their
-    configured duration. Production daily/weekly caches are close-labelled and are
-    already available at the stored timestamp. An explicit duration always wins so
-    tests or alternate providers may define a different timestamp contract safely.
-    """
+    """Convert canonical labels to availability while retaining physical bar duration."""
 
     durations: tuple[tuple[str, pd.Timedelta], ...] = tuple(LEFT_LABEL_DURATIONS.items())
     close_labelled_timeframes: tuple[str, ...] = tuple(sorted(CLOSE_LABELLED_TIMEFRAMES))
+    bar_durations: tuple[tuple[str, pd.Timedelta], ...] = tuple(BAR_DURATIONS.items())
 
     def __post_init__(self) -> None:
         normalized = tuple(
@@ -71,8 +66,18 @@ class CausalBarClock:
             raise ValueError(
                 "close-labelled timeframes must use unique, non-empty names"
             )
+        physical = tuple(
+            (timeframe.strip().lower(), pd.Timedelta(duration))
+            for timeframe, duration in self.bar_durations
+        )
+        physical_keys = tuple(timeframe for timeframe, _ in physical)
+        if not all(physical_keys) or len(set(physical_keys)) != len(physical_keys):
+            raise ValueError("bar durations must use unique, non-empty timeframes")
+        if any(duration <= pd.Timedelta(0) for _, duration in physical):
+            raise ValueError("bar durations must be positive")
         object.__setattr__(self, "durations", normalized)
         object.__setattr__(self, "close_labelled_timeframes", close_labelled)
+        object.__setattr__(self, "bar_durations", physical)
 
     def available_at(self, timestamp: Any, timeframe: str) -> pd.Timestamp:
         if timestamp is None:
@@ -85,6 +90,17 @@ class CausalBarClock:
         if normalized in self.close_labelled_timeframes:
             return timestamp_value
         raise ValueError(f"causal timestamp contract is not configured for timeframe: {timeframe}")
+
+    def bar_duration(self, timeframe: str) -> pd.Timedelta:
+        normalized = timeframe.strip().lower()
+        # Explicit duration overrides retain legacy/custom-clock semantics.
+        explicit = dict(self.durations).get(normalized)
+        if explicit is not None:
+            return explicit
+        duration = dict(self.bar_durations).get(normalized)
+        if duration is None:
+            raise ValueError(f"bar duration is not configured for timeframe: {timeframe}")
+        return duration
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,11 +156,7 @@ def namespace_support_resistance_export(
         event.with_namespace(symbol=symbol, timeframe=timeframe)
         for event in export.zone_lifecycle_events
     )
-    return replace(
-        export,
-        zones=zones,
-        zone_lifecycle_events=lifecycle_events,
-    )
+    return replace(export, zones=zones, zone_lifecycle_events=lifecycle_events)
 
 
 def _support_snapshot(
@@ -310,10 +322,7 @@ class CachedStructureLocationMTFRunner:
                 zone for zone in support_snapshot.zones if zone.is_confluence_eligible
             )
 
-        confluence = build_zone_confluence(
-            final_active_zones,
-            config=self.confluence_config,
-        )
+        confluence = build_zone_confluence(final_active_zones, config=self.confluence_config)
         outcomes: list[StructureLocationOutcome] = []
         for event in all_events:
             if (
@@ -328,11 +337,9 @@ class CachedStructureLocationMTFRunner:
                 for timeframe in normalized_timeframes
                 if (
                     observation := _latest_causal_observation(
-                        timelines[timeframe],
-                        event_available_at,
+                        timelines[timeframe], event_available_at
                     )
-                )
-                is not None
+                ) is not None
             )
             outcomes.append(
                 evaluate_structure_event_location(
@@ -385,6 +392,4 @@ def replay_foundation_structure_location(
     symbol: str,
     clock: CausalBarClock | None = None,
 ) -> StructureLocationMTFResult:
-    return CachedStructureLocationMTFRunner(store, clock=clock).run_foundation(
-        symbol=symbol
-    )
+    return CachedStructureLocationMTFRunner(store, clock=clock).run_foundation(symbol=symbol)
