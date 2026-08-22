@@ -6,22 +6,23 @@ from pathlib import Path
 from typing import Any
 
 from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES, normalize_timeframes
-from financial_dashboard.data.analysis_inputs import (
-    cache_fingerprint,
-    load_analysis_inputs,
-)
+from financial_dashboard.data.analysis_inputs import cache_fingerprint, load_analysis_inputs
 from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.engines.pattern_compression_core import PatternCompressionConfig
 from financial_dashboard.ham_mtf_replay import HamMTFEvidenceReplay, HamMTFEvidenceReplayRunner
-from financial_dashboard.three_domain_replay import (
-    CachedThreeDomainObserverRunner,
-    ThreeDomainReplayResult,
+from financial_dashboard.target_evidence_replay import (
+    FvgEngulfingMTFReplayRunner,
+    LiquidityMTFReplayRunner,
+    OrderBlockMTFReplayRunner,
+    TargetEvidenceMTFReplay,
 )
-from financial_dashboard.volume_mtf_replay import (
-    VolumeMTFEvidenceReplay,
-    VolumeMTFEvidenceReplayRunner,
-)
+from financial_dashboard.targeting.clustering import build_targeting_snapshot
+from financial_dashboard.targeting.enrichment import enrich_liquidity_scope
+from financial_dashboard.targeting.models import TargetingSnapshot
+from financial_dashboard.targeting.proximity import wilder_atr
+from financial_dashboard.three_domain_replay import CachedThreeDomainObserverRunner, ThreeDomainReplayResult
+from financial_dashboard.volume_mtf_replay import VolumeMTFEvidenceReplay, VolumeMTFEvidenceReplayRunner
 
 
 class WorkspaceDomainStatus(StrEnum):
@@ -61,6 +62,10 @@ class MarketAnalysisWorkspace:
     observer: ThreeDomainReplayResult
     ham: WorkspaceDomainResult
     volume: WorkspaceDomainResult
+    liquidity: WorkspaceDomainResult
+    order_block: WorkspaceDomainResult
+    fvg_engulfing: WorkspaceDomainResult
+    targeting: WorkspaceDomainResult
 
     @property
     def ham_result(self) -> HamMTFEvidenceReplay | None:
@@ -72,6 +77,26 @@ class MarketAnalysisWorkspace:
         result = self.volume.result
         return result if isinstance(result, VolumeMTFEvidenceReplay) else None
 
+    @property
+    def liquidity_result(self) -> TargetEvidenceMTFReplay | None:
+        result = self.liquidity.result
+        return result if isinstance(result, TargetEvidenceMTFReplay) else None
+
+    @property
+    def order_block_result(self) -> TargetEvidenceMTFReplay | None:
+        result = self.order_block.result
+        return result if isinstance(result, TargetEvidenceMTFReplay) else None
+
+    @property
+    def fvg_engulfing_result(self) -> TargetEvidenceMTFReplay | None:
+        result = self.fvg_engulfing.result
+        return result if isinstance(result, TargetEvidenceMTFReplay) else None
+
+    @property
+    def targeting_result(self) -> TargetingSnapshot | None:
+        result = self.targeting.result
+        return result if isinstance(result, TargetingSnapshot) else None
+
 
 class CacheSnapshotChangedError(RuntimeError):
     """Raised when cache files change while one workspace replay is being built."""
@@ -80,10 +105,10 @@ class CacheSnapshotChangedError(RuntimeError):
 class MarketAnalysisWorkspaceRunner:
     """Execution coordinator for independent analysis domains.
 
-    This class has no trading authority. It loads one canonical market-data snapshot,
-    shares the same prepared inputs across all existing domain runners, reuses
-    authoritative Structure output for Volume linkage, isolates non-foundation domain
-    failures, and rejects the complete run if the underlying cache changes meanwhile.
+    The coordinator has no trading authority. It shares one immutable prepared input
+    snapshot, isolates optional-domain failures, and only combines already-causal
+    evidence in the targeting layer. Targeting is descriptive: nearest/confluence
+    targets are not BUY/SELL, stop, or execution instructions.
     """
 
     def __init__(self, store: ParquetOHLCVStore) -> None:
@@ -113,15 +138,8 @@ class MarketAnalysisWorkspaceRunner:
                 raise CacheSnapshotChangedError(str(error)) from error
             raise
 
-        pattern_config = (
-            None
-            if pattern_profile is None
-            else PatternCompressionConfig(profile=pattern_profile)
-        )
-        observer = CachedThreeDomainObserverRunner(
-            self.store,
-            pattern_compression_config=pattern_config,
-        ).run(
+        pattern_config = None if pattern_profile is None else PatternCompressionConfig(profile=pattern_profile)
+        observer = CachedThreeDomainObserverRunner(self.store, pattern_compression_config=pattern_config).run(
             symbol=normalized_symbol,
             timeframes=normalized_timeframes,
             input_snapshot=inputs,
@@ -150,15 +168,88 @@ class MarketAnalysisWorkspaceRunner:
         except Exception as error:
             volume = WorkspaceDomainResult.failed(error)
 
+        try:
+            liquidity = WorkspaceDomainResult.ready(
+                LiquidityMTFReplayRunner(self.store).replay(
+                    normalized_symbol,
+                    timeframes=normalized_timeframes,
+                    input_snapshot=inputs,
+                )
+            )
+        except Exception as error:
+            liquidity = WorkspaceDomainResult.failed(error)
+
+        try:
+            order_block = WorkspaceDomainResult.ready(
+                OrderBlockMTFReplayRunner(self.store).replay(
+                    normalized_symbol,
+                    timeframes=normalized_timeframes,
+                    input_snapshot=inputs,
+                )
+            )
+        except Exception as error:
+            order_block = WorkspaceDomainResult.failed(error)
+
+        try:
+            fvg_engulfing = WorkspaceDomainResult.ready(
+                FvgEngulfingMTFReplayRunner(self.store).replay(
+                    normalized_symbol,
+                    timeframes=normalized_timeframes,
+                    input_snapshot=inputs,
+                )
+            )
+        except Exception as error:
+            fvg_engulfing = WorkspaceDomainResult.failed(error)
+
+        try:
+            reference_timeframe = "1h" if "1h" in normalized_timeframes else normalized_timeframes[0]
+            reference_frame = inputs.for_timeframe(reference_timeframe).input_batch.frame
+            reference_price = float(reference_frame.iloc[-1]["close"])
+            reference_atr = wilder_atr(reference_frame)
+            as_of = reference_frame.iloc[-1]["timestamp"]
+
+            evidence = []
+            if liquidity.is_ready and isinstance(liquidity.result, TargetEvidenceMTFReplay):
+                structure_by_timeframe = {
+                    timeframe: observer.structure_location.replay_for(timeframe).market_structure
+                    for timeframe in normalized_timeframes
+                }
+                atr_by_timeframe = {
+                    timeframe: liquidity.result.for_timeframe(timeframe).atr
+                    for timeframe in liquidity.result.timeframes
+                }
+                evidence.extend(
+                    enrich_liquidity_scope(
+                        liquidity.result.evidence,
+                        structure_by_timeframe=structure_by_timeframe,
+                        atr_by_timeframe=atr_by_timeframe,
+                    )
+                )
+            if order_block.is_ready and isinstance(order_block.result, TargetEvidenceMTFReplay):
+                evidence.extend(order_block.result.evidence)
+            if fvg_engulfing.is_ready and isinstance(fvg_engulfing.result, TargetEvidenceMTFReplay):
+                evidence.extend(fvg_engulfing.result.evidence)
+
+            targeting = WorkspaceDomainResult.ready(
+                build_targeting_snapshot(
+                    symbol=normalized_symbol,
+                    as_of=as_of,
+                    current_price=reference_price,
+                    reference_timeframe=reference_timeframe,
+                    reference_atr=reference_atr,
+                    evidence=evidence,
+                )
+            )
+        except Exception as error:
+            targeting = WorkspaceDomainResult.failed(error)
+
         after = cache_fingerprint(
             self.store,
             symbol=normalized_symbol,
             timeframes=normalized_timeframes,
         )
         if after != inputs.fingerprint:
-            raise CacheSnapshotChangedError(
-                "cache files changed while the analysis workspace was replaying"
-            )
+            raise CacheSnapshotChangedError("cache files changed while the analysis workspace was replaying")
 
         return MarketAnalysisWorkspace(
             symbol=normalized_symbol,
@@ -167,6 +258,10 @@ class MarketAnalysisWorkspaceRunner:
             observer=observer,
             ham=ham,
             volume=volume,
+            liquidity=liquidity,
+            order_block=order_block,
+            fvg_engulfing=fvg_engulfing,
+            targeting=targeting,
         )
 
 
