@@ -43,10 +43,11 @@ _TIMEFRAME_MINUTES = {
 class TvDatafeedProvider(MarketDataProvider):
     """Thin tvDatafeed adapter that keeps TradingView-specific behavior at the boundary.
 
-    The default 10,000-bar capacity is deliberate for the BIST 5-minute production
-    path. A normal 10:00-18:00 session contains 96 five-minute bars, so 100 completed
-    trading sessions require about 9,600 bars. The remaining headroom allows the
-    current partial session without shrinking that historical window.
+    The provider supports both 5m and 15m input. The BIST production history path
+    currently uses 15m as its base because a normal 10:00-18:00 session contains 32
+    fifteen-minute bars; 100 completed sessions therefore require only about 3,200
+    provider bars. The 10,000 request capacity remains headroom rather than a promise
+    that tvDatafeed will return that many rows.
 
     The adapter does not trust volume availability silently. `last_volume_status` is
     updated after every fetch as VALID, PARTIAL or UNAVAILABLE for the frame actually
