@@ -8,6 +8,7 @@ from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.market_workspace import MarketAnalysisWorkspaceRunner
 from financial_dashboard.targeting_historical_replay import (
     TargetingHistoricalReplayRunner,
+    semantic_snapshot_signature,
     snapshot_signature,
 )
 
@@ -57,9 +58,17 @@ def test_historical_targeting_points_are_causal_and_monotonic(tmp_path) -> None:
     )
     for point in replay.points:
         assert pd.Timestamp(point.snapshot.as_of) == pd.Timestamp(point.available_at)
+        assert point.semantic_snapshot is not None
+        assert pd.Timestamp(point.semantic_snapshot.as_of) == pd.Timestamp(point.available_at)
         for cluster in point.snapshot.clusters:
             for evidence in cluster.evidence:
                 assert pd.Timestamp(evidence.available_at) <= pd.Timestamp(point.available_at)
+        semantic_sources = [
+            *(objective.source for objective in point.semantic_snapshot.objectives),
+            *(zone.source for zone in point.semantic_snapshot.reaction_zones),
+            *(confirmation.source for confirmation in point.semantic_snapshot.confirmations),
+        ]
+        assert all(pd.Timestamp(item.available_at) <= pd.Timestamp(point.available_at) for item in semantic_sources)
 
 
 def test_historical_targeting_is_future_tail_invariant(tmp_path) -> None:
@@ -86,10 +95,15 @@ def test_historical_targeting_is_future_tail_invariant(tmp_path) -> None:
 
     assert prefix_replay.latest is not None
     assert full_replay.latest is not None
+    assert prefix_replay.latest_semantic is not None
+    assert full_replay.latest_semantic is not None
     assert pd.Timestamp(prefix_replay.points[-1].available_at) == pd.Timestamp(
         full_replay.points[-1].available_at
     )
     assert snapshot_signature(prefix_replay.latest) == snapshot_signature(full_replay.latest)
+    assert semantic_snapshot_signature(prefix_replay.latest_semantic) == semantic_snapshot_signature(
+        full_replay.latest_semantic
+    )
 
 
 def test_workspace_target_domains_are_clipped_to_reference_cutoff(tmp_path) -> None:
