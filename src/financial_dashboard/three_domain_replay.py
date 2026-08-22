@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .analysis_config import ANALYSIS_TIMEFRAMES, normalize_timeframes
+from .data.analysis_inputs import AnalysisInputSnapshot
 from .data.identity import normalize_symbol
 from .data.parquet_store import ParquetOHLCVStore
 from .engines.market_structure import MarketStructureConfig
@@ -112,6 +113,7 @@ class CachedThreeDomainObserverRunner:
         *,
         symbol: str,
         timeframes: tuple[str, ...] = ANALYSIS_TIMEFRAMES,
+        input_snapshot: AnalysisInputSnapshot | None = None,
     ) -> ThreeDomainReplayResult:
         normalized_symbol = normalize_symbol(symbol)
         normalized = normalize_timeframes(
@@ -119,9 +121,15 @@ class CachedThreeDomainObserverRunner:
             supported=ANALYSIS_TIMEFRAMES,
             label="three-domain observer",
         )
+        if input_snapshot is not None:
+            input_snapshot.validate_request(
+                symbol=normalized_symbol,
+                timeframes=normalized,
+            )
         structure_location = self.structure_location_runner.run(
             symbol=normalized_symbol,
             timeframes=normalized,
+            input_snapshot=input_snapshot,
         )
 
         pattern_snapshots: list[PatternTimeframeSnapshot] = []
