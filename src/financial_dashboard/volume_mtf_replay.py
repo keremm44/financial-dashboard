@@ -6,7 +6,9 @@ from typing import Iterable
 
 import pandas as pd
 
+from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES, normalize_timeframes
 from financial_dashboard.data.engine_input import EngineInputBatch, prepare_engine_input
+from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.data.quality import DataQualityReport, DataQualityStatus
 from financial_dashboard.engines.volume_evidence import (
@@ -39,27 +41,16 @@ from financial_dashboard.structure_location_replay import (
 )
 
 
-VOLUME_EVIDENCE_TIMEFRAMES: tuple[str, ...] = ("1d", "4h", "2h", "1h", "30m")
+# Backwards-compatible public name; canonical definition lives in analysis_config.
+VOLUME_EVIDENCE_TIMEFRAMES: tuple[str, ...] = ANALYSIS_TIMEFRAMES
 
 
 def _normalize_timeframes(timeframes: Iterable[str]) -> tuple[str, ...]:
-    normalized = tuple(timeframe.strip().lower() for timeframe in timeframes)
-    if not normalized:
-        raise ValueError("at least one Volume evidence timeframe is required")
-    if len(set(normalized)) != len(normalized):
-        raise ValueError("Volume evidence timeframes must be unique")
-    unsupported = tuple(
-        timeframe
-        for timeframe in normalized
-        if timeframe not in VOLUME_EVIDENCE_TIMEFRAMES
+    return normalize_timeframes(
+        timeframes,
+        supported=VOLUME_EVIDENCE_TIMEFRAMES,
+        label="Volume evidence",
     )
-    if unsupported:
-        supported = ", ".join(VOLUME_EVIDENCE_TIMEFRAMES)
-        raise ValueError(
-            f"unsupported Volume evidence timeframe(s) {unsupported!r}; "
-            f"expected only: {supported}"
-        )
-    return normalized
 
 
 def _closed_complete_mask(frame: pd.DataFrame) -> pd.Series:
@@ -188,7 +179,7 @@ class VolumeMTFEvidenceReplayRunner:
         symbol: str,
         timeframes: tuple[str, ...],
     ) -> None:
-        if structure_replay.symbol.strip().upper() != symbol:
+        if normalize_symbol(structure_replay.symbol) != symbol:
             raise ValueError(
                 f"Structure/Volume symbol mismatch: "
                 f"{structure_replay.symbol!r} != {symbol!r}"
@@ -232,9 +223,7 @@ class VolumeMTFEvidenceReplayRunner:
         timeframes: Iterable[str] = VOLUME_EVIDENCE_TIMEFRAMES,
         structure_replay: MTFReplayResult | StructureLocationMTFResult | None = None,
     ) -> VolumeMTFEvidenceReplay:
-        normalized_symbol = symbol.strip().upper()
-        if not normalized_symbol:
-            raise ValueError("symbol must not be empty")
+        normalized_symbol = normalize_symbol(symbol)
         normalized_timeframes = _normalize_timeframes(timeframes)
 
         if structure_replay is None:
@@ -262,7 +251,7 @@ class VolumeMTFEvidenceReplayRunner:
                 structure_replay,
                 timeframe,
             )
-            if structure_snapshot.symbol.strip().upper() != normalized_symbol:
+            if normalize_symbol(structure_snapshot.symbol) != normalized_symbol:
                 raise ValueError(
                     f"Market Structure namespace mismatch for {timeframe}"
                 )
