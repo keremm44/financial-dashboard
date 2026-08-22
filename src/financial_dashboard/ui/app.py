@@ -16,6 +16,11 @@ from financial_dashboard.ui.runtime import (
     replay_cached_workspace,
     runnable_timeframes,
 )
+from financial_dashboard.ui.targeting_view_models import (
+    target_clusters_frame,
+    target_evidence_frame,
+    targeting_summary_values,
+)
 from financial_dashboard.ui.view_models import (
     cache_status_frame,
     confluence_frame,
@@ -173,7 +178,9 @@ def main() -> None:
         unsafe_allow_html=True,
     )
     st.warning(
-        "Inspection/debug · Bu arayüz al/sat sinyali, öneri, stop veya hedef üretmez.",
+        "Inspection/debug · Bu arayüz al/sat sinyali, öneri, stop veya take-profit "
+        "üretmez. Gösterilen liquidity target'ları yalnız betimleyici piyasa hedef "
+        "kümeleridir; işlem talimatı değildir.",
         icon="🔎",
     )
 
@@ -223,6 +230,7 @@ def main() -> None:
     result = workspace.observer
     ham_result = workspace.ham_result
     volume_result = workspace.volume_result
+    targeting_result = workspace.targeting_result
 
     st.caption(
         f"{workspace.symbol} · replay: {', '.join(workspace.timeframes)} · as-of: "
@@ -261,6 +269,7 @@ def main() -> None:
         location_tab,
         ham_tab,
         volume_tab,
+        targeting_tab,
         diagnostics_tab,
     ) = st.tabs(
         (
@@ -270,6 +279,7 @@ def main() -> None:
             "Zones & location",
             "Ham evidence",
             "Volume Participation",
+            "Targeting",
             "Diagnostics",
         )
     )
@@ -311,10 +321,12 @@ def main() -> None:
             )
         with right:
             bar_limit = st.slider("Mum sayısı", 50, 1000, 300, step=50)
-        option_columns = st.columns(3)
+        option_columns = st.columns(5)
         show_events = option_columns[0].checkbox("BOS/CHoCH", value=True)
         show_confluence = option_columns[1].checkbox("Confluence", value=False)
         show_conflicts = option_columns[2].checkbox("Opposing conflicts", value=False)
+        show_nearest_targets = option_columns[3].checkbox("Nearest targets", value=True)
+        show_all_target_clusters = option_columns[4].checkbox("All target clusters", value=False)
         figure = make_market_figure(
             result,
             timeframe=chart_timeframe,
@@ -323,6 +335,9 @@ def main() -> None:
             show_events=show_events,
             show_confluence=show_confluence,
             show_conflicts=show_conflicts,
+            targeting=targeting_result,
+            show_nearest_targets=show_nearest_targets,
+            show_all_target_clusters=show_all_target_clusters,
         )
         st.plotly_chart(figure, width="stretch")
 
@@ -579,6 +594,33 @@ def main() -> None:
                     width="stretch",
                     hide_index=True,
                 )
+
+    with targeting_tab:
+        st.subheader("Liquidity objectives · proximity-first inspection")
+        st.caption(
+            "Nearest ve highest-confluence ayrı çıktılardır. Liquidity hedef ankrajıdır; "
+            "S/R, FVG, Order Block ve Engulfing yakınlık/dedup kurallarıyla cluster'ı "
+            "zenginleştirir. Bu bölüm take-profit veya işlem kararı değildir."
+        )
+        if not workspace.targeting.is_ready:
+            st.error(f"Targeting oluşturulamadı: {_domain_error(workspace.targeting)}")
+        elif targeting_result is None:
+            st.info("Targeting snapshot bulunmuyor.")
+        else:
+            st.json(targeting_summary_values(targeting_result))
+            cluster_view, evidence_view = st.tabs(("Target clusters", "Causal evidence"))
+            with cluster_view:
+                clusters = target_clusters_frame(targeting_result)
+                if clusters.empty:
+                    st.info("Bu snapshot'ta aktif target cluster yok.")
+                else:
+                    st.dataframe(clusters, width="stretch", hide_index=True)
+            with evidence_view:
+                evidence_frame = target_evidence_frame(targeting_result)
+                if evidence_frame.empty:
+                    st.info("Aktif cluster evidence kaydı yok.")
+                else:
+                    st.dataframe(evidence_frame, width="stretch", hide_index=True)
 
     with diagnostics_tab:
         st.subheader("Workspace domain health")
