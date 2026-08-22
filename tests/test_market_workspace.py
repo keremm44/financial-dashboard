@@ -20,6 +20,7 @@ from financial_dashboard.mtf_replay import FOUNDATION_MARKET_STRUCTURE_TIMEFRAME
 from financial_dashboard.structure_location_replay import CausalBarClock
 from financial_dashboard.ui.workspace_view_models import workspace_domain_status_frame
 from financial_dashboard.volume_mtf_replay import VOLUME_EVIDENCE_TIMEFRAMES
+from financial_dashboard.volatility_mtf_replay import VOLATILITY_TIMEFRAMES
 from _ui_test_data import make_ui_store
 
 
@@ -37,46 +38,38 @@ def test_default_causal_clock_uses_left_labels_intraday_and_close_labels_daily()
     clock = CausalBarClock()
     intraday_start = pd.Timestamp("2026-08-21T10:00:00+03:00")
     daily_close = pd.Timestamp("2026-08-21T18:10:00+03:00")
-
-    assert clock.available_at(intraday_start, "1h") == pd.Timestamp(
-        "2026-08-21T11:00:00+03:00"
-    )
+    assert clock.available_at(intraday_start, "1h") == pd.Timestamp("2026-08-21T11:00:00+03:00")
     assert clock.available_at(daily_close, "1d") == daily_close
-
-    explicit = CausalBarClock(
-        durations=(("1d", pd.Timedelta(hours=8)),),
-        close_labelled_timeframes=("1d",),
-    )
-    assert explicit.available_at(intraday_start, "1D") == pd.Timestamp(
-        "2026-08-21T18:00:00+03:00"
-    )
+    explicit = CausalBarClock(durations=(("1d", pd.Timedelta(hours=8)),), close_labelled_timeframes=("1d",))
+    assert explicit.available_at(intraday_start, "1D") == pd.Timestamp("2026-08-21T18:00:00+03:00")
 
 
 def test_workspace_runs_foundation_once_and_exposes_isolated_domain_health(tmp_path) -> None:
     make_ui_store(tmp_path)
-
     workspace = replay_market_workspace_from_cache(
-        tmp_path,
-        symbol=" thyao ",
-        timeframes=ANALYSIS_TIMEFRAMES,
-        pattern_profile="Dengeli",
+        tmp_path, symbol=" thyao ", timeframes=ANALYSIS_TIMEFRAMES, pattern_profile="Dengeli"
     )
-
     assert workspace.symbol == "THYAO"
     assert workspace.timeframes == ANALYSIS_TIMEFRAMES
     assert workspace.observer.symbol == "THYAO"
     assert workspace.observer.structure_location.symbol == "THYAO"
-    assert workspace.ham.status is WorkspaceDomainStatus.READY
-    assert workspace.volume.status is WorkspaceDomainStatus.READY
-    assert workspace.stabil_support.status is WorkspaceDomainStatus.READY
-    assert workspace.liquidity.status is WorkspaceDomainStatus.READY
-    assert workspace.order_block.status is WorkspaceDomainStatus.READY
-    assert workspace.fvg_engulfing.status is WorkspaceDomainStatus.READY
-    assert workspace.targeting.status is WorkspaceDomainStatus.READY
-    assert workspace.semantic_targeting.status is WorkspaceDomainStatus.READY
+    for domain in (
+        workspace.ham,
+        workspace.volume,
+        workspace.stabil_support,
+        workspace.volatility,
+        workspace.liquidity,
+        workspace.order_block,
+        workspace.fvg_engulfing,
+        workspace.targeting,
+        workspace.semantic_targeting,
+    ):
+        assert domain.status is WorkspaceDomainStatus.READY
     assert workspace.ham_result is not None
     assert workspace.volume_result is not None
     assert workspace.stabil_support_result is not None
+    assert workspace.volatility_result is not None
+    assert workspace.volatility_result.timeframes == VOLATILITY_TIMEFRAMES
     assert workspace.liquidity_result is not None
     assert workspace.order_block_result is not None
     assert workspace.fvg_engulfing_result is not None
@@ -93,6 +86,7 @@ def test_workspace_runs_foundation_once_and_exposes_isolated_domain_health(tmp_p
         "Ham evidence",
         "Volume Participation",
         "Stabil Support Lifecycle",
+        "Volatility / Bands / Fib",
         "Liquidity",
         "Order Block",
         "FVG / Engulfing",
@@ -101,10 +95,7 @@ def test_workspace_runs_foundation_once_and_exposes_isolated_domain_health(tmp_p
     assert set(health["Status"]) == {"READY"}
 
 
-def test_workspace_loads_each_timeframe_once_and_reuses_prepared_batches(
-    tmp_path,
-    monkeypatch,
-) -> None:
+def test_workspace_loads_each_timeframe_once_and_reuses_prepared_batches(tmp_path, monkeypatch) -> None:
     store = make_ui_store(tmp_path)
     real_load = store.load
     loads: list[tuple[str, str]] = []
@@ -114,57 +105,35 @@ def test_workspace_loads_each_timeframe_once_and_reuses_prepared_batches(
         return real_load(symbol, timeframe)
 
     monkeypatch.setattr(store, "load", counted_load)
-    workspace = MarketAnalysisWorkspaceRunner(store).run(
-        symbol="THYAO",
-        timeframes=ANALYSIS_TIMEFRAMES,
-    )
-
+    workspace = MarketAnalysisWorkspaceRunner(store).run(symbol="THYAO", timeframes=ANALYSIS_TIMEFRAMES)
     assert loads == [("THYAO", timeframe) for timeframe in ANALYSIS_TIMEFRAMES]
     for timeframe in ANALYSIS_TIMEFRAMES:
-        observer_batch = workspace.observer.structure_location.replay_for(
-            timeframe
-        ).input_batch
+        observer_batch = workspace.observer.structure_location.replay_for(timeframe).input_batch
         ham_batch = workspace.ham_result.replay_for(timeframe).input_batch
         volume_batch = workspace.volume_result.replay_for(timeframe).input_batch
         assert observer_batch is ham_batch
         assert observer_batch is volume_batch
-    assert workspace.stabil_support_result.input_batch is workspace.observer.structure_location.replay_for(
-        "1d"
-    ).input_batch
+    assert workspace.stabil_support_result.input_batch is workspace.observer.structure_location.replay_for("1d").input_batch
+    assert workspace.volatility_result is not None
+    for timeframe in VOLATILITY_TIMEFRAMES:
+        assert workspace.volatility_result.for_timeframe(timeframe).latest is not None
 
 
-def test_workspace_keeps_optional_domain_failure_from_hiding_other_domains(
-    tmp_path,
-    monkeypatch,
-) -> None:
+def test_workspace_keeps_optional_domain_failure_from_hiding_other_domains(tmp_path, monkeypatch) -> None:
     store = make_ui_store(tmp_path)
 
-    def fail_ham(
-        self,
-        symbol,
-        *,
-        timeframes=HAM_EVIDENCE_TIMEFRAMES,
-        input_snapshot=None,
-    ):
+    def fail_ham(self, symbol, *, timeframes=HAM_EVIDENCE_TIMEFRAMES, input_snapshot=None):
         raise RuntimeError("synthetic Ham failure")
 
-    monkeypatch.setattr(
-        workspace_module.HamMTFEvidenceReplayRunner,
-        "replay",
-        fail_ham,
-    )
-
-    workspace = MarketAnalysisWorkspaceRunner(store).run(
-        symbol="THYAO",
-        timeframes=ANALYSIS_TIMEFRAMES,
-    )
-
+    monkeypatch.setattr(workspace_module.HamMTFEvidenceReplayRunner, "replay", fail_ham)
+    workspace = MarketAnalysisWorkspaceRunner(store).run(symbol="THYAO", timeframes=ANALYSIS_TIMEFRAMES)
     assert workspace.observer is not None
     assert workspace.ham.status is WorkspaceDomainStatus.ERROR
     assert workspace.ham.error_type == "RuntimeError"
     assert workspace.ham_result is None
     assert workspace.volume.status is WorkspaceDomainStatus.READY
     assert workspace.stabil_support.status is WorkspaceDomainStatus.READY
+    assert workspace.volatility.status is WorkspaceDomainStatus.READY
     assert workspace.liquidity.status is WorkspaceDomainStatus.READY
     assert workspace.order_block.status is WorkspaceDomainStatus.READY
     assert workspace.fvg_engulfing.status is WorkspaceDomainStatus.READY
@@ -172,47 +141,36 @@ def test_workspace_keeps_optional_domain_failure_from_hiding_other_domains(
     assert workspace.semantic_targeting.status is WorkspaceDomainStatus.READY
     assert workspace.volume_result is not None
     assert workspace.stabil_support_result is not None
+    assert workspace.volatility_result is not None
 
 
-def test_workspace_rejects_cache_mutation_during_one_replay(
-    tmp_path,
-    monkeypatch,
-) -> None:
+def test_volatility_failure_is_isolated(tmp_path, monkeypatch) -> None:
+    store = make_ui_store(tmp_path)
+
+    def fail_volatility(self, symbol, *, input_snapshot=None, timeframes=VOLATILITY_TIMEFRAMES, profile="Dengeli"):
+        raise RuntimeError("synthetic volatility failure")
+
+    monkeypatch.setattr(workspace_module.VolatilityMTFReplayRunner, "replay", fail_volatility)
+    workspace = MarketAnalysisWorkspaceRunner(store).run(symbol="THYAO", timeframes=ANALYSIS_TIMEFRAMES)
+    assert workspace.volatility.status is WorkspaceDomainStatus.ERROR
+    assert workspace.volatility_result is None
+    assert workspace.observer is not None
+    assert workspace.volume.status is WorkspaceDomainStatus.READY
+    assert workspace.stabil_support.status is WorkspaceDomainStatus.READY
+    assert workspace.targeting.status is WorkspaceDomainStatus.READY
+
+
+def test_workspace_rejects_cache_mutation_during_one_replay(tmp_path, monkeypatch) -> None:
     store = make_ui_store(tmp_path)
     real_replay = workspace_module.HamMTFEvidenceReplayRunner.replay
     target = store.path_for("THYAO", "30m")
 
-    def replay_and_touch(
-        self,
-        symbol,
-        *,
-        timeframes=HAM_EVIDENCE_TIMEFRAMES,
-        input_snapshot=None,
-    ):
-        result = real_replay(
-            self,
-            symbol,
-            timeframes=timeframes,
-            input_snapshot=input_snapshot,
-        )
+    def replay_and_touch(self, symbol, *, timeframes=HAM_EVIDENCE_TIMEFRAMES, input_snapshot=None):
+        result = real_replay(self, symbol, timeframes=timeframes, input_snapshot=input_snapshot)
         stat = target.stat()
-        os.utime(
-            target,
-            ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000),
-        )
+        os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
         return result
 
-    monkeypatch.setattr(
-        workspace_module.HamMTFEvidenceReplayRunner,
-        "replay",
-        replay_and_touch,
-    )
-
-    with pytest.raises(
-        CacheSnapshotChangedError,
-        match="cache files changed",
-    ):
-        MarketAnalysisWorkspaceRunner(store).run(
-            symbol="THYAO",
-            timeframes=ANALYSIS_TIMEFRAMES,
-        )
+    monkeypatch.setattr(workspace_module.HamMTFEvidenceReplayRunner, "replay", replay_and_touch)
+    with pytest.raises(CacheSnapshotChangedError, match="cache files changed"):
+        MarketAnalysisWorkspaceRunner(store).run(symbol="THYAO", timeframes=ANALYSIS_TIMEFRAMES)
