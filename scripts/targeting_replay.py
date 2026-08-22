@@ -21,11 +21,29 @@ def _target_text(cluster) -> str:
     )
 
 
+def _objective_text(objective, current_price: float, atr: float) -> str:
+    if objective is None:
+        return "NONE"
+    if objective.side.value == "ABOVE":
+        distance = max(0.0, objective.low - current_price)
+    elif objective.side.value == "BELOW":
+        distance = max(0.0, current_price - objective.high)
+    else:
+        distance = 0.0
+    distance_atr = distance / max(float(atr), 1e-12)
+    scope = "-" if objective.liquidity_scope is None else objective.liquidity_scope.value
+    return (
+        f"{objective.kind.value}:{objective.side.value} "
+        f"anchor={objective.anchor_price:.4f} dist_atr={distance_atr:.3f} "
+        f"scope={scope} tf={objective.source.timeframe} state={objective.source.source_state}"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Replay descriptive Liquidity/S-R/OB/FVG/Engulfing target clusters "
-            "through a cached symbol using causal prefixes."
+            "Replay causal targeting through a cached symbol. Legacy TargetCluster and "
+            "semantic Objective/Reaction/Confirmation outputs run in shadow mode."
         )
     )
     parser.add_argument("--symbol", required=True)
@@ -103,16 +121,59 @@ def main() -> int:
 
     for point in replay.points:
         snapshot = point.snapshot
+        semantic = point.semantic_snapshot
         print(
             f"\n[{point.available_at}] price={snapshot.current_price:.4f} "
             f"atr={snapshot.reference_atr:.4f} clusters={len(snapshot.clusters)}"
         )
-        print(f"nearest_up={_target_text(snapshot.nearest_upside_target)}")
-        print(f"nearest_down={_target_text(snapshot.nearest_downside_target)}")
-        print(f"highest_confluence_up={_target_text(snapshot.highest_confluence_upside)}")
-        print(f"highest_confluence_down={_target_text(snapshot.highest_confluence_downside)}")
+        if semantic is None:
+            print("semantic=NONE")
+        else:
+            print(
+                f"semantic_state={semantic.state.value} objectives={len(semantic.objectives)} "
+                f"reactions={len(semantic.reaction_zones)} confirmations={len(semantic.confirmations)}"
+            )
+            print(
+                "objective_up="
+                + _objective_text(
+                    semantic.nearest_upside_objective,
+                    semantic.current_price,
+                    semantic.reference_atr,
+                )
+            )
+            print(
+                "objective_down="
+                + _objective_text(
+                    semantic.nearest_downside_objective,
+                    semantic.current_price,
+                    semantic.reference_atr,
+                )
+            )
+            if semantic.upside_arrival is not None:
+                print(
+                    f"arrival_up={semantic.upside_arrival.state.value} "
+                    f"ahead={len(semantic.upside_arrival.reactions_ahead)} "
+                    f"at={len(semantic.upside_arrival.reactions_at)} "
+                    f"beyond={len(semantic.upside_arrival.reactions_beyond)} "
+                    f"current={len(semantic.upside_arrival.current_reactions)} "
+                    f"independent_rx_origins={semantic.upside_arrival.independent_reaction_origins}"
+                )
+            if semantic.downside_arrival is not None:
+                print(
+                    f"arrival_down={semantic.downside_arrival.state.value} "
+                    f"ahead={len(semantic.downside_arrival.reactions_ahead)} "
+                    f"at={len(semantic.downside_arrival.reactions_at)} "
+                    f"beyond={len(semantic.downside_arrival.reactions_beyond)} "
+                    f"current={len(semantic.downside_arrival.current_reactions)} "
+                    f"independent_rx_origins={semantic.downside_arrival.independent_reaction_origins}"
+                )
 
-    print("\n[semantic-target-transitions]")
+        print(f"legacy_nearest_up={_target_text(snapshot.nearest_upside_target)}")
+        print(f"legacy_nearest_down={_target_text(snapshot.nearest_downside_target)}")
+        print(f"legacy_highest_confluence_up={_target_text(snapshot.highest_confluence_upside)}")
+        print(f"legacy_highest_confluence_down={_target_text(snapshot.highest_confluence_downside)}")
+
+    print("\n[legacy-semantic-target-transitions]")
     if not semantic_transitions:
         print("NONE")
     for transition in semantic_transitions:
@@ -130,9 +191,27 @@ def main() -> int:
         for evidence in cluster.evidence
         if evidence.available_at > point.available_at
     ]
-    if causal_violations:
+    semantic_causal_violations = []
+    for point in replay.points:
+        semantic = point.semantic_snapshot
+        if semantic is None:
+            continue
+        sources = [
+            *(objective.source for objective in semantic.objectives),
+            *(zone.source for zone in semantic.reaction_zones),
+            *(confirmation.source for confirmation in semantic.confirmations),
+        ]
+        semantic_causal_violations.extend(
+            (point.available_at, item.uid)
+            for item in sources
+            if item.available_at > point.available_at
+        )
+    if causal_violations or semantic_causal_violations:
         print("\nTARGETING_REPLAY_FAILED")
-        print(f"reason=causal evidence violations: {causal_violations[:10]}")
+        print(
+            "reason=causal evidence violations: "
+            f"legacy={causal_violations[:10]} semantic={semantic_causal_violations[:10]}"
+        )
         return 4
 
     print("\nTARGETING_REPLAY_OK")
