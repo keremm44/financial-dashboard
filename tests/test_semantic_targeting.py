@@ -17,6 +17,7 @@ from financial_dashboard.targeting.semantic_models import (
     BehaviorDirection,
     ObjectiveKind,
     ReactionKind,
+    SemanticOverallState,
     SemanticRole,
 )
 from financial_dashboard.targeting.semantic_roles import (
@@ -110,6 +111,19 @@ def test_ob_fvg_sr_are_reaction_zones_but_engulfing_is_confirmation_only() -> No
     assert to_confirmation(engulf, current_price=100.0).behavior is BehaviorDirection.BULLISH
 
 
+def test_fvg_behavior_comes_from_directional_role_not_geometric_side() -> None:
+    bearish_fvg_above = _evidence(
+        TargetEvidenceType.FVG,
+        uid="bearish-fvg",
+        low=109.0,
+        high=110.0,
+        roles=(TargetRole.IMBALANCE, TargetRole.SUPPLY, TargetRole.REACTION),
+    )
+    zone = to_reaction_zone(bearish_fvg_above, current_price=100.0)
+    assert zone.side.value == "ABOVE"
+    assert zone.behavior is BehaviorDirection.BEARISH
+
+
 def test_reaction_only_snapshot_has_no_fake_objective() -> None:
     ob = _evidence(TargetEvidenceType.ORDER_BLOCK, uid="ob", low=109.0, high=111.0)
     fvg = _evidence(TargetEvidenceType.FVG, uid="fvg", low=109.2, high=110.2)
@@ -122,7 +136,9 @@ def test_reaction_only_snapshot_has_no_fake_objective() -> None:
     )
     assert snapshot.objectives == ()
     assert len(snapshot.reaction_zones) == 2
-    assert snapshot.state is ArrivalState.REACTION_ZONE_ONLY
+    assert snapshot.overall_state is SemanticOverallState.REACTION_ZONE_ONLY
+    assert snapshot.upside_state is ArrivalState.NO_ACTIVE_OBJECTIVE
+    assert snapshot.downside_state is ArrivalState.NO_ACTIVE_OBJECTIVE
     assert snapshot.nearest_upside_objective is None
 
 
@@ -149,9 +165,12 @@ def test_same_origin_keeps_roles_without_counting_two_independent_reaction_origi
     assert {item.zone.kind for item in context.reactions_at} == {ReactionKind.ORDER_BLOCK, ReactionKind.FVG}
     assert context.independent_reaction_origins == 1
     assert context.state is ArrivalState.OBJECTIVE_WITH_REACTION
+    assert snapshot.upside_state is ArrivalState.OBJECTIVE_WITH_REACTION
+    assert snapshot.downside_state is ArrivalState.NO_ACTIVE_OBJECTIVE
+    assert snapshot.overall_state is SemanticOverallState.UPSIDE_ONLY
 
 
-def test_arrival_positions_ahead_at_and_beyond_are_separate() -> None:
+def test_arrival_positions_ahead_at_and_downstream_are_separate_with_distance() -> None:
     liq = _evidence(TargetEvidenceType.LIQUIDITY, uid="liq", low=110.0, high=110.0)
     ahead = _evidence(TargetEvidenceType.ORDER_BLOCK, uid="ahead", low=105.0, high=106.0)
     at = _evidence(
@@ -173,7 +192,14 @@ def test_arrival_positions_ahead_at_and_beyond_are_separate() -> None:
     assert context is not None
     assert [item.position for item in context.reactions_ahead] == [ArrivalPosition.AHEAD]
     assert [item.position for item in context.reactions_at] == [ArrivalPosition.AT_OBJECTIVE]
-    assert [item.position for item in context.reactions_beyond] == [ArrivalPosition.BEYOND]
+    assert [item.position for item in context.downstream_reactions] == [ArrivalPosition.BEYOND]
+    assert context.reactions_beyond == context.downstream_reactions
+    assert context.downstream_reactions[0].distance_from_objective_atr == 0.5
+    assert context.relevant_reactions == (
+        *context.current_reactions,
+        *context.reactions_ahead,
+        *context.reactions_at,
+    )
 
 
 def test_ahead_reaction_without_arrival_zone_is_obstacle_state() -> None:
@@ -188,7 +214,30 @@ def test_ahead_reaction_without_arrival_zone_is_obstacle_state() -> None:
     )
     assert snapshot.upside_arrival is not None
     assert snapshot.upside_arrival.state is ArrivalState.OBJECTIVE_WITH_OBSTACLE
-    assert snapshot.state is ArrivalState.OBJECTIVE_WITH_OBSTACLE
+    assert snapshot.upside_state is ArrivalState.OBJECTIVE_WITH_OBSTACLE
+    assert snapshot.overall_state is SemanticOverallState.UPSIDE_ONLY
+
+
+def test_global_summary_is_mixed_when_upside_and_downside_states_differ() -> None:
+    upside = _evidence(TargetEvidenceType.LIQUIDITY, uid="up", low=110.0, high=110.0)
+    downside = _evidence(TargetEvidenceType.LIQUIDITY, uid="down", low=90.0, high=90.0)
+    down_reaction = _evidence(
+        TargetEvidenceType.ORDER_BLOCK,
+        uid="down-rx",
+        low=89.8,
+        high=90.2,
+        roles=(TargetRole.DEMAND, TargetRole.REACTION),
+    )
+    snapshot = build_semantic_targeting_snapshot(
+        symbol="TEST",
+        as_of=TS,
+        current_price=100.0,
+        reference_atr=4.0,
+        evidence=(upside, downside, down_reaction),
+    )
+    assert snapshot.upside_state is ArrivalState.OBJECTIVE_ONLY
+    assert snapshot.downside_state is ArrivalState.OBJECTIVE_WITH_REACTION
+    assert snapshot.overall_state is SemanticOverallState.MIXED
 
 
 def test_price_inside_ob_is_in_reaction_zone_while_liquidity_remains_objective() -> None:
@@ -202,7 +251,7 @@ def test_price_inside_ob_is_in_reaction_zone_while_liquidity_remains_objective()
         evidence=(liq, ob),
     )
     assert snapshot.nearest_upside_objective is not None
-    assert snapshot.state is ArrivalState.IN_REACTION_ZONE
+    assert snapshot.upside_state is ArrivalState.IN_REACTION_ZONE
     assert snapshot.upside_arrival is not None
     assert len(snapshot.upside_arrival.current_reactions) == 1
 
@@ -222,7 +271,7 @@ def test_future_available_evidence_is_filtered_inside_semantic_builder() -> None
     )
     assert len(snapshot.objectives) == 1
     assert snapshot.reaction_zones == ()
-    assert snapshot.state is ArrivalState.OBJECTIVE_ONLY
+    assert snapshot.upside_state is ArrivalState.OBJECTIVE_ONLY
 
 
 def test_remote_engulfing_does_not_attach_to_unrelated_objective() -> None:
