@@ -229,8 +229,8 @@ def test_basis_return_semantically_rearms_same_direction() -> None:
         engine._apply_episode_lifecycle(_none(position=.8), neutral)
 
     _advance(engine)
-    reset = engine._apply_episode_lifecycle(_none(position=.49), neutral)
-    assert "semantic_rearm_basis_reset" in reset.reasons
+    reset = engine._apply_episode_lifecycle(_none(position=.40), neutral)
+    assert "semantic_rearm_lower_basis_acceptance" in reset.reasons
     assert engine._rearm_block_direction is EarlyDirectionTransition.NONE
 
     _advance(engine)
@@ -264,7 +264,7 @@ def test_opposite_evidence_semantically_rearms_after_idle_expiry() -> None:
     assert "semantic_rearm_opposite_evidence" in opposite.reasons
 
 
-def test_canonical_neutralization_semantically_rearms_after_graduation() -> None:
+def test_canonical_neutralization_alone_does_not_rearm_after_graduation() -> None:
     engine = VolatilityDirectionTransitionEngine()
     neutral = VolatilityBandsFibFinalExport(regime=int(VolatilityState.BALANCED))
     engine._rows = [{}]
@@ -281,16 +281,17 @@ def test_canonical_neutralization_semantically_rearms_after_graduation() -> None
     assert engine._rearm_block_direction is EarlyDirectionTransition.EARLY_UP
 
     _advance(engine)
-    reset = engine._apply_episode_lifecycle(_none(position=.8), neutral)
-    assert "semantic_rearm_canonical_neutralized" in reset.reasons
-    assert engine._rearm_block_direction is EarlyDirectionTransition.NONE
+    neutralized = engine._apply_episode_lifecycle(_none(position=.8), neutral)
+    assert "semantic_rearm" not in " ".join(neutralized.reasons)
+    assert engine._rearm_block_direction is EarlyDirectionTransition.EARLY_UP
 
     _advance(engine)
-    rearmed = engine._apply_episode_lifecycle(
+    blocked = engine._apply_episode_lifecycle(
         _raw(EarlyDirectionTransition.EARLY_UP, position=.8), neutral
     )
-    assert rearmed.state is EarlyDirectionTransition.EARLY_UP
-    assert rearmed.episode_id == 2
+    assert blocked.state is EarlyDirectionTransition.NONE
+    assert "same_direction_rearm_not_observed" in blocked.reasons
+    assert engine._episode_id == 1
 
 
 def test_same_direction_candidate_closes_and_blocks_early_episode() -> None:
