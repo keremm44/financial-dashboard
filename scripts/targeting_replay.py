@@ -34,6 +34,11 @@ def main() -> int:
     parser.add_argument("--minimum-bars", type=int, default=20)
     parser.add_argument("--step", type=int, default=1)
     parser.add_argument("--max-points", type=int, default=50)
+    parser.add_argument(
+        "--quiet-progress",
+        action="store_true",
+        help="suppress per-point replay progress lines",
+    )
     args = parser.parse_args()
 
     if args.minimum_bars < 1:
@@ -47,6 +52,24 @@ def main() -> int:
         item.strip().lower() for item in args.timeframes.split(",") if item.strip()
     )
     store = ParquetOHLCVStore(Path(args.cache_root))
+
+    print("=== TARGETING CAUSAL REPLAY ===", flush=True)
+    print(
+        f"symbol={args.symbol} reference={args.reference_timeframe} "
+        f"timeframes={','.join(timeframes)} max_points={args.max_points} step={args.step}",
+        flush=True,
+    )
+
+    def progress(position, total, cutoff, state) -> None:
+        if args.quiet_progress:
+            return
+        if state == "start":
+            print(f"[{position}/{total}] {cutoff} replaying...", flush=True)
+        elif state == "done":
+            print(f"[{position}/{total}] {cutoff} done", flush=True)
+        elif state == "skipped":
+            print(f"[{position}/{total}] {cutoff} skipped: insufficient causal bars", flush=True)
+
     try:
         replay = TargetingHistoricalReplayRunner(store).replay(
             args.symbol,
@@ -55,13 +78,16 @@ def main() -> int:
             minimum_bars_per_timeframe=args.minimum_bars,
             step=args.step,
             max_points=args.max_points,
+            progress=progress,
         )
+    except KeyboardInterrupt:
+        print("\nTARGETING_REPLAY_INTERRUPTED", flush=True)
+        return 130
     except Exception as error:
         print("TARGETING_REPLAY_FAILED")
         print(f"reason={type(error).__name__}: {error}")
         return 2
 
-    print("=== TARGETING CAUSAL REPLAY ===")
     print(
         f"symbol={replay.symbol} reference={replay.reference_timeframe} "
         f"timeframes={','.join(replay.timeframes)} points={len(replay.points)} "
