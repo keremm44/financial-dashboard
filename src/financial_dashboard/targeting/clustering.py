@@ -77,7 +77,7 @@ def deduplicate_origin_events(
     Cross-group facts are never collapsed. Same-timeframe, origin-bar proximity,
     interval proximity and a maximum price diameter are all required. The evidence
     objects remain separate; only ``origin_event_id`` is shared for independent-count
-    purposes.
+    purposes. Singleton evidence keeps its native origin-event identity.
     """
     cfg = config or TargetClusterConfig()
     atr = max(float(reference_atr), 1e-12)
@@ -129,6 +129,8 @@ def deduplicate_origin_events(
             low = next_low
             high = next_high
 
+        if len(group) <= 1:
+            continue
         anchor_idx = min(
             group,
             key=lambda idx: (pd.Timestamp(items[idx].confirmed_at), items[idx].uid),
