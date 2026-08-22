@@ -5,7 +5,9 @@ from typing import Any
 
 import pandas as pd
 
+from .analysis_config import CLOSE_LABELLED_TIMEFRAMES, LEFT_LABEL_DURATIONS
 from .data.engine_input import EngineInputBatch, prepare_engine_input
+from .data.identity import normalize_symbol
 from .data.parquet_store import ParquetOHLCVStore
 from .engines.market_structure import MarketStructureConfig
 from .engines.market_structure_engine import MarketStructureEngine
@@ -40,16 +42,16 @@ from .mtf_replay import (
 
 @dataclass(frozen=True, slots=True)
 class CausalBarClock:
-    """Convert left-labelled bar starts into conservative evidence availability."""
+    """Convert canonical bar labels into conservative evidence availability.
 
-    durations: tuple[tuple[str, pd.Timedelta], ...] = (
-        ("15m", pd.Timedelta(minutes=15)),
-        ("30m", pd.Timedelta(minutes=30)),
-        ("1h", pd.Timedelta(hours=1)),
-        ("2h", pd.Timedelta(hours=2)),
-        ("4h", pd.Timedelta(hours=4)),
-        ("1d", pd.Timedelta(days=1)),
-    )
+    Intraday caches are left-labelled and therefore become available after their
+    configured duration. Production daily/weekly caches are close-labelled and are
+    already available at the stored timestamp. An explicit duration always wins so
+    tests or alternate providers may define a different timestamp contract safely.
+    """
+
+    durations: tuple[tuple[str, pd.Timedelta], ...] = tuple(LEFT_LABEL_DURATIONS.items())
+    close_labelled_timeframes: tuple[str, ...] = tuple(sorted(CLOSE_LABELLED_TIMEFRAMES))
 
     def __post_init__(self) -> None:
         normalized = tuple(
@@ -61,16 +63,27 @@ class CausalBarClock:
             raise ValueError("causal durations must use unique, non-empty timeframes")
         if any(duration <= pd.Timedelta(0) for _, duration in normalized):
             raise ValueError("causal durations must be positive")
+        close_labelled = tuple(
+            str(timeframe).strip().lower() for timeframe in self.close_labelled_timeframes
+        )
+        if not all(close_labelled) or len(set(close_labelled)) != len(close_labelled):
+            raise ValueError(
+                "close-labelled timeframes must use unique, non-empty names"
+            )
         object.__setattr__(self, "durations", normalized)
+        object.__setattr__(self, "close_labelled_timeframes", close_labelled)
 
     def available_at(self, timestamp: Any, timeframe: str) -> pd.Timestamp:
         if timestamp is None:
             raise ValueError("causal availability requires a bar timestamp")
         normalized = timeframe.strip().lower()
+        timestamp_value = pd.Timestamp(timestamp)
         duration = dict(self.durations).get(normalized)
-        if duration is None:
-            raise ValueError(f"causal duration is not configured for timeframe: {timeframe}")
-        return pd.Timestamp(timestamp) + duration
+        if duration is not None:
+            return timestamp_value + duration
+        if normalized in self.close_labelled_timeframes:
+            return timestamp_value
+        raise ValueError(f"causal timestamp contract is not configured for timeframe: {timeframe}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,21 +214,24 @@ class CachedStructureLocationMTFRunner:
         symbol: str,
         timeframes: tuple[str, ...] = FOUNDATION_MARKET_STRUCTURE_TIMEFRAMES,
     ) -> StructureLocationMTFResult:
+        normalized_symbol = normalize_symbol(symbol)
         normalized_timeframes = tuple(timeframe.strip().lower() for timeframe in timeframes)
         if not normalized_timeframes or not all(normalized_timeframes):
             raise ValueError("at least one non-empty timeframe is required")
         if len(set(normalized_timeframes)) != len(normalized_timeframes):
             raise ValueError("timeframes must be unique after normalization")
-        configured_durations = dict(self.clock.durations)
-        missing_durations = tuple(
+        configured_timeframes = set(dict(self.clock.durations)) | set(
+            self.clock.close_labelled_timeframes
+        )
+        missing_contracts = tuple(
             timeframe
             for timeframe in normalized_timeframes
-            if timeframe not in configured_durations
+            if timeframe not in configured_timeframes
         )
-        if missing_durations:
+        if missing_contracts:
             raise ValueError(
-                "causal duration is not configured for timeframes: "
-                + ", ".join(missing_durations)
+                "causal timestamp contract is not configured for timeframes: "
+                + ", ".join(missing_contracts)
             )
 
         replays: dict[str, StructureLocationTimeframeReplay] = {}
@@ -224,7 +240,7 @@ class CachedStructureLocationMTFRunner:
         final_active_zones: list[SupportResistanceZone] = []
 
         for timeframe in normalized_timeframes:
-            batch = prepare_engine_input(self.store.load(symbol, timeframe))
+            batch = prepare_engine_input(self.store.load(normalized_symbol, timeframe))
             market_engine = MarketStructureEngine(
                 config=self.market_structure_config,
                 break_config=self.break_config,
@@ -240,7 +256,7 @@ class CachedStructureLocationMTFRunner:
                 observed_at = bar.get("timestamp")
                 available_at = self.clock.available_at(observed_at, timeframe)
                 relevant_zones = tuple(
-                    zone.with_namespace(symbol=symbol, timeframe=timeframe)
+                    zone.with_namespace(symbol=normalized_symbol, timeframe=timeframe)
                     for zone in support_engine.zones
                     if zone.is_confluence_eligible
                     or (
@@ -250,7 +266,7 @@ class CachedStructureLocationMTFRunner:
                 )
                 observations.append(
                     CausalZoneObservation(
-                        symbol=symbol,
+                        symbol=normalized_symbol,
                         timeframe=timeframe,
                         bar_index=bar_index,
                         observed_at=observed_at,
@@ -260,13 +276,13 @@ class CachedStructureLocationMTFRunner:
                 )
 
             market_snapshot = market_structure_timeframe_snapshot(
-                symbol=symbol,
+                symbol=normalized_symbol,
                 timeframe=timeframe,
                 batch=batch,
                 engine=market_engine,
             )
             support_snapshot = _support_snapshot(
-                symbol=symbol,
+                symbol=normalized_symbol,
                 timeframe=timeframe,
                 batch=batch,
                 engine=support_engine,
@@ -290,9 +306,6 @@ class CachedStructureLocationMTFRunner:
         )
         outcomes: list[StructureLocationOutcome] = []
         for event in all_events:
-            # Location is currently an explicit BOS/CHoCH contract.  Candidate
-            # failures remain in Market Structure history but are not silently
-            # reclassified as confirmed structural location events.
             if (
                 event.event_type not in {EVENT_BOS, EVENT_CHOCH}
                 or event.confirmed_at is None
@@ -341,7 +354,7 @@ class CachedStructureLocationMTFRunner:
             )
         )
         return StructureLocationMTFResult(
-            symbol=symbol,
+            symbol=normalized_symbol,
             timeframes=normalized_timeframes,
             replays=replays,
             confluence=confluence,
