@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .models import TargetEvidence, TargetEvidenceType, TargetRole, TargetSide
 from .semantic_models import (
+    BehaviorDirection,
     Confirmation,
     ConfirmationKind,
     Objective,
@@ -18,6 +19,15 @@ def evidence_side(item: TargetEvidence, current_price: float) -> TargetSide:
     if item.high < current_price:
         return TargetSide.BELOW
     return TargetSide.AT_PRICE
+
+
+def evidence_behavior(item: TargetEvidence) -> BehaviorDirection:
+    roles = set(item.roles)
+    if TargetRole.SUPPLY in roles:
+        return BehaviorDirection.BEARISH
+    if TargetRole.DEMAND in roles:
+        return BehaviorDirection.BULLISH
+    return BehaviorDirection.NEUTRAL
 
 
 def semantic_roles(item: TargetEvidence) -> tuple[SemanticRole, ...]:
@@ -67,6 +77,7 @@ def to_reaction_zone(item: TargetEvidence, *, current_price: float) -> ReactionZ
         identity=f"RX:{item.uid}",
         kind=kind,
         side=evidence_side(item, current_price),
+        behavior=evidence_behavior(item),
         low=float(item.low),
         high=float(item.high),
         source=item,
@@ -81,6 +92,7 @@ def to_confirmation(item: TargetEvidence, *, current_price: float) -> Confirmati
         identity=f"CF:{item.uid}",
         kind=ConfirmationKind.ENGULFING,
         side=evidence_side(item, current_price),
+        behavior=evidence_behavior(item),
         low=float(item.low),
         high=float(item.high),
         source=item,
@@ -88,15 +100,11 @@ def to_confirmation(item: TargetEvidence, *, current_price: float) -> Confirmati
 
 
 def reaction_direction(zone: ReactionZone) -> str:
-    roles = set(zone.source.roles)
-    if TargetRole.SUPPLY in roles:
-        return "BEARISH"
-    if TargetRole.DEMAND in roles:
-        return "BULLISH"
-    return "NEUTRAL"
+    return zone.behavior.value
 
 
 __all__ = [
+    "evidence_behavior",
     "evidence_side",
     "reaction_direction",
     "semantic_roles",
