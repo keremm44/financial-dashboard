@@ -215,7 +215,7 @@ def test_idle_expiry_blocks_same_direction_until_semantic_reset() -> None:
     assert engine._episode_id == 1
 
 
-def test_basis_return_semantically_rearms_same_direction() -> None:
+def test_basis_return_requires_two_completed_observations_before_same_direction_rearm() -> None:
     engine = VolatilityDirectionTransitionEngine(
         VolatilityBandsConfig(profile="Dengeli", timeframe="2h")
     )
@@ -229,8 +229,13 @@ def test_basis_return_semantically_rearms_same_direction() -> None:
         engine._apply_episode_lifecycle(_none(position=.8), neutral)
 
     _advance(engine)
-    reset = engine._apply_episode_lifecycle(_none(position=.40), neutral)
-    assert "semantic_rearm_lower_basis_acceptance" in reset.reasons
+    first_reset = engine._apply_episode_lifecycle(_none(position=.40), neutral)
+    assert "semantic_rearm_lower_basis_acceptance" not in first_reset.reasons
+    assert engine._rearm_block_direction is EarlyDirectionTransition.EARLY_UP
+
+    _advance(engine)
+    second_reset = engine._apply_episode_lifecycle(_none(position=.39), neutral)
+    assert "semantic_rearm_lower_basis_acceptance" in second_reset.reasons
     assert engine._rearm_block_direction is EarlyDirectionTransition.NONE
 
     _advance(engine)
@@ -242,7 +247,7 @@ def test_basis_return_semantically_rearms_same_direction() -> None:
     assert rearmed.episode_id == 2
 
 
-def test_opposite_evidence_semantically_rearms_after_idle_expiry() -> None:
+def test_single_basis_reset_bar_does_not_survive_interruption() -> None:
     engine = VolatilityDirectionTransitionEngine(
         VolatilityBandsConfig(profile="Dengeli", timeframe="2h")
     )
@@ -256,12 +261,42 @@ def test_opposite_evidence_semantically_rearms_after_idle_expiry() -> None:
         engine._apply_episode_lifecycle(_none(position=.8), neutral)
 
     _advance(engine)
-    opposite = engine._apply_episode_lifecycle(
+    engine._apply_episode_lifecycle(_none(position=.40), neutral)
+    _advance(engine)
+    engine._apply_episode_lifecycle(_none(position=.55), neutral)
+    _advance(engine)
+    second_attempt = engine._apply_episode_lifecycle(_none(position=.39), neutral)
+
+    assert "semantic_rearm_lower_basis_acceptance" not in second_attempt.reasons
+    assert engine._rearm_block_direction is EarlyDirectionTransition.EARLY_UP
+
+
+def test_opposite_evidence_requires_persistence_to_clear_same_direction_block() -> None:
+    engine = VolatilityDirectionTransitionEngine(
+        VolatilityBandsConfig(profile="Dengeli", timeframe="2h")
+    )
+    neutral = VolatilityBandsFibFinalExport(regime=int(VolatilityState.BALANCED))
+    engine._rows = [{}]
+    engine._apply_episode_lifecycle(
+        _raw(EarlyDirectionTransition.EARLY_UP, position=.8), neutral
+    )
+    for _ in range(4):
+        _advance(engine)
+        engine._apply_episode_lifecycle(_none(position=.8), neutral)
+
+    _advance(engine)
+    first_opposite = engine._apply_episode_lifecycle(
         _raw(EarlyDirectionTransition.EARLY_DOWN, position=.3), neutral
     )
-    assert opposite.state is EarlyDirectionTransition.EARLY_DOWN
-    assert opposite.episode_started
-    assert "semantic_rearm_opposite_evidence" in opposite.reasons
+    assert first_opposite.state is EarlyDirectionTransition.EARLY_DOWN
+    assert engine._rearm_block_direction is EarlyDirectionTransition.EARLY_UP
+
+    _advance(engine)
+    second_opposite = engine._apply_episode_lifecycle(
+        _raw(EarlyDirectionTransition.EARLY_DOWN, position=.3), neutral
+    )
+    assert "semantic_rearm_opposite_evidence" in second_opposite.reasons
+    assert engine._rearm_block_direction is EarlyDirectionTransition.NONE
 
 
 def test_canonical_neutralization_alone_does_not_rearm_after_graduation() -> None:
