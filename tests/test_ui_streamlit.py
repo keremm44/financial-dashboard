@@ -10,7 +10,7 @@ from _ui_test_data import make_ui_store
 APP_PATH = Path(__file__).parents[1] / "src" / "financial_dashboard" / "ui" / "app.py"
 
 
-def test_streamlit_app_smoke_renders_observer_without_decision_actions(
+def test_streamlit_app_smoke_renders_workspace_without_decision_actions(
     tmp_path, monkeypatch
 ) -> None:
     make_ui_store(tmp_path)
@@ -19,14 +19,16 @@ def test_streamlit_app_smoke_renders_observer_without_decision_actions(
     app = AppTest.from_file(str(APP_PATH), default_timeout=120).run()
 
     assert not app.exception
-    assert [title.value for title in app.title] == ["Three-Domain Market Observer"]
+    assert [title.value for title in app.title] == [
+        "Financial Dashboard · Market Analysis Workspace"
+    ]
     assert [metric.label for metric in app.metric] == [
         "MTF pressure",
         "Recovery evidence",
         "Up structure",
         "Down structure",
         "Location",
-        "Combined state",
+        "Observer state",
     ]
     assert app.metric[-1].value == "DOMAINS_REPORTED"
     assert {tab.label for tab in app.tabs} >= {
@@ -36,8 +38,28 @@ def test_streamlit_app_smoke_renders_observer_without_decision_actions(
         "Zones & location",
         "Ham evidence",
         "Volume Participation",
-        "Data quality",
+        "Diagnostics",
     }
+
+    overview_tab = next(tab for tab in app.tabs if tab.label == "Genel görünüm")
+    assert len(overview_tab.dataframe) >= 2
+    domain_health = overview_tab.dataframe[0].value
+    assert tuple(domain_health["Domain"]) == (
+        "Observer foundation",
+        "Ham evidence",
+        "Volume Participation",
+    )
+    assert set(domain_health["Status"]) == {"READY"}
+
+    confluence_toggle = next(
+        checkbox for checkbox in app.checkbox if checkbox.label == "Confluence"
+    )
+    conflict_toggle = next(
+        checkbox for checkbox in app.checkbox if checkbox.label == "Opposing conflicts"
+    )
+    assert not confluence_toggle.value
+    assert not conflict_toggle.value
+
     ham_tab = next(tab for tab in app.tabs if tab.label == "Ham evidence")
     assert not ham_tab.metric
     assert not ham_tab.button
@@ -61,9 +83,7 @@ def test_streamlit_app_smoke_renders_observer_without_decision_actions(
     assert "Action" not in volume_tab.dataframe[0].value.columns
     assert "Recommendation" not in volume_tab.dataframe[1].value.columns
 
-    rendered_text = " ".join(
-        warning.value for warning in app.warning
-    ).lower()
+    rendered_text = " ".join(warning.value for warning in app.warning).lower()
     assert "al/sat" in rendered_text
     assert "öneri" in rendered_text
 
