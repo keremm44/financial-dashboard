@@ -16,15 +16,33 @@ def main() -> int:
     parser.add_argument("--symbol", required=True)
     parser.add_argument("--cache-root", required=True, type=Path)
     parser.add_argument("--profile", default="Dengeli", choices=("Hassas", "Dengeli", "Seçici"))
+    parser.add_argument(
+        "--timeframes",
+        nargs="+",
+        default=list(VOLATILITY_TIMEFRAMES),
+        choices=VOLATILITY_TIMEFRAMES,
+        help="Replay only selected volatility timeframes, e.g. --timeframes 2h",
+    )
+    parser.add_argument(
+        "--max-bars",
+        type=int,
+        default=None,
+        help="Use only the latest N prepared bars per selected timeframe",
+    )
     parser.add_argument("--max-lag-rows", type=int, default=30)
     args = parser.parse_args()
 
     replay = VolatilityMTFReplayRunner(ParquetOHLCVStore(args.cache_root)).replay(
         args.symbol,
-        timeframes=VOLATILITY_TIMEFRAMES,
+        timeframes=tuple(args.timeframes),
         profile=args.profile,
+        max_bars=args.max_bars,
     )
-    print(f"symbol={replay.symbol} timeframes={','.join(replay.timeframes)} profile={args.profile}")
+    bars_text = "all" if args.max_bars is None else str(args.max_bars)
+    print(
+        f"symbol={replay.symbol} timeframes={','.join(replay.timeframes)} "
+        f"profile={args.profile} max_bars={bars_text}"
+    )
     print("[latest]")
     for timeframe in replay.timeframes:
         latest = replay.for_timeframe(timeframe).latest
