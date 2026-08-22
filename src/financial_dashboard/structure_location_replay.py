@@ -41,13 +41,25 @@ from .mtf_replay import (
 )
 
 
+_DEFAULT_BAR_DURATIONS = tuple(BAR_DURATIONS.items())
+_DEFAULT_CAUSAL_OFFSETS = tuple(LEFT_LABEL_DURATIONS.items())
+
+
 @dataclass(frozen=True, slots=True)
 class CausalBarClock:
-    """Convert canonical labels to availability while retaining physical bar duration."""
+    """Convert canonical bar labels into causal evidence availability.
 
-    durations: tuple[tuple[str, pd.Timedelta], ...] = tuple(LEFT_LABEL_DURATIONS.items())
+    ``durations`` remains the physical bar-duration contract for backward
+    compatibility with consumers such as Volume Round 2. Default causal offsets
+    are separate: intraday cache rows are left-labelled, while production daily
+    and weekly rows are close-labelled and therefore available at the stored
+    timestamp. Passing a non-default ``durations`` tuple retains the historical
+    explicit-override behavior used by tests and alternate providers.
+    """
+
+    durations: tuple[tuple[str, pd.Timedelta], ...] = _DEFAULT_BAR_DURATIONS
     close_labelled_timeframes: tuple[str, ...] = tuple(sorted(CLOSE_LABELLED_TIMEFRAMES))
-    bar_durations: tuple[tuple[str, pd.Timedelta], ...] = tuple(BAR_DURATIONS.items())
+    causal_offsets: tuple[tuple[str, pd.Timedelta], ...] = _DEFAULT_CAUSAL_OFFSETS
 
     def __post_init__(self) -> None:
         normalized = tuple(
@@ -56,9 +68,10 @@ class CausalBarClock:
         )
         keys = tuple(timeframe for timeframe, _ in normalized)
         if not all(keys) or len(set(keys)) != len(keys):
-            raise ValueError("causal durations must use unique, non-empty timeframes")
+            raise ValueError("bar durations must use unique, non-empty timeframes")
         if any(duration <= pd.Timedelta(0) for _, duration in normalized):
-            raise ValueError("causal durations must be positive")
+            raise ValueError("bar durations must be positive")
+
         close_labelled = tuple(
             str(timeframe).strip().lower() for timeframe in self.close_labelled_timeframes
         )
@@ -66,38 +79,49 @@ class CausalBarClock:
             raise ValueError(
                 "close-labelled timeframes must use unique, non-empty names"
             )
-        physical = tuple(
+
+        offsets = tuple(
             (timeframe.strip().lower(), pd.Timedelta(duration))
-            for timeframe, duration in self.bar_durations
+            for timeframe, duration in self.causal_offsets
         )
-        physical_keys = tuple(timeframe for timeframe, _ in physical)
-        if not all(physical_keys) or len(set(physical_keys)) != len(physical_keys):
-            raise ValueError("bar durations must use unique, non-empty timeframes")
-        if any(duration <= pd.Timedelta(0) for _, duration in physical):
-            raise ValueError("bar durations must be positive")
+        offset_keys = tuple(timeframe for timeframe, _ in offsets)
+        if not all(offset_keys) or len(set(offset_keys)) != len(offset_keys):
+            raise ValueError("causal offsets must use unique, non-empty timeframes")
+        if any(duration <= pd.Timedelta(0) for _, duration in offsets):
+            raise ValueError("causal offsets must be positive")
+
         object.__setattr__(self, "durations", normalized)
         object.__setattr__(self, "close_labelled_timeframes", close_labelled)
-        object.__setattr__(self, "bar_durations", physical)
+        object.__setattr__(self, "causal_offsets", offsets)
+
+    def _uses_explicit_duration_override(self) -> bool:
+        return self.durations != _DEFAULT_BAR_DURATIONS
 
     def available_at(self, timestamp: Any, timeframe: str) -> pd.Timestamp:
         if timestamp is None:
             raise ValueError("causal availability requires a bar timestamp")
         normalized = timeframe.strip().lower()
         timestamp_value = pd.Timestamp(timestamp)
-        duration = dict(self.durations).get(normalized)
-        if duration is not None:
-            return timestamp_value + duration
+
+        # Legacy/custom clocks use the supplied duration as their explicit causal
+        # offset. This preserves existing tests/provider overrides such as 1d=8h.
+        if self._uses_explicit_duration_override():
+            explicit = dict(self.durations).get(normalized)
+            if explicit is not None:
+                return timestamp_value + explicit
+
+        offset = dict(self.causal_offsets).get(normalized)
+        if offset is not None:
+            return timestamp_value + offset
         if normalized in self.close_labelled_timeframes:
             return timestamp_value
-        raise ValueError(f"causal timestamp contract is not configured for timeframe: {timeframe}")
+        raise ValueError(
+            f"causal timestamp contract is not configured for timeframe: {timeframe}"
+        )
 
     def bar_duration(self, timeframe: str) -> pd.Timedelta:
         normalized = timeframe.strip().lower()
-        # Explicit duration overrides retain legacy/custom-clock semantics.
-        explicit = dict(self.durations).get(normalized)
-        if explicit is not None:
-            return explicit
-        duration = dict(self.bar_durations).get(normalized)
+        duration = dict(self.durations).get(normalized)
         if duration is None:
             raise ValueError(f"bar duration is not configured for timeframe: {timeframe}")
         return duration
@@ -241,7 +265,7 @@ class CachedStructureLocationMTFRunner:
             )
         configured_timeframes = set(dict(self.clock.durations)) | set(
             self.clock.close_labelled_timeframes
-        )
+        ) | set(dict(self.clock.causal_offsets))
         missing_contracts = tuple(
             timeframe
             for timeframe in normalized_timeframes
