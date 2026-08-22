@@ -14,6 +14,7 @@ from .semantic_models import (
     PositionedReaction,
     ReactionKind,
     ReactionZone,
+    SemanticOverallState,
     SemanticTargetingSnapshot,
 )
 from .semantic_roles import reaction_direction, to_confirmation, to_objective, to_reaction_zone
@@ -72,17 +73,17 @@ def _arrival_state(
         return ArrivalState.AT_OBJECTIVE
     if current:
         return ArrivalState.IN_REACTION_ZONE
-    all_reactions = (*at, *ahead)
-    if not all_reactions:
+    relevant = (*at, *ahead)
+    if not relevant:
         return ArrivalState.OBJECTIVE_ONLY
 
-    directions = {reaction_direction(item.zone) for item in all_reactions} - {"NEUTRAL"}
+    directions = {reaction_direction(item.zone) for item in relevant} - {"NEUTRAL"}
     if len(directions) > 1:
         return ArrivalState.CONFLICTING_ARRIVAL
     if ahead and not at:
         return ArrivalState.OBJECTIVE_WITH_OBSTACLE
-    origins = {item.zone.source.origin_event_id for item in all_reactions}
-    kinds = {item.zone.kind for item in all_reactions}
+    origins = {item.zone.source.origin_event_id for item in relevant}
+    kinds = {item.zone.kind for item in relevant}
     if len(origins) > 1 and len(kinds) > 1:
         return ArrivalState.MULTI_DOMAIN_REACTION
     return ArrivalState.OBJECTIVE_WITH_REACTION
@@ -97,7 +98,8 @@ def build_arrival_context(
     confirmations,
     proximity_atr: float = 0.25,
 ) -> ArrivalContext:
-    tolerance = max(float(reference_atr), 1e-12) * max(float(proximity_atr), 0.0)
+    atr = max(float(reference_atr), 1e-12)
+    tolerance = atr * max(float(proximity_atr), 0.0)
     positioned: dict[ArrivalPosition, list[PositionedReaction]] = defaultdict(list)
     for zone in reactions:
         position = _reaction_position(
@@ -113,6 +115,9 @@ def build_arrival_context(
                 zone=zone,
                 position=position,
                 independent_from_objective=(zone.source.origin_event_id != objective.source.origin_event_id),
+                distance_from_objective_atr=(
+                    _interval_gap(zone.low, zone.high, objective.low, objective.high) / atr
+                ),
             )
         )
 
@@ -120,23 +125,30 @@ def build_arrival_context(
         return tuple(
             sorted(
                 positioned.get(position, ()),
-                key=lambda item: (item.zone.low, item.zone.high, item.zone.identity),
+                key=lambda item: (
+                    item.distance_from_objective_atr,
+                    item.zone.low,
+                    item.zone.high,
+                    item.zone.identity,
+                ),
             )
         )
 
     ahead = ordered(ArrivalPosition.AHEAD)
     at = ordered(ArrivalPosition.AT_OBJECTIVE)
-    beyond = ordered(ArrivalPosition.BEYOND)
+    downstream = ordered(ArrivalPosition.BEYOND)
     current = ordered(ArrivalPosition.CURRENT)
-    active = (*ahead, *at, *current)
+    relevant = (*current, *ahead, *at)
     independent_origins = len(
         {
             item.zone.source.origin_event_id
-            for item in active
+            for item in relevant
             if item.independent_from_objective
         }
     )
-    reaction_types = tuple(sorted({item.zone.kind for item in active}, key=lambda kind: kind.value))
+    reaction_types = tuple(
+        sorted({item.zone.kind for item in relevant}, key=lambda kind: kind.value)
+    )
     linked_confirmations = tuple(
         confirmation
         for confirmation in confirmations
@@ -162,7 +174,7 @@ def build_arrival_context(
         ),
         reactions_ahead=ahead,
         reactions_at=at,
-        reactions_beyond=beyond,
+        downstream_reactions=downstream,
         current_reactions=current,
         confirmations=linked_confirmations,
         independent_reaction_origins=independent_origins,
@@ -170,13 +182,41 @@ def build_arrival_context(
     )
 
 
-def _nearest(objectives: Iterable[Objective], side: TargetSide, current_price: float) -> Objective | None:
+def _nearest(
+    objectives: Iterable[Objective], side: TargetSide, current_price: float
+) -> Objective | None:
     candidates = [objective for objective in objectives if objective.side is side]
     return min(
         candidates,
         key=lambda objective: (_distance_to_objective(objective, current_price), objective.identity),
         default=None,
     )
+
+
+def _side_state(context: ArrivalContext | None) -> ArrivalState:
+    return ArrivalState.NO_ACTIVE_OBJECTIVE if context is None else context.state
+
+
+def _overall_state(
+    *,
+    upside: ArrivalContext | None,
+    downside: ArrivalContext | None,
+    reactions: tuple[ReactionZone, ...],
+) -> SemanticOverallState:
+    if upside is None and downside is None:
+        return (
+            SemanticOverallState.REACTION_ZONE_ONLY
+            if reactions
+            else SemanticOverallState.NO_ACTIVE_OBJECTIVE
+        )
+    if upside is not None and downside is None:
+        return SemanticOverallState.UPSIDE_ONLY
+    if downside is not None and upside is None:
+        return SemanticOverallState.DOWNSIDE_ONLY
+    assert upside is not None and downside is not None
+    if upside.state is downside.state:
+        return SemanticOverallState.ALIGNED
+    return SemanticOverallState.MIXED
 
 
 def build_semantic_targeting_snapshot(
@@ -233,24 +273,6 @@ def build_semantic_targeting_snapshot(
         )
     )
 
-    contexts = (up_context, down_context)
-    if nearest_up is None and nearest_down is None:
-        state = ArrivalState.REACTION_ZONE_ONLY if reactions else ArrivalState.NO_ACTIVE_OBJECTIVE
-    elif any(context is not None and context.state is ArrivalState.AT_OBJECTIVE for context in contexts):
-        state = ArrivalState.AT_OBJECTIVE
-    elif any(context is not None and context.state is ArrivalState.IN_REACTION_ZONE for context in contexts):
-        state = ArrivalState.IN_REACTION_ZONE
-    elif any(context is not None and context.state is ArrivalState.CONFLICTING_ARRIVAL for context in contexts):
-        state = ArrivalState.CONFLICTING_ARRIVAL
-    elif any(context is not None and context.state is ArrivalState.OBJECTIVE_WITH_OBSTACLE for context in contexts):
-        state = ArrivalState.OBJECTIVE_WITH_OBSTACLE
-    elif any(context is not None and context.state is ArrivalState.MULTI_DOMAIN_REACTION for context in contexts):
-        state = ArrivalState.MULTI_DOMAIN_REACTION
-    elif any(context is not None and context.state is ArrivalState.OBJECTIVE_WITH_REACTION for context in contexts):
-        state = ArrivalState.OBJECTIVE_WITH_REACTION
-    else:
-        state = ArrivalState.OBJECTIVE_ONLY
-
     return SemanticTargetingSnapshot(
         symbol=symbol,
         as_of=as_of,
@@ -263,7 +285,13 @@ def build_semantic_targeting_snapshot(
         nearest_downside_objective=nearest_down,
         upside_arrival=up_context,
         downside_arrival=down_context,
-        state=state,
+        upside_state=_side_state(up_context),
+        downside_state=_side_state(down_context),
+        overall_state=_overall_state(
+            upside=up_context,
+            downside=down_context,
+            reactions=reactions,
+        ),
     )
 
 
