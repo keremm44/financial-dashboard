@@ -139,11 +139,13 @@ def _directional_regime(state: VolatilityState | None) -> EarlyDirectionTransiti
 class VolatilityDirectionTransitionEngine:
     """Fast descriptive direction-transition track around the canonical engine.
 
-    Raw one-bar evidence is filtered through a small episode lifecycle. Repeated
-    evidence in the same move is not re-emitted as a new transition, neutral
-    flip-flops need two consecutive opposite raw observations before re-arm, and
-    stale episodes expire after the canonical maturity window. Confirmed volatility,
-    Structure and Fibonacci remain owned by the wrapped canonical engine.
+    Raw one-bar evidence is filtered through an episode lifecycle. Repeated evidence
+    in the same move is not re-emitted, neutral flip-flops require two consecutive
+    opposite raw observations, and an expired/graduated direction cannot re-arm just
+    because time passed. Same-direction re-arm requires a semantic reset: price must
+    return through the Bollinger basis, opposite raw evidence must appear, or the
+    canonical directional regime must actually leave that direction. Confirmed
+    volatility, Structure and Fibonacci remain owned by the wrapped canonical engine.
     """
 
     ATR_LENGTH = 14
@@ -160,6 +162,8 @@ class VolatilityDirectionTransitionEngine:
         self._episode_last_raw_index: int | None = None
         self._pending_opposite = EarlyDirectionTransition.NONE
         self._pending_opposite_count = 0
+        self._rearm_block_direction = EarlyDirectionTransition.NONE
+        self._last_canonical_direction = EarlyDirectionTransition.NONE
         self._snapshot = VolatilityDirectionSnapshot(
             timestamp=None,
             core_result=None,
@@ -324,12 +328,59 @@ class VolatilityDirectionTransitionEngine:
         self._pending_opposite = EarlyDirectionTransition.NONE
         self._pending_opposite_count = 0
 
+    def _block_same_direction_rearm(self, direction: EarlyDirectionTransition) -> None:
+        if direction is not EarlyDirectionTransition.NONE:
+            self._rearm_block_direction = direction
+
+    def _semantic_reset_reason(
+        self,
+        direction: EarlyDirectionTransition,
+        raw: EarlyDirectionEvidence,
+        canonical_direction: EarlyDirectionTransition,
+    ) -> str | None:
+        if direction is EarlyDirectionTransition.NONE:
+            return None
+
+        opposite = (
+            EarlyDirectionTransition.EARLY_DOWN
+            if direction is EarlyDirectionTransition.EARLY_UP
+            else EarlyDirectionTransition.EARLY_UP
+        )
+        if raw.state is opposite or raw.raw_state is opposite:
+            return "semantic_rearm_opposite_evidence"
+
+        position = raw.bollinger_position
+        if position is not None and not pd.isna(position):
+            if direction is EarlyDirectionTransition.EARLY_UP and float(position) <= .5:
+                return "semantic_rearm_basis_reset"
+            if direction is EarlyDirectionTransition.EARLY_DOWN and float(position) >= .5:
+                return "semantic_rearm_basis_reset"
+
+        if canonical_direction is opposite:
+            return "semantic_rearm_canonical_opposite"
+        if (
+            self._last_canonical_direction is direction
+            and canonical_direction is EarlyDirectionTransition.NONE
+        ):
+            return "semantic_rearm_canonical_neutralized"
+        return None
+
+    def _finish_lifecycle(
+        self,
+        result: EarlyDirectionEvidence,
+        canonical_direction: EarlyDirectionTransition,
+    ) -> EarlyDirectionEvidence:
+        self._last_canonical_direction = canonical_direction
+        return result
+
     def _start_episode(self, raw: EarlyDirectionEvidence) -> EarlyDirectionEvidence:
         self._episode_id += 1
         self._episode_direction = raw.state
         self._episode_last_raw_index = len(self._rows) - 1
         self._pending_opposite = EarlyDirectionTransition.NONE
         self._pending_opposite_count = 0
+        if self._rearm_block_direction is raw.state:
+            self._rearm_block_direction = EarlyDirectionTransition.NONE
         return replace(
             raw,
             raw_state=raw.state,
@@ -346,18 +397,54 @@ class VolatilityDirectionTransitionEngine:
         current_index = len(self._rows) - 1
         canonical_direction = _directional_regime(_regime(export))
 
+        # A blocked direction is allowed to re-arm only after the market actually
+        # resets. Time alone never clears this gate.
+        if self._rearm_block_direction is not EarlyDirectionTransition.NONE:
+            reset_reason = self._semantic_reset_reason(
+                self._rearm_block_direction,
+                raw,
+                canonical_direction,
+            )
+            if reset_reason is not None:
+                self._rearm_block_direction = EarlyDirectionTransition.NONE
+                raw = replace(raw, reasons=raw.reasons + (reset_reason,))
+
         if raw.state is EarlyDirectionTransition.NONE:
             self._pending_opposite = EarlyDirectionTransition.NONE
             self._pending_opposite_count = 0
+
+            if self._episode_direction is not EarlyDirectionTransition.NONE:
+                reset_reason = self._semantic_reset_reason(
+                    self._episode_direction,
+                    raw,
+                    canonical_direction,
+                )
+                if reset_reason is not None:
+                    episode_id = self._episode_id
+                    self._reset_episode()
+                    result = replace(
+                        raw,
+                        reasons=raw.reasons + ("episode_semantic_reset", reset_reason),
+                        episode_id=episode_id,
+                    )
+                    return self._finish_lifecycle(result, canonical_direction)
+
             if (
                 self._episode_direction is not EarlyDirectionTransition.NONE
                 and self._episode_last_raw_index is not None
                 and current_index - self._episode_last_raw_index >= self._early_profile.idle_expiry_bars
             ):
                 episode_id = self._episode_id
+                expired_direction = self._episode_direction
                 self._reset_episode()
-                return replace(raw, reasons=raw.reasons + ("episode_expired_idle",), episode_id=episode_id)
-            return raw
+                self._block_same_direction_rearm(expired_direction)
+                result = replace(
+                    raw,
+                    reasons=raw.reasons + ("episode_expired_idle", "semantic_rearm_required"),
+                    episode_id=episode_id,
+                )
+                return self._finish_lifecycle(result, canonical_direction)
+            return self._finish_lifecycle(raw, canonical_direction)
 
         if canonical_direction is raw.state:
             episode_id = self._episode_id
@@ -366,24 +453,37 @@ class VolatilityDirectionTransitionEngine:
                 "same_direction_already_candidate_or_confirmed",
                 episode_id,
             )
-            # The transition has reached the canonical track; keeping the early
-            # episode armed would suppress a later, genuinely new transition.
             self._reset_episode()
-            return suppressed
+            self._block_same_direction_rearm(raw.state)
+            return self._finish_lifecycle(suppressed, canonical_direction)
+
+        if (
+            self._rearm_block_direction is raw.state
+            and self._semantic_reset_reason(raw.state, raw, canonical_direction) is None
+        ):
+            suppressed = self._suppressed(
+                raw,
+                "same_direction_rearm_not_observed",
+                self._episode_id,
+            )
+            return self._finish_lifecycle(suppressed, canonical_direction)
 
         if self._episode_direction is EarlyDirectionTransition.NONE:
-            return self._start_episode(raw)
+            started = self._start_episode(raw)
+            return self._finish_lifecycle(started, canonical_direction)
 
         if raw.state is self._episode_direction:
             self._episode_last_raw_index = current_index
             self._pending_opposite = EarlyDirectionTransition.NONE
             self._pending_opposite_count = 0
-            return self._suppressed(raw, "same_episode_duplicate", self._episode_id)
+            suppressed = self._suppressed(raw, "same_episode_duplicate", self._episode_id)
+            return self._finish_lifecycle(suppressed, canonical_direction)
 
         # A reversal away from a directional canonical regime may emit immediately.
         # In neutral regimes, require two consecutive opposite raw observations.
         if canonical_direction is self._episode_direction:
-            return self._start_episode(raw)
+            started = self._start_episode(raw)
+            return self._finish_lifecycle(started, canonical_direction)
 
         if self._pending_opposite is raw.state:
             self._pending_opposite_count += 1
@@ -392,8 +492,10 @@ class VolatilityDirectionTransitionEngine:
             self._pending_opposite_count = 1
 
         if self._pending_opposite_count >= self.OPPOSITE_REARM_OBSERVATIONS:
-            return self._start_episode(raw)
-        return self._suppressed(raw, "opposite_rearm_pending", self._episode_id)
+            started = self._start_episode(raw)
+            return self._finish_lifecycle(started, canonical_direction)
+        suppressed = self._suppressed(raw, "opposite_rearm_pending", self._episode_id)
+        return self._finish_lifecycle(suppressed, canonical_direction)
 
     def update(self, bar: pd.Series | dict[str, Any]) -> VolatilityDirectionSnapshot:
         row = self._normalize_bar(bar)
