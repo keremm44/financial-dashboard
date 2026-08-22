@@ -7,6 +7,7 @@ from typing import Any
 
 class TargetEvidenceType(StrEnum):
     LIQUIDITY = "LIQUIDITY"
+    SUPPORT_RESISTANCE = "SUPPORT_RESISTANCE"
     ORDER_BLOCK = "ORDER_BLOCK"
     FVG = "FVG"
     ENGULFING = "ENGULFING"
