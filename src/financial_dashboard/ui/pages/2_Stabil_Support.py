@@ -66,6 +66,10 @@ st.caption(
     "Bu domain yalnızca mevcut Stabil günlük yapısal destek stepline'ına göre fiyat davranışını "
     "gözlemler. Ana trend dönüşü, al/sat, hedef, stop veya olasılık üretmez."
 )
+st.caption(
+    "Araştırma notu: %5/%10/%20 genişleme ve 7–8 bar altında kalma gözlemleri yalnız replay "
+    "hipotezidir; hiçbirisi sabit threshold veya failure kuralı değildir."
+)
 
 if not symbol:
     st.info("1d cache bulunan bir sembol yok.")
