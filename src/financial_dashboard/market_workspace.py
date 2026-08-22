@@ -11,6 +11,7 @@ from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.engines.pattern_compression_core import PatternCompressionConfig
 from financial_dashboard.ham_mtf_replay import HamMTFEvidenceReplay, HamMTFEvidenceReplayRunner
+from financial_dashboard.structure_location_replay import CausalBarClock
 from financial_dashboard.target_evidence_replay import (
     FvgEngulfingMTFReplayRunner,
     LiquidityMTFReplayRunner,
@@ -206,7 +207,8 @@ class MarketAnalysisWorkspaceRunner:
             reference_frame = inputs.for_timeframe(reference_timeframe).input_batch.frame
             reference_price = float(reference_frame.iloc[-1]["close"])
             reference_atr = wilder_atr(reference_frame)
-            as_of = reference_frame.iloc[-1]["timestamp"]
+            reference_bar_time = reference_frame.iloc[-1]["timestamp"]
+            as_of = CausalBarClock().available_at(reference_bar_time, reference_timeframe)
 
             evidence = []
             if liquidity.is_ready and isinstance(liquidity.result, TargetEvidenceMTFReplay):
