@@ -21,6 +21,7 @@ from .models import (
 )
 from .proximity import interval_gap, wilder_atr
 from .semantic_models import (
+    ArrivalConflict,
     ArrivalContext,
     ArrivalPosition,
     ArrivalState,
@@ -49,6 +50,7 @@ from .semantic_roles import (
 )
 
 __all__ = [
+    "ArrivalConflict",
     "ArrivalContext",
     "ArrivalPosition",
     "ArrivalState",
