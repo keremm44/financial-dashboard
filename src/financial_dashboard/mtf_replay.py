@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
+from .analysis_config import ANALYSIS_TIMEFRAMES
 from .data.engine_input import EngineInputBatch, prepare_engine_input
+from .data.identity import normalize_symbol
 from .data.parquet_store import ParquetOHLCVStore
 from .engines.market_structure_engine import MarketStructureEngine
 from .engines.market_structure_evidence import MarketStructureExport
@@ -14,7 +16,8 @@ from .engines.market_structure_events import (
 from .engines.models import EngineResult
 
 
-FOUNDATION_MARKET_STRUCTURE_TIMEFRAMES = ("1d", "4h", "2h", "1h", "30m")
+# Backwards-compatible public name; canonical definition lives in analysis_config.
+FOUNDATION_MARKET_STRUCTURE_TIMEFRAMES = ANALYSIS_TIMEFRAMES
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,15 +108,20 @@ def market_structure_timeframe_snapshot(
     batch: EngineInputBatch,
     engine: MarketStructureEngine,
 ) -> MarketStructureTimeframeSnapshot:
+    normalized_symbol = normalize_symbol(symbol)
     export = engine.export_contract
     namespaced_export = (
-        namespace_market_structure_export(export, symbol=symbol, timeframe=timeframe)
+        namespace_market_structure_export(
+            export,
+            symbol=normalized_symbol,
+            timeframe=timeframe,
+        )
         if export is not None
         else None
     )
     result = engine.snapshot()
     return MarketStructureTimeframeSnapshot(
-        symbol=symbol,
+        symbol=normalized_symbol,
         timeframe=timeframe.strip().lower(),
         as_of=None if result is None else result.timestamp,
         bar_count=len(batch.frame),
@@ -126,11 +134,7 @@ def market_structure_timeframe_snapshot(
 
 
 class CachedMarketStructureMTFRunner:
-    """Replay Market Structure independently across cached timeframes.
-
-    Parquet cache is the source of truth. Every timeframe receives a fresh engine
-    instance so structure state never leaks across timeframe boundaries.
-    """
+    """Replay Market Structure independently across cached timeframes."""
 
     def __init__(self, store: ParquetOHLCVStore) -> None:
         self.store = store
@@ -141,15 +145,22 @@ class CachedMarketStructureMTFRunner:
         symbol: str,
         timeframes: tuple[str, ...] = ("15m", "30m", "1h", "2h", "4h", "1d"),
     ) -> MTFReplayResult:
+        normalized_symbol = normalize_symbol(symbol)
+        normalized_timeframes = tuple(timeframe.strip().lower() for timeframe in timeframes)
+        if not normalized_timeframes or not all(normalized_timeframes):
+            raise ValueError("at least one non-empty Market Structure timeframe is required")
+        if len(set(normalized_timeframes)) != len(normalized_timeframes):
+            raise ValueError("Market Structure timeframes must be unique")
+
         replays: dict[str, TimeframeReplay] = {}
         structure_snapshots: list[MarketStructureTimeframeSnapshot] = []
-        for timeframe in timeframes:
-            cached = self.store.load(symbol, timeframe)
+        for timeframe in normalized_timeframes:
+            cached = self.store.load(normalized_symbol, timeframe)
             batch = prepare_engine_input(cached)
             engine = MarketStructureEngine()
             results = tuple(engine.replay(batch.frame))
             structure = market_structure_timeframe_snapshot(
-                symbol=symbol,
+                symbol=normalized_symbol,
                 timeframe=timeframe,
                 batch=batch,
                 engine=engine,
@@ -163,8 +174,8 @@ class CachedMarketStructureMTFRunner:
                 structure=structure,
             )
         return MTFReplayResult(
-            symbol=symbol,
-            timeframes=timeframes,
+            symbol=normalized_symbol,
+            timeframes=normalized_timeframes,
             replays=replays,
             structure_snapshots=tuple(structure_snapshots),
         )
