@@ -43,6 +43,11 @@ _TIMEFRAME_MINUTES = {
 class TvDatafeedProvider(MarketDataProvider):
     """Thin tvDatafeed adapter that keeps TradingView-specific behavior at the boundary.
 
+    The default 10,000-bar capacity is deliberate for the BIST 5-minute production
+    path. A normal 10:00-18:00 session contains 96 five-minute bars, so 100 completed
+    trading sessions require about 9,600 bars. The remaining headroom allows the
+    current partial session without shrinking that historical window.
+
     The adapter does not trust volume availability silently. `last_volume_status` is
     updated after every fetch as VALID, PARTIAL or UNAVAILABLE for the frame actually
     returned to the caller. The returned frame itself stays on the canonical OHLCV
@@ -56,7 +61,7 @@ class TvDatafeedProvider(MarketDataProvider):
         *,
         exchange: str = "BIST",
         timezone: str = "Europe/Istanbul",
-        max_bars: int = 5000,
+        max_bars: int = 10_000,
         client: Any | None = None,
         interval_enum: Any | None = None,
         volume_type: str = "TRADE_VOLUME",
