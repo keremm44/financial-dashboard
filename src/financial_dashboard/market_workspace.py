@@ -6,6 +6,10 @@ from pathlib import Path
 from typing import Any
 
 from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES, normalize_timeframes
+from financial_dashboard.data.analysis_inputs import (
+    cache_fingerprint,
+    load_analysis_inputs,
+)
 from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.engines.pattern_compression_core import PatternCompressionConfig
@@ -76,30 +80,14 @@ class CacheSnapshotChangedError(RuntimeError):
 class MarketAnalysisWorkspaceRunner:
     """Execution coordinator for independent analysis domains.
 
-    This class has no trading authority. It normalizes identity, freezes one cache
-    fingerprint, runs the existing deterministic engines, reuses authoritative
-    Structure output for Volume linkage, isolates non-foundation domain failures,
-    and rejects a run if cache files changed mid-replay.
+    This class has no trading authority. It loads one canonical market-data snapshot,
+    shares the same prepared inputs across all existing domain runners, reuses
+    authoritative Structure output for Volume linkage, isolates non-foundation domain
+    failures, and rejects the complete run if the underlying cache changes meanwhile.
     """
 
     def __init__(self, store: ParquetOHLCVStore) -> None:
         self.store = store
-
-    def _fingerprint(
-        self,
-        *,
-        symbol: str,
-        timeframes: tuple[str, ...],
-    ) -> tuple[tuple[str, int, int], ...]:
-        rows: list[tuple[str, int, int]] = []
-        for timeframe in timeframes:
-            path = self.store.path_for(symbol, timeframe)
-            if path.exists():
-                stat = path.stat()
-                rows.append((timeframe, stat.st_size, stat.st_mtime_ns))
-            else:
-                rows.append((timeframe, -1, -1))
-        return tuple(rows)
 
     def run(
         self,
@@ -114,10 +102,16 @@ class MarketAnalysisWorkspaceRunner:
             supported=ANALYSIS_TIMEFRAMES,
             label="workspace",
         )
-        before = self._fingerprint(
-            symbol=normalized_symbol,
-            timeframes=normalized_timeframes,
-        )
+        try:
+            inputs = load_analysis_inputs(
+                self.store,
+                symbol=normalized_symbol,
+                timeframes=normalized_timeframes,
+            )
+        except RuntimeError as error:
+            if "cache files changed" in str(error):
+                raise CacheSnapshotChangedError(str(error)) from error
+            raise
 
         pattern_config = (
             None
@@ -130,6 +124,7 @@ class MarketAnalysisWorkspaceRunner:
         ).run(
             symbol=normalized_symbol,
             timeframes=normalized_timeframes,
+            input_snapshot=inputs,
         )
 
         try:
@@ -137,6 +132,7 @@ class MarketAnalysisWorkspaceRunner:
                 HamMTFEvidenceReplayRunner(self.store).replay(
                     normalized_symbol,
                     timeframes=normalized_timeframes,
+                    input_snapshot=inputs,
                 )
             )
         except Exception as error:
@@ -148,16 +144,18 @@ class MarketAnalysisWorkspaceRunner:
                     normalized_symbol,
                     timeframes=normalized_timeframes,
                     structure_replay=observer.structure_location,
+                    input_snapshot=inputs,
                 )
             )
         except Exception as error:
             volume = WorkspaceDomainResult.failed(error)
 
-        after = self._fingerprint(
+        after = cache_fingerprint(
+            self.store,
             symbol=normalized_symbol,
             timeframes=normalized_timeframes,
         )
-        if after != before:
+        if after != inputs.fingerprint:
             raise CacheSnapshotChangedError(
                 "cache files changed while the analysis workspace was replaying"
             )
@@ -165,7 +163,7 @@ class MarketAnalysisWorkspaceRunner:
         return MarketAnalysisWorkspace(
             symbol=normalized_symbol,
             timeframes=normalized_timeframes,
-            fingerprint=before,
+            fingerprint=inputs.fingerprint,
             observer=observer,
             ham=ham,
             volume=volume,
