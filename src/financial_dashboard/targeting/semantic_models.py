@@ -57,6 +57,17 @@ class ArrivalState(StrEnum):
     AT_OBJECTIVE = "AT_OBJECTIVE"
 
 
+class SemanticOverallState(StrEnum):
+    """Secondary summary only; side-specific arrival states remain authoritative."""
+
+    NO_ACTIVE_OBJECTIVE = "NO_ACTIVE_OBJECTIVE"
+    REACTION_ZONE_ONLY = "REACTION_ZONE_ONLY"
+    UPSIDE_ONLY = "UPSIDE_ONLY"
+    DOWNSIDE_ONLY = "DOWNSIDE_ONLY"
+    ALIGNED = "ALIGNED"
+    MIXED = "MIXED"
+
+
 @dataclass(frozen=True, slots=True)
 class Objective:
     identity: str
@@ -71,7 +82,11 @@ class Objective:
     def __post_init__(self) -> None:
         if self.kind is ObjectiveKind.LIQUIDITY and self.source.evidence_type is not TargetEvidenceType.LIQUIDITY:
             raise ValueError("liquidity objective must originate from liquidity evidence")
-        if self.source.evidence_type in {TargetEvidenceType.ORDER_BLOCK, TargetEvidenceType.ENGULFING, TargetEvidenceType.SUPPORT_RESISTANCE}:
+        if self.source.evidence_type in {
+            TargetEvidenceType.ORDER_BLOCK,
+            TargetEvidenceType.ENGULFING,
+            TargetEvidenceType.SUPPORT_RESISTANCE,
+        }:
             raise ValueError(f"{self.source.evidence_type.value} cannot be an objective")
 
 
@@ -113,6 +128,7 @@ class PositionedReaction:
     zone: ReactionZone
     position: ArrivalPosition
     independent_from_objective: bool
+    distance_from_objective_atr: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,11 +137,21 @@ class ArrivalContext:
     state: ArrivalState
     reactions_ahead: tuple[PositionedReaction, ...]
     reactions_at: tuple[PositionedReaction, ...]
-    reactions_beyond: tuple[PositionedReaction, ...]
+    downstream_reactions: tuple[PositionedReaction, ...]
     current_reactions: tuple[PositionedReaction, ...]
     confirmations: tuple[Confirmation, ...]
     independent_reaction_origins: int
     reaction_types: tuple[ReactionKind, ...]
+
+    @property
+    def reactions_beyond(self) -> tuple[PositionedReaction, ...]:
+        """Compatibility alias. BEYOND facts are downstream context, not arrival evidence."""
+
+        return self.downstream_reactions
+
+    @property
+    def relevant_reactions(self) -> tuple[PositionedReaction, ...]:
+        return (*self.current_reactions, *self.reactions_ahead, *self.reactions_at)
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +167,19 @@ class SemanticTargetingSnapshot:
     nearest_downside_objective: Objective | None
     upside_arrival: ArrivalContext | None
     downside_arrival: ArrivalContext | None
-    state: ArrivalState
+    upside_state: ArrivalState
+    downside_state: ArrivalState
+    overall_state: SemanticOverallState
+
+    @property
+    def state(self) -> SemanticOverallState:
+        """Compatibility alias for the old global state field.
+
+        The global value is deliberately secondary. Consumers should prefer
+        ``upside_state`` and ``downside_state``.
+        """
+
+        return self.overall_state
 
 
 __all__ = [
@@ -156,6 +194,7 @@ __all__ = [
     "PositionedReaction",
     "ReactionKind",
     "ReactionZone",
+    "SemanticOverallState",
     "SemanticRole",
     "SemanticTargetingSnapshot",
 ]
