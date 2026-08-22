@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -133,6 +133,7 @@ class TargetingHistoricalReplayRunner:
         minimum_bars_per_timeframe: int = 20,
         step: int = 1,
         max_points: int | None = None,
+        progress: Callable[[int, int, Any, str], None] | None = None,
     ) -> TargetingHistoricalReplay:
         if step < 1:
             raise ValueError("step must be >= 1")
@@ -159,11 +160,14 @@ class TargetingHistoricalReplayRunner:
         if max_points is not None:
             candidate_indices = candidate_indices[-max_points:]
 
+        total = len(candidate_indices)
         points: list[TargetingReplayPoint] = []
-        for reference_index in candidate_indices:
+        for position, reference_index in enumerate(candidate_indices, start=1):
             reference_row = reference_frame.iloc[reference_index]
             reference_timestamp = reference_row["timestamp"]
             cutoff = self.clock.available_at(reference_timestamp, reference)
+            if progress is not None:
+                progress(position, total, cutoff, "start")
             try:
                 clipped = clip_analysis_inputs_at_cutoff(
                     inputs,
@@ -172,6 +176,8 @@ class TargetingHistoricalReplayRunner:
                     minimum_bars_per_timeframe=minimum_bars_per_timeframe,
                 )
             except CausalInputUnavailableError:
+                if progress is not None:
+                    progress(position, total, cutoff, "skipped")
                 continue
 
             structure = CachedStructureLocationMTFRunner(
@@ -254,6 +260,8 @@ class TargetingHistoricalReplayRunner:
                     snapshot=snapshot,
                 )
             )
+            if progress is not None:
+                progress(position, total, cutoff, "done")
 
         ordered_points = tuple(points)
         return TargetingHistoricalReplay(
