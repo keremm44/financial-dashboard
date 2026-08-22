@@ -22,11 +22,16 @@ from financial_dashboard.target_evidence_replay import (
     TargetEvidenceMTFReplay,
 )
 from financial_dashboard.targeting.adapters import support_resistance_evidence
+from financial_dashboard.targeting.arrival import build_semantic_targeting_snapshot
 from financial_dashboard.targeting.causal_inputs import clip_analysis_inputs_at_cutoff
-from financial_dashboard.targeting.clustering import build_targeting_snapshot
+from financial_dashboard.targeting.clustering import (
+    build_targeting_snapshot,
+    deduplicate_origin_events,
+)
 from financial_dashboard.targeting.enrichment import enrich_liquidity_scope
 from financial_dashboard.targeting.models import TargetingSnapshot
 from financial_dashboard.targeting.proximity import wilder_atr
+from financial_dashboard.targeting.semantic_models import SemanticTargetingSnapshot
 from financial_dashboard.three_domain_replay import CachedThreeDomainObserverRunner, ThreeDomainReplayResult
 from financial_dashboard.volume_mtf_replay import VolumeMTFEvidenceReplay, VolumeMTFEvidenceReplayRunner
 
@@ -72,6 +77,7 @@ class MarketAnalysisWorkspace:
     order_block: WorkspaceDomainResult
     fvg_engulfing: WorkspaceDomainResult
     targeting: WorkspaceDomainResult
+    semantic_targeting: WorkspaceDomainResult
 
     @property
     def ham_result(self) -> HamMTFEvidenceReplay | None:
@@ -103,6 +109,11 @@ class MarketAnalysisWorkspace:
         result = self.targeting.result
         return result if isinstance(result, TargetingSnapshot) else None
 
+    @property
+    def semantic_targeting_result(self) -> SemanticTargetingSnapshot | None:
+        result = self.semantic_targeting.result
+        return result if isinstance(result, SemanticTargetingSnapshot) else None
+
 
 class CacheSnapshotChangedError(RuntimeError):
     """Raised when cache files change while one workspace replay is being built."""
@@ -113,10 +124,8 @@ class MarketAnalysisWorkspaceRunner:
 
     The coordinator has no trading authority. It shares one immutable prepared input
     snapshot, isolates optional-domain failures, and combines only causal evidence.
-    Target sources are replayed again on the reference snapshot's causal prefix so a
-    later bar cannot rewrite target state that was not yet knowable at that moment.
-    Targeting is descriptive: nearest/confluence targets are not BUY/SELL, stop, or
-    execution instructions.
+    Legacy TargetCluster and the semantic Objective/Reaction/Confirmation model are
+    emitted in parallel during migration; neither creates BUY/SELL authority.
     """
 
     def __init__(self, store: ParquetOHLCVStore) -> None:
@@ -193,6 +202,7 @@ class MarketAnalysisWorkspaceRunner:
             order_block = WorkspaceDomainResult.failed(error)
             fvg_engulfing = WorkspaceDomainResult.failed(error)
             targeting = WorkspaceDomainResult.failed(error)
+            semantic_targeting = WorkspaceDomainResult.failed(error)
         else:
             try:
                 liquidity = WorkspaceDomainResult.ready(
@@ -258,9 +268,6 @@ class MarketAnalysisWorkspaceRunner:
                         )
                     )
 
-                # S/R is already an independent structural domain. Replaying it on
-                # the same causal prefix prevents future lifecycle transitions from
-                # rewriting the target snapshot.
                 for timeframe in normalized_timeframes:
                     replay = target_structure.replay_for(timeframe)
                     evidence.extend(
@@ -277,6 +284,10 @@ class MarketAnalysisWorkspaceRunner:
                 if fvg_engulfing.is_ready and isinstance(fvg_engulfing.result, TargetEvidenceMTFReplay):
                     evidence.extend(fvg_engulfing.result.evidence)
 
+                deduped_evidence = deduplicate_origin_events(
+                    evidence,
+                    reference_atr=reference_atr,
+                )
                 targeting = WorkspaceDomainResult.ready(
                     build_targeting_snapshot(
                         symbol=normalized_symbol,
@@ -284,11 +295,21 @@ class MarketAnalysisWorkspaceRunner:
                         current_price=reference_price,
                         reference_timeframe=reference_timeframe,
                         reference_atr=reference_atr,
-                        evidence=evidence,
+                        evidence=deduped_evidence,
+                    )
+                )
+                semantic_targeting = WorkspaceDomainResult.ready(
+                    build_semantic_targeting_snapshot(
+                        symbol=normalized_symbol,
+                        as_of=target_as_of,
+                        current_price=reference_price,
+                        reference_atr=reference_atr,
+                        evidence=deduped_evidence,
                     )
                 )
             except Exception as error:
                 targeting = WorkspaceDomainResult.failed(error)
+                semantic_targeting = WorkspaceDomainResult.failed(error)
 
         after = cache_fingerprint(
             self.store,
@@ -309,6 +330,7 @@ class MarketAnalysisWorkspaceRunner:
             order_block=order_block,
             fvg_engulfing=fvg_engulfing,
             targeting=targeting,
+            semantic_targeting=semantic_targeting,
         )
 
 
