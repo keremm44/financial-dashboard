@@ -72,12 +72,14 @@ def test_workspace_runs_foundation_once_and_exposes_isolated_domain_health(tmp_p
     assert workspace.order_block.status is WorkspaceDomainStatus.READY
     assert workspace.fvg_engulfing.status is WorkspaceDomainStatus.READY
     assert workspace.targeting.status is WorkspaceDomainStatus.READY
+    assert workspace.semantic_targeting.status is WorkspaceDomainStatus.READY
     assert workspace.ham_result is not None
     assert workspace.volume_result is not None
     assert workspace.liquidity_result is not None
     assert workspace.order_block_result is not None
     assert workspace.fvg_engulfing_result is not None
     assert workspace.targeting_result is not None
+    assert workspace.semantic_targeting_result is not None
     assert workspace.volume_result.symbol == workspace.symbol
     assert tuple(row[0] for row in workspace.fingerprint) == ANALYSIS_TIMEFRAMES
 
@@ -158,6 +160,7 @@ def test_workspace_keeps_optional_domain_failure_from_hiding_other_domains(
     assert workspace.order_block.status is WorkspaceDomainStatus.READY
     assert workspace.fvg_engulfing.status is WorkspaceDomainStatus.READY
     assert workspace.targeting.status is WorkspaceDomainStatus.READY
+    assert workspace.semantic_targeting.status is WorkspaceDomainStatus.READY
     assert workspace.volume_result is not None
 
 
