@@ -19,14 +19,19 @@ from financial_dashboard.target_evidence_replay import (
     OrderBlockMTFReplayRunner,
 )
 from financial_dashboard.targeting.adapters import support_resistance_evidence
+from financial_dashboard.targeting.arrival import build_semantic_targeting_snapshot
 from financial_dashboard.targeting.causal_inputs import (
     CausalInputUnavailableError,
     clip_analysis_inputs_at_cutoff,
 )
-from financial_dashboard.targeting.clustering import build_targeting_snapshot
+from financial_dashboard.targeting.clustering import (
+    build_targeting_snapshot,
+    deduplicate_origin_events,
+)
 from financial_dashboard.targeting.enrichment import enrich_liquidity_scope
 from financial_dashboard.targeting.models import TargetCluster, TargetingSnapshot
 from financial_dashboard.targeting.proximity import wilder_atr
+from financial_dashboard.targeting.semantic_models import SemanticTargetingSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +40,7 @@ class TargetingReplayPoint:
     reference_timestamp: Any
     available_at: Any
     snapshot: TargetingSnapshot
+    semantic_snapshot: SemanticTargetingSnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +64,10 @@ class TargetingHistoricalReplay:
     @property
     def latest(self) -> TargetingSnapshot | None:
         return None if not self.points else self.points[-1].snapshot
+
+    @property
+    def latest_semantic(self) -> SemanticTargetingSnapshot | None:
+        return None if not self.points else self.points[-1].semantic_snapshot
 
 
 def _cluster_identity(cluster: TargetCluster | None) -> tuple[str | None, float | None]:
@@ -110,9 +120,9 @@ class TargetingHistoricalReplayRunner:
     """Replay descriptive targeting through time using causal input prefixes.
 
     Every replay point reruns the source engines on bars that were actually
-    available at that reference instant. This is intentionally more expensive than
-    the live/latest workspace path, but it makes historical validation resistant to
-    future-tail state mutation and therefore suitable for no-lookahead audits.
+    available at that reference instant. The legacy TargetCluster snapshot and the
+    phase-1 semantic Objective/Reaction/Confirmation snapshot are emitted together
+    so migration can be validated in shadow mode without changing existing output.
     """
 
     def __init__(
@@ -244,13 +254,25 @@ class TargetingHistoricalReplayRunner:
 
             reference_prefix = clipped.for_timeframe(reference).input_batch.frame
             current_price = float(reference_prefix.iloc[-1]["close"])
+            reference_atr = wilder_atr(reference_prefix)
+            deduped_evidence = deduplicate_origin_events(
+                evidence,
+                reference_atr=reference_atr,
+            )
             snapshot = build_targeting_snapshot(
                 symbol=normalized_symbol,
                 as_of=cutoff,
                 current_price=current_price,
                 reference_timeframe=reference,
-                reference_atr=wilder_atr(reference_prefix),
-                evidence=evidence,
+                reference_atr=reference_atr,
+                evidence=deduped_evidence,
+            )
+            semantic_snapshot = build_semantic_targeting_snapshot(
+                symbol=normalized_symbol,
+                as_of=cutoff,
+                current_price=current_price,
+                reference_atr=reference_atr,
+                evidence=deduped_evidence,
             )
             points.append(
                 TargetingReplayPoint(
@@ -258,6 +280,7 @@ class TargetingHistoricalReplayRunner:
                     reference_timestamp=reference_timestamp,
                     available_at=cutoff,
                     snapshot=snapshot,
+                    semantic_snapshot=semantic_snapshot,
                 )
             )
             if progress is not None:
@@ -304,10 +327,26 @@ def snapshot_signature(snapshot: TargetingSnapshot | None) -> tuple:
     )
 
 
+def semantic_snapshot_signature(snapshot: SemanticTargetingSnapshot | None) -> tuple:
+    if snapshot is None:
+        return ()
+    return (
+        str(pd.Timestamp(snapshot.as_of)),
+        round(snapshot.current_price, 10),
+        snapshot.state.value,
+        tuple((item.identity, item.kind.value, item.side.value) for item in snapshot.objectives),
+        tuple((item.identity, item.kind.value, item.side.value) for item in snapshot.reaction_zones),
+        tuple((item.identity, item.kind.value, item.side.value) for item in snapshot.confirmations),
+        None if snapshot.nearest_upside_objective is None else snapshot.nearest_upside_objective.identity,
+        None if snapshot.nearest_downside_objective is None else snapshot.nearest_downside_objective.identity,
+    )
+
+
 __all__ = [
     "TargetingHistoricalReplay",
     "TargetingHistoricalReplayRunner",
     "TargetingReplayPoint",
     "TargetingTransition",
+    "semantic_snapshot_signature",
     "snapshot_signature",
 ]
