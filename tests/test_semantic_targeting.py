@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pandas as pd
 
 from financial_dashboard.targeting.arrival import build_semantic_targeting_snapshot
@@ -12,11 +14,17 @@ from financial_dashboard.targeting.models import (
 from financial_dashboard.targeting.semantic_models import (
     ArrivalPosition,
     ArrivalState,
+    BehaviorDirection,
     ObjectiveKind,
     ReactionKind,
     SemanticRole,
 )
-from financial_dashboard.targeting.semantic_roles import semantic_roles, to_objective, to_reaction_zone
+from financial_dashboard.targeting.semantic_roles import (
+    semantic_roles,
+    to_confirmation,
+    to_objective,
+    to_reaction_zone,
+)
 
 
 TS = pd.Timestamp("2026-08-21 14:00", tz="Europe/Istanbul")
@@ -35,8 +43,8 @@ def _evidence(
     role_map = {
         TargetEvidenceType.LIQUIDITY: (TargetRole.MAGNET,),
         TargetEvidenceType.ORDER_BLOCK: (TargetRole.SUPPLY, TargetRole.REACTION),
-        TargetEvidenceType.FVG: (TargetRole.IMBALANCE,),
-        TargetEvidenceType.ENGULFING: (TargetRole.REACTION,),
+        TargetEvidenceType.FVG: (TargetRole.IMBALANCE, TargetRole.DEMAND, TargetRole.REACTION),
+        TargetEvidenceType.ENGULFING: (TargetRole.REACTION, TargetRole.DEMAND),
         TargetEvidenceType.SUPPORT_RESISTANCE: (TargetRole.SUPPLY, TargetRole.REACTION),
     }
     family_map = {
@@ -90,11 +98,16 @@ def test_ob_fvg_sr_are_reaction_zones_but_engulfing_is_confirmation_only() -> No
     sr = _evidence(TargetEvidenceType.SUPPORT_RESISTANCE, uid="sr", low=109.8, high=110.4)
     engulf = _evidence(TargetEvidenceType.ENGULFING, uid="eng", low=109.5, high=110.0)
 
-    assert to_reaction_zone(ob, current_price=100.0).kind is ReactionKind.ORDER_BLOCK
-    assert to_reaction_zone(fvg, current_price=100.0).kind is ReactionKind.FVG
+    ob_zone = to_reaction_zone(ob, current_price=100.0)
+    fvg_zone = to_reaction_zone(fvg, current_price=100.0)
+    assert ob_zone.kind is ReactionKind.ORDER_BLOCK
+    assert ob_zone.behavior is BehaviorDirection.BEARISH
+    assert fvg_zone.kind is ReactionKind.FVG
+    assert fvg_zone.behavior is BehaviorDirection.BULLISH
     assert to_reaction_zone(sr, current_price=100.0).kind is ReactionKind.SUPPORT_RESISTANCE
     assert to_reaction_zone(engulf, current_price=100.0) is None
     assert semantic_roles(engulf) == (SemanticRole.CONFIRMATION,)
+    assert to_confirmation(engulf, current_price=100.0).behavior is BehaviorDirection.BULLISH
 
 
 def test_reaction_only_snapshot_has_no_fake_objective() -> None:
@@ -116,7 +129,14 @@ def test_reaction_only_snapshot_has_no_fake_objective() -> None:
 def test_same_origin_keeps_roles_without_counting_two_independent_reaction_origins() -> None:
     liq = _evidence(TargetEvidenceType.LIQUIDITY, uid="liq", low=110.0, high=110.0, origin="event-liq")
     ob = _evidence(TargetEvidenceType.ORDER_BLOCK, uid="ob", low=109.7, high=110.4, origin="event-A")
-    fvg = _evidence(TargetEvidenceType.FVG, uid="fvg", low=109.8, high=110.3, origin="event-A")
+    fvg = _evidence(
+        TargetEvidenceType.FVG,
+        uid="fvg",
+        low=109.8,
+        high=110.3,
+        origin="event-A",
+        roles=(TargetRole.IMBALANCE, TargetRole.SUPPLY, TargetRole.REACTION),
+    )
     snapshot = build_semantic_targeting_snapshot(
         symbol="TEST",
         as_of=TS,
@@ -134,7 +154,13 @@ def test_same_origin_keeps_roles_without_counting_two_independent_reaction_origi
 def test_arrival_positions_ahead_at_and_beyond_are_separate() -> None:
     liq = _evidence(TargetEvidenceType.LIQUIDITY, uid="liq", low=110.0, high=110.0)
     ahead = _evidence(TargetEvidenceType.ORDER_BLOCK, uid="ahead", low=105.0, high=106.0)
-    at = _evidence(TargetEvidenceType.FVG, uid="at", low=109.6, high=110.3)
+    at = _evidence(
+        TargetEvidenceType.FVG,
+        uid="at",
+        low=109.6,
+        high=110.3,
+        roles=(TargetRole.IMBALANCE, TargetRole.SUPPLY, TargetRole.REACTION),
+    )
     beyond = _evidence(TargetEvidenceType.SUPPORT_RESISTANCE, uid="beyond", low=112.0, high=113.0)
     snapshot = build_semantic_targeting_snapshot(
         symbol="TEST",
@@ -148,6 +174,21 @@ def test_arrival_positions_ahead_at_and_beyond_are_separate() -> None:
     assert [item.position for item in context.reactions_ahead] == [ArrivalPosition.AHEAD]
     assert [item.position for item in context.reactions_at] == [ArrivalPosition.AT_OBJECTIVE]
     assert [item.position for item in context.reactions_beyond] == [ArrivalPosition.BEYOND]
+
+
+def test_ahead_reaction_without_arrival_zone_is_obstacle_state() -> None:
+    liq = _evidence(TargetEvidenceType.LIQUIDITY, uid="liq", low=110.0, high=110.0)
+    ahead = _evidence(TargetEvidenceType.ORDER_BLOCK, uid="ahead", low=105.0, high=106.0)
+    snapshot = build_semantic_targeting_snapshot(
+        symbol="TEST",
+        as_of=TS,
+        current_price=100.0,
+        reference_atr=4.0,
+        evidence=(liq, ahead),
+    )
+    assert snapshot.upside_arrival is not None
+    assert snapshot.upside_arrival.state is ArrivalState.OBJECTIVE_WITH_OBSTACLE
+    assert snapshot.state is ArrivalState.OBJECTIVE_WITH_OBSTACLE
 
 
 def test_price_inside_ob_is_in_reaction_zone_while_liquidity_remains_objective() -> None:
@@ -164,3 +205,36 @@ def test_price_inside_ob_is_in_reaction_zone_while_liquidity_remains_objective()
     assert snapshot.state is ArrivalState.IN_REACTION_ZONE
     assert snapshot.upside_arrival is not None
     assert len(snapshot.upside_arrival.current_reactions) == 1
+
+
+def test_future_available_evidence_is_filtered_inside_semantic_builder() -> None:
+    known = _evidence(TargetEvidenceType.LIQUIDITY, uid="known", low=110.0, high=110.0)
+    future = replace(
+        _evidence(TargetEvidenceType.ORDER_BLOCK, uid="future", low=105.0, high=106.0),
+        available_at=TS + pd.Timedelta(hours=1),
+    )
+    snapshot = build_semantic_targeting_snapshot(
+        symbol="TEST",
+        as_of=TS,
+        current_price=100.0,
+        reference_atr=4.0,
+        evidence=(known, future),
+    )
+    assert len(snapshot.objectives) == 1
+    assert snapshot.reaction_zones == ()
+    assert snapshot.state is ArrivalState.OBJECTIVE_ONLY
+
+
+def test_remote_engulfing_does_not_attach_to_unrelated_objective() -> None:
+    liq = _evidence(TargetEvidenceType.LIQUIDITY, uid="liq", low=110.0, high=110.0)
+    remote = _evidence(TargetEvidenceType.ENGULFING, uid="eng", low=120.0, high=121.0)
+    snapshot = build_semantic_targeting_snapshot(
+        symbol="TEST",
+        as_of=TS,
+        current_price=100.0,
+        reference_atr=4.0,
+        evidence=(liq, remote),
+    )
+    assert len(snapshot.confirmations) == 1
+    assert snapshot.upside_arrival is not None
+    assert snapshot.upside_arrival.confirmations == ()
