@@ -5,7 +5,9 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
+from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES, normalize_timeframes
 from financial_dashboard.data.engine_input import EngineInputBatch, prepare_engine_input
+from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.data.quality import DataQualityReport
 from financial_dashboard.engines.ham_evidence import (
@@ -20,7 +22,8 @@ from financial_dashboard.engines.raw_indicator_dashboard import (
 )
 
 
-HAM_EVIDENCE_TIMEFRAMES: tuple[str, ...] = ("1d", "4h", "2h", "1h", "30m")
+# Backwards-compatible public name; canonical definition lives in analysis_config.
+HAM_EVIDENCE_TIMEFRAMES: tuple[str, ...] = ANALYSIS_TIMEFRAMES
 
 _PROFILE_BY_TIMEFRAME: Mapping[str, TrendProfile] = MappingProxyType(
     {
@@ -45,11 +48,11 @@ def ham_profile_for_timeframe(timeframe: str) -> TrendProfile:
 
 
 def _normalize_timeframes(timeframes: Iterable[str]) -> tuple[str, ...]:
-    normalized = tuple(timeframe.strip().lower() for timeframe in timeframes)
-    if not normalized:
-        raise ValueError("at least one Ham evidence timeframe is required")
-    if len(set(normalized)) != len(normalized):
-        raise ValueError("Ham evidence timeframes must be unique")
+    normalized = normalize_timeframes(
+        timeframes,
+        supported=HAM_EVIDENCE_TIMEFRAMES,
+        label="Ham evidence",
+    )
     for timeframe in normalized:
         ham_profile_for_timeframe(timeframe)
     return normalized
@@ -149,9 +152,7 @@ class HamMTFEvidenceReplayRunner:
         *,
         timeframes: Iterable[str] = HAM_EVIDENCE_TIMEFRAMES,
     ) -> HamMTFEvidenceReplay:
-        normalized_symbol = symbol.strip().upper()
-        if not normalized_symbol:
-            raise ValueError("symbol must not be empty")
+        normalized_symbol = normalize_symbol(symbol)
         normalized_timeframes = _normalize_timeframes(timeframes)
 
         timeframe_replays: list[HamTimeframeEvidenceReplay] = []
