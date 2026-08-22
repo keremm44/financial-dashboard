@@ -116,6 +116,43 @@ def _causal_figure(cache_root: str, symbol: str, point, cluster) -> go.Figure:
     return figure
 
 
+def _render_arrival_context(context, label: str) -> None:
+    if context is None:
+        st.info(f"Aktif {label} objective yok.")
+        return
+    st.caption(
+        f"State={context.state.value} · "
+        f"independent relevant reaction origins={context.independent_reaction_origins}"
+    )
+    frame = arrival_context_frame(context)
+    if frame.empty:
+        st.info(f"{label.capitalize()} objective için reaction context yok.")
+        return
+
+    relevant = frame[frame["Context"] != "DOWNSTREAM"]
+    downstream = frame[frame["Context"] == "DOWNSTREAM"]
+
+    st.subheader("Relevant arrival context")
+    if relevant.empty:
+        st.info("CURRENT / AHEAD / AT_OBJECTIVE reaction yok.")
+    else:
+        st.dataframe(relevant, width="stretch", hide_index=True)
+
+    with st.expander(f"Downstream context · {len(downstream)} zone", expanded=False):
+        st.caption(
+            "BEYOND bölgeleri arrival state üretmez. Hepsi audit için korunur; "
+            "objective'a ATR mesafesine göre en yakınlar üstte gösterilir."
+        )
+        if downstream.empty:
+            st.info("Downstream reaction zone yok.")
+        else:
+            st.dataframe(
+                downstream.sort_values("Objective distance ATR").head(12),
+                width="stretch",
+                hide_index=True,
+            )
+
+
 st.title("Target Replay · causal diagnostics")
 st.caption(
     "Yeni semantic model shadow mode'da çalışır: Liquidity objective; OB/FVG/S-R reaction; "
@@ -181,12 +218,12 @@ if st.sidebar.button("Replay'i çalıştır", type="primary", width="stretch"):
         if total <= 0:
             return
         value = min(max(position / total, 0.0), 1.0)
-        label = {
+        status_label = {
             "start": "hesaplanıyor",
             "done": "tamamlandı",
             "skipped": "atlandı",
         }.get(state, state)
-        progress_bar.progress(value, text=f"[{position}/{total}] {cutoff} · {label}")
+        progress_bar.progress(value, text=f"[{position}/{total}] {cutoff} · {status_label}")
 
     try:
         replay = replay_cached_targeting_history(
@@ -246,31 +283,9 @@ else:
         ("Upside arrival", "Downside arrival", "Semantic evidence", "Legacy vs semantic")
     )
     with up_tab:
-        if semantic_snapshot.upside_arrival is None:
-            st.info("Aktif upside objective yok.")
-        else:
-            st.caption(
-                f"State={semantic_snapshot.upside_arrival.state.value} · "
-                f"independent reaction origins={semantic_snapshot.upside_arrival.independent_reaction_origins}"
-            )
-            frame = arrival_context_frame(semantic_snapshot.upside_arrival)
-            if frame.empty:
-                st.info("Upside objective yolunda/varışında reaction zone yok.")
-            else:
-                st.dataframe(frame, width="stretch", hide_index=True)
+        _render_arrival_context(semantic_snapshot.upside_arrival, "upside")
     with down_tab:
-        if semantic_snapshot.downside_arrival is None:
-            st.info("Aktif downside objective yok.")
-        else:
-            st.caption(
-                f"State={semantic_snapshot.downside_arrival.state.value} · "
-                f"independent reaction origins={semantic_snapshot.downside_arrival.independent_reaction_origins}"
-            )
-            frame = arrival_context_frame(semantic_snapshot.downside_arrival)
-            if frame.empty:
-                st.info("Downside objective yolunda/varışında reaction zone yok.")
-            else:
-                st.dataframe(frame, width="stretch", hide_index=True)
+        _render_arrival_context(semantic_snapshot.downside_arrival, "downside")
     with evidence_tab:
         st.subheader("Objectives · Liquidity only in Phase 1")
         st.dataframe(objectives_frame(semantic_snapshot), width="stretch", hide_index=True)
