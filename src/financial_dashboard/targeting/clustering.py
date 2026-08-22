@@ -25,6 +25,7 @@ class TargetClusterConfig:
     max_span_atr: float = 0.75
     origin_bar_tolerance: int = 2
     origin_price_tolerance_atr: float = 0.25
+    origin_max_span_atr: float = 0.75
 
     def __post_init__(self) -> None:
         if self.evidence_gap_atr < 0:
@@ -35,6 +36,8 @@ class TargetClusterConfig:
             raise ValueError("origin_bar_tolerance must be >= 0")
         if self.origin_price_tolerance_atr < 0:
             raise ValueError("origin_price_tolerance_atr must be >= 0")
+        if self.origin_max_span_atr <= 0:
+            raise ValueError("origin_max_span_atr must be > 0")
 
 
 def _interval_gap(a_low: float, a_high: float, b_low: float, b_high: float) -> float:
@@ -54,8 +57,9 @@ def deduplicate_origin_events(
     """Conservatively collapse correlated technical evidence into origin events.
 
     Only FVG/Order Block/Engulfing evidence on the same timeframe is eligible for
-    same-origin grouping. Liquidity remains a separate structural fact. A group is
-    max-diameter constrained in both origin-bar and price space to avoid chaining.
+    same-origin grouping. Liquidity remains a separate structural fact. Groups are
+    max-diameter constrained in origin-bar and price space so pairwise chaining
+    cannot turn one impulse into a broad synthetic event.
     """
     cfg = config or TargetClusterConfig()
     atr = max(float(reference_atr), 1e-12)
@@ -100,12 +104,16 @@ def deduplicate_origin_events(
                 continue
             if _interval_gap(low, high, candidate.low, candidate.high) / atr > cfg.origin_price_tolerance_atr:
                 continue
+            next_low = min(low, candidate.low)
+            next_high = max(high, candidate.high)
+            if (next_high - next_low) / atr > cfg.origin_max_span_atr:
+                continue
             group.append(candidate_idx)
             grouped_indices.add(candidate_idx)
             min_origin = next_min_origin
             max_origin = next_max_origin
-            low = min(low, candidate.low)
-            high = max(high, candidate.high)
+            low = next_low
+            high = next_high
 
         anchor_idx = min(
             group,
@@ -313,7 +321,17 @@ def build_targeting_snapshot(
     config: TargetClusterConfig | None = None,
 ) -> TargetingSnapshot:
     cfg = config or TargetClusterConfig()
-    deduped = deduplicate_origin_events(evidence, reference_atr=reference_atr, config=cfg)
+    cutoff = pd.Timestamp(as_of)
+    causal_evidence = tuple(
+        item
+        for item in evidence
+        if pd.Timestamp(item.available_at) <= cutoff
+    )
+    deduped = deduplicate_origin_events(
+        causal_evidence,
+        reference_atr=reference_atr,
+        config=cfg,
+    )
     clusters = cluster_target_evidence(
         deduped,
         current_price=current_price,
