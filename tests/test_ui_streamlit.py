@@ -48,6 +48,10 @@ def test_streamlit_app_smoke_renders_workspace_without_decision_actions(
         "Observer foundation",
         "Ham evidence",
         "Volume Participation",
+        "Liquidity",
+        "Order Block",
+        "FVG / Engulfing",
+        "Targeting",
     )
     assert set(domain_health["Status"]) == {"READY"}
 
