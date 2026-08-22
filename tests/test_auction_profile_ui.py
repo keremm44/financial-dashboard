@@ -32,9 +32,9 @@ def test_auction_view_models_are_descriptive_and_expose_estimated_boundary(tmp_p
     provenance = auction_profile_provenance_frame(latest)
     values = dict(zip(provenance["Field"], provenance["Value"], strict=True))
     assert values["profile_source"] == "OHLCV_ESTIMATED"
-    assert values["true_price_at_volume"] is False
-    assert values["tick_profile"] is False
-    assert values["footprint"] is False
+    assert not bool(values["true_price_at_volume"])
+    assert not bool(values["tick_profile"])
+    assert not bool(values["footprint"])
 
     nodes = auction_profile_nodes_frame(latest)
     if not nodes.empty:
