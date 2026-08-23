@@ -10,7 +10,6 @@ from .volume_participation_engine import (
     VolumeParticipationConfig,
     VolumeParticipationEngine as CoreVolumeParticipationEngine,
     VolumeParticipationMetrics,
-    _rma,
     _safe_div,
 )
 
@@ -149,13 +148,9 @@ class VolumeParticipationEngine(CoreVolumeParticipationEngine):
         self._init_lifecycle()
 
     def _atr_series(self) -> list[float | None]:
-        highs = [float(r["high"]) for r in self._rows]
-        lows = [float(r["low"]) for r in self._rows]
-        closes = [float(r["close"]) for r in self._rows]
-        tr: list[float] = []
-        for i in range(len(self._rows)):
-            tr.append(highs[i] - lows[i] if i == 0 else max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1])))
-        return _rma(tr, self.config.atr_length)
+        """Return the core engine's incrementally maintained Wilder ATR series."""
+
+        return self._atr_values
 
     def _accept_pivot(self, pivot: ConfirmedParticipationPivot) -> None:
         self._accepted_pivot = pivot
@@ -169,15 +164,15 @@ class VolumeParticipationEngine(CoreVolumeParticipationEngine):
         origin = index - p
         if origin < p or index < 2 * p:
             return
-        highs = [float(r["high"]) for r in self._rows]
-        lows = [float(r["low"]) for r in self._rows]
+        highs = self._high_values
+        lows = self._low_values
         high_window = highs[origin - p : origin + p + 1]
         low_window = lows[origin - p : origin + p + 1]
         is_high = highs[origin] == max(high_window) and high_window.count(highs[origin]) == 1
         is_low = lows[origin] == min(low_window) and low_window.count(lows[origin]) == 1
         if is_high == is_low:
             return
-        atr = self._atr_series()[origin]
+        atr = self._atr_values[origin]
         if atr is None or atr <= 0:
             return
         pivot = ConfirmedParticipationPivot("HIGH" if is_high else "LOW", highs[origin] if is_high else lows[origin], origin, index, float(atr))
@@ -204,14 +199,13 @@ class VolumeParticipationEngine(CoreVolumeParticipationEngine):
         start = n - length
         uv = dv = uc = dc = tv = tc = 0.0
         for i in range(start, n):
-            row = self._rows[i]
-            volume = float(row["volume"])
-            capital = volume * ((float(row["high"]) + float(row["low"]) + float(row["close"])) / 3.0)
+            volume = self._volume_values[i]
+            capital = self._traded_values[i]
             tv += volume
             tc += capital
-            if i > 0 and float(row["close"]) > float(self._rows[i - 1]["close"]):
+            if i > 0 and self._close_values[i] > self._close_values[i - 1]:
                 uv += volume; uc += capital
-            elif i > 0 and float(row["close"]) < float(self._rows[i - 1]["close"]):
+            elif i > 0 and self._close_values[i] < self._close_values[i - 1]:
                 dv += volume; dc += capital
         return _safe_div(uv, tv, 0.5), _safe_div(dv, tv, 0.5), _safe_div(uc, tc, 0.5), _safe_div(dc, tc, 0.5)
 
@@ -229,8 +223,8 @@ class VolumeParticipationEngine(CoreVolumeParticipationEngine):
             return False, False
 
         up_v, down_v, up_c, down_c = self._flow_shares_5()
-        close = float(self._rows[index]["close"])
-        prev_close = float(self._rows[index - 1]["close"])
+        close = self._close_values[index]
+        prev_close = self._close_values[index - 1]
         rvol, rtv, pressure = metrics.rvol or 0.0, metrics.rtv or 0.0, metrics.directional_value_pressure_5 or 0.0
         controlled_up = self._participation_direction == 1 and close < prev_close and metrics.down_evidence_count < self.config.participation_minimum_evidence and down_v < self.config.minimum_directional_share and down_c < self.config.minimum_directional_share and rvol <= 1.05 and rtv <= 1.05 and pressure > -self.config.minimum_capital_pressure
         controlled_down = self._participation_direction == -1 and close > prev_close and metrics.up_evidence_count < self.config.participation_minimum_evidence and up_v < self.config.minimum_directional_share and up_c < self.config.minimum_directional_share and rvol <= 1.05 and rtv <= 1.05 and pressure < self.config.minimum_capital_pressure
@@ -256,17 +250,17 @@ class VolumeParticipationEngine(CoreVolumeParticipationEngine):
         return controlled_up, controlled_down
 
     def _nearest_reference(self, upper: bool, index: int) -> tuple[float | None, float | None, str | None]:
-        atr = self._atr_series()[index]
+        atr = self._atr_values[index]
         if atr is None:
             return None, None, None
-        price = float(self._rows[index]["high" if upper else "low"])
+        price = self._high_values[index] if upper else self._low_values[index]
         candidates: list[tuple[float, float, str]] = []
         pivot = self._last_high_pivot if upper else self._last_low_pivot
         if pivot:
             candidates.append((pivot.price, pivot.atr_at_source, "PIVOT"))
         start = max(0, index - self.lifecycle_config.recent_level_lookback)
         if index > start:
-            recent = max(float(r["high"]) for r in self._rows[start:index]) if upper else min(float(r["low"]) for r in self._rows[start:index])
+            recent = max(self._high_values[start:index]) if upper else min(self._low_values[start:index])
             candidates.append((recent, float(atr), "RECENT_20"))
         if not candidates:
             return None, None, None
@@ -330,16 +324,16 @@ class VolumeParticipationEngine(CoreVolumeParticipationEngine):
     def _crossed_reference(self, index: int) -> tuple[int, float | None, float | None, str | None]:
         if index == 0:
             return 0, None, None, None
-        close, prev = float(self._rows[index]["close"]), float(self._rows[index - 1]["close"])
+        close, prev = self._close_values[index], self._close_values[index - 1]
         candidates: list[tuple[int, float, float, str]] = []
         if self._last_high_pivot and prev <= self._last_high_pivot.price < close:
             candidates.append((1, self._last_high_pivot.price, self._last_high_pivot.atr_at_source, "PIVOT"))
         if self._last_low_pivot and prev >= self._last_low_pivot.price > close:
             candidates.append((-1, self._last_low_pivot.price, self._last_low_pivot.atr_at_source, "PIVOT"))
         start = max(0, index - self.lifecycle_config.recent_level_lookback)
-        atr = self._atr_series()[index]
+        atr = self._atr_values[index]
         if index > start and atr is not None:
-            rh = max(float(r["high"]) for r in self._rows[start:index]); rl = min(float(r["low"]) for r in self._rows[start:index])
+            rh = max(self._high_values[start:index]); rl = min(self._low_values[start:index])
             if prev <= rh < close: candidates.append((1, rh, float(atr), "RECENT_20"))
             if prev >= rl > close: candidates.append((-1, rl, float(atr), "RECENT_20"))
         if not candidates:
@@ -362,7 +356,7 @@ class VolumeParticipationEngine(CoreVolumeParticipationEngine):
             return
         active = self._break
         assert active.start_index is not None and active.level is not None and active.frozen_buffer is not None
-        close = float(self._rows[index]["close"])
+        close = self._close_values[index]
         if active.direction == 1 and close < active.level or active.direction == -1 and close > active.level:
             self._break = replace(active, stage=BreakStage.RECLAIMED, reason="level reclaimed"); return
         age = index - active.start_index
