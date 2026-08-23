@@ -24,6 +24,7 @@ def workspace_domain_status_frame(workspace: MarketAnalysisWorkspace) -> pd.Data
         _row("Order Block", workspace.order_block),
         _row("FVG / Engulfing", workspace.fvg_engulfing),
         _row("Targeting", workspace.targeting),
+        _row("Cross-Domain Context", workspace.cross_domain),
     ]
     return pd.DataFrame(rows, columns=("Domain", "Status", "Error"))
 
