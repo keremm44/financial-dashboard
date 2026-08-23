@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from types import SimpleNamespace
 from typing import Any, Iterable, Mapping
 
 from .axes import evaluate_context_axes
@@ -17,7 +18,6 @@ from .projections import (
     ReactionEvidenceProjection,
     StabilSupportProjection,
     StructuralFactsProjection,
-    StructuralTimeframeProjection,
     VolatilityProjection,
     VolatilityTimeframeProjection,
     project_ham,
@@ -67,6 +67,19 @@ class CrossDomainBuildInputs:
 
 def _available(ref: FactRef | None, as_of: Any) -> bool:
     return ref is not None and ref.is_available_at(as_of)
+
+
+def _structure_projection_source(structure_location: Any) -> Any:
+    """Expose the thin structural projection shape without changing replay classes."""
+
+    if hasattr(structure_location, "structure_for"):
+        return structure_location
+    return SimpleNamespace(
+        symbol=structure_location.symbol,
+        timeframes=tuple(structure_location.timeframes),
+        replays=structure_location.replays,
+        structure_for=lambda timeframe: structure_location.replay_for(timeframe).market_structure,
+    )
 
 
 def _all_structural_refs(projection: StructuralFactsProjection) -> tuple[FactRef, ...]:
@@ -256,15 +269,10 @@ def _unsupported_tokens(
 
 
 def build_cross_domain_context(inputs: CrossDomainBuildInputs) -> CrossDomainBuildResult:
-    """Build one deterministic, knowledge-bounded shadow context result.
-
-    Native engines have already run before this function is called. This function only
-    projects their outputs, filters facts to ``as_of``, derives context, and resolves
-    scoped permission. It never produces action authority.
-    """
+    """Build one deterministic, knowledge-bounded shadow context result."""
 
     structural_raw = project_structural_facts(
-        inputs.structure_location,
+        _structure_projection_source(inputs.structure_location),
         available_at=inputs.available_at,
     )
     liquidity_raw = (
@@ -282,11 +290,7 @@ def build_cross_domain_context(inputs: CrossDomainBuildInputs) -> CrossDomainBui
         data_quality_by_timeframe=inputs.data_quality_by_timeframe,
         requested_timeframes=inputs.requested_timeframes,
     )
-    stabil_raw = (
-        None
-        if inputs.stabil_support_replay is None
-        else project_stabil_support(inputs.stabil_support_replay)
-    )
+    stabil_raw = None if inputs.stabil_support_replay is None else project_stabil_support(inputs.stabil_support_replay)
     participation_raw = (
         None
         if inputs.participation_replay is None
@@ -354,7 +358,6 @@ def build_cross_domain_context(inputs: CrossDomainBuildInputs) -> CrossDomainBui
         trigger_timeframes=inputs.trigger_timeframes,
     )
     eligible_refs = tuple(ref for ref in all_refs if ref.is_available_at(inputs.as_of))
-    lineage_groups = build_lineage_groups(eligible_refs)
     context = build_context_snapshot(
         symbol=inputs.symbol,
         as_of=inputs.as_of,
@@ -362,17 +365,10 @@ def build_cross_domain_context(inputs: CrossDomainBuildInputs) -> CrossDomainBui
         axes=axes,
         zones=zones,
         all_fact_refs=all_refs,
-        lineage_groups=lineage_groups,
+        lineage_groups=build_lineage_groups(eligible_refs),
         unsupported_contexts=_unsupported_tokens(reaction_raw, inputs.unsupported_contexts),
     )
-    return CrossDomainBuildResult(
-        context=context,
-        permission=resolve_permission(context),
-    )
+    return CrossDomainBuildResult(context=context, permission=resolve_permission(context))
 
 
-__all__ = [
-    "CrossDomainBuildInputs",
-    "CrossDomainBuildResult",
-    "build_cross_domain_context",
-]
+__all__ = ["CrossDomainBuildInputs", "CrossDomainBuildResult", "build_cross_domain_context"]
