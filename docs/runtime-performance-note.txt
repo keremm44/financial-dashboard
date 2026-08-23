@@ -1,1 +1,0 @@
-runtime performance documentation is in docs/runtime-performance.md
