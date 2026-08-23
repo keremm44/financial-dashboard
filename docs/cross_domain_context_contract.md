@@ -131,6 +131,130 @@ htf_primary_support / resistance
 
 `context.zone_interaction` derives replay-safe states such as `APPROACHING`, `TESTING`, `DEFENDED`, `WEAKENING`, `BEING_CONSUMED`, `ACCEPTED_THROUGH`, and `RECLAIMED`. Native lifecycle is observed, not duplicated or overwritten.
 
+## P4 Cross-Domain Context axes
+
+`context.axes` is a set of small deterministic evaluators. It is not a mega decision score.
+
+The public axes are independent fields:
+
+```text
+STRUCTURAL_THESIS
+CONTINUATION_CONTEXT
+REACTION_CONTEXT + REACTION_DIRECTION
+REVERSAL_CONTEXT + REVERSAL_DIRECTION
+OBJECTIVE_CONTEXT
+PARTICIPATION_CONTEXT
+VOLATILITY_CONTEXT
+PATTERN_READINESS
+MTF_CONTEXT
+HAM_READINESS
+CONFLICT_STATE
+```
+
+Authority rules:
+
+- `STRUCTURAL_THESIS` is derived only from the explicitly supplied anchor-timeframe canonical Market Structure projection.
+- Anchor timeframe is mandatory; lower-timeframe structure cannot silently become higher-timeframe truth.
+- `CONTINUATION_CONTEXT=ALIGNED` requires an aligned canonical external BOS on the anchor timeframe. Volume, Pattern, HAM, FVG or Zone context cannot manufacture continuation authority.
+- `REACTION_CONTEXT` is derived from qualified-zone interaction with reaction contributors. A counter-trend reaction may coexist with an unchanged main structural thesis.
+- `REVERSAL_CONTEXT=CANDIDATE` requires anchor-timeframe structural transition/CHoCH semantics. `STRUCTURALLY_CONFIRMED` requires canonical structural follow-through; supporting domains do not upgrade reversal themselves.
+- Liquidity remains objective direction only.
+- Volume is participation context only.
+- Pattern is pattern-scoped readiness only.
+- Volatility is regime/readiness context only.
+- HAM readiness reports availability/coverage state and is not an independent vote.
+- MTF context is hierarchical relation to the explicit anchor; it is not a timeframe vote.
+- `CONFLICT_STATE` preserves contradictory context rather than forcing one global direction.
+
+Examples that are intentionally valid:
+
+```text
+STRUCTURAL_THESIS = DOWN
+REACTION_CONTEXT = ACTIVE
+REACTION_DIRECTION = UP
+REVERSAL_CONTEXT = NOT_PRESENT
+```
+
+and:
+
+```text
+STRUCTURAL_THESIS = DOWN
+MTF_CONTEXT = COUNTER_REACTION
+```
+
+Neither combination rewrites the 4H/HTF structural authority.
+
+## P4 Context snapshot and knowledge boundary
+
+`CrossDomainContextSnapshot` is immutable and has exactly one `as_of` and one explicit `anchor_timeframe`.
+
+`KnowledgeBoundary` records:
+
+- eligible facts at `as_of`,
+- future facts excluded because `available_at > as_of`,
+- unconfirmed facts,
+- unsupported context/TF diagnostics.
+
+Future facts are excluded and reported; they are not converted into neutral evidence.
+
+`source_refs` may contain only facts satisfying:
+
+```text
+fact.available_at <= snapshot.as_of
+```
+
+Candidate/unconfirmed status remains visible and is not promoted to confirmed authority by the snapshot.
+
+## P4 Scoped Permission Envelope
+
+`PermissionEnvelope` has three separate semantics:
+
+```text
+permission_scope
+permitted_side
+gate_state
+```
+
+Current scopes:
+
+```text
+NONE
+REACTION_ONLY
+CONTINUATION_ONLY
+STRUCTURAL_TRANSITION
+```
+
+Current gate states:
+
+```text
+BLOCKED
+WAITING
+CONDITIONAL
+OPEN
+```
+
+The resolver is rule/gate based, not count based. Canonical structural blockers are evaluated first. Supporting domains may block or delay a scope but cannot manufacture structural authority.
+
+Examples:
+
+```text
+scope = REACTION_ONLY
+permitted_side = LONG
+gate_state = CONDITIONAL
+```
+
+or:
+
+```text
+scope = CONTINUATION_ONLY
+permitted_side = SHORT
+gate_state = OPEN
+```
+
+These outputs are **not BUY/SELL**. They contain no entry, exit, stop, target, position-size, or probability policy. Even `OPEN` means only that the cross-domain permission gate is open; a future Action Layer must still perform timing/action policy.
+
+`REDUCED_SIZE_ONLY` and other sizing semantics are intentionally absent.
+
 ## Knowledge boundary
 
 The planned decision-time boundary is the reference `target_as_of` used by the workspace. Every projected fact must satisfy:
@@ -139,7 +263,7 @@ The planned decision-time boundary is the reference `target_as_of` used by the w
 fact.available_at <= snapshot.as_of
 ```
 
-Projection creation records `available_at`; eligibility filtering is enforced later by `context.builder`. Zone Intelligence already refuses future projected reaction/liquidity facts and future S/R snapshots. Facts excluded by this rule must eventually be reported through a `KnowledgeBoundary` diagnostic rather than silently treated as neutral.
+Projection creation records `available_at`; Step 5 builder integration will apply the common workspace decision boundary before context construction. Zone Intelligence already refuses future projected reaction/liquidity facts and future S/R snapshots. `KnowledgeBoundary` now provides the explicit diagnostic contract for excluded future facts.
 
 ## Package boundary
 
@@ -191,8 +315,8 @@ Rules:
 
 1. Contracts + Lineage — complete.
 2. All Domain Projections — complete.
-3. Zone Intelligence — current step.
-4. Cross-Domain Context + Permission.
+3. Zone Intelligence — complete.
+4. Cross-Domain Context + Permission — current step.
 5. Builder + Workspace shadow integration.
 6. Replay + no-lookahead + golden scenarios + final freeze.
 
