@@ -63,6 +63,7 @@ def test_workspace_runs_foundation_once_and_exposes_isolated_domain_health(tmp_p
         workspace.fvg_engulfing,
         workspace.targeting,
         workspace.semantic_targeting,
+        workspace.cross_domain,
     ):
         assert domain.status is WorkspaceDomainStatus.READY
     assert workspace.ham_result is not None
@@ -75,6 +76,7 @@ def test_workspace_runs_foundation_once_and_exposes_isolated_domain_health(tmp_p
     assert workspace.fvg_engulfing_result is not None
     assert workspace.targeting_result is not None
     assert workspace.semantic_targeting_result is not None
+    assert workspace.cross_domain_result is not None
     assert workspace.volume_result.symbol == workspace.symbol
     assert workspace.stabil_support_result.symbol == workspace.symbol
     assert workspace.stabil_support_result.timeframe == "1d"
@@ -91,6 +93,7 @@ def test_workspace_runs_foundation_once_and_exposes_isolated_domain_health(tmp_p
         "Order Block",
         "FVG / Engulfing",
         "Targeting",
+        "Cross-Domain Context",
     )
     assert set(health["Status"]) == {"READY"}
 
@@ -139,6 +142,7 @@ def test_workspace_keeps_optional_domain_failure_from_hiding_other_domains(tmp_p
     assert workspace.fvg_engulfing.status is WorkspaceDomainStatus.READY
     assert workspace.targeting.status is WorkspaceDomainStatus.READY
     assert workspace.semantic_targeting.status is WorkspaceDomainStatus.READY
+    assert workspace.cross_domain.status is WorkspaceDomainStatus.READY
     assert workspace.volume_result is not None
     assert workspace.stabil_support_result is not None
     assert workspace.volatility_result is not None
@@ -158,6 +162,7 @@ def test_volatility_failure_is_isolated(tmp_path, monkeypatch) -> None:
     assert workspace.volume.status is WorkspaceDomainStatus.READY
     assert workspace.stabil_support.status is WorkspaceDomainStatus.READY
     assert workspace.targeting.status is WorkspaceDomainStatus.READY
+    assert workspace.cross_domain.status is WorkspaceDomainStatus.READY
 
 
 def test_workspace_rejects_cache_mutation_during_one_replay(tmp_path, monkeypatch) -> None:
