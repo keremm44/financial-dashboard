@@ -273,60 +273,48 @@ class MarketStructureEventLedger:
         return tuple(self.append(event, rows) for event in events)
 
     def snapshot(self, *, current_bar: int) -> tuple[MarketStructureEventRecord, ...]:
-        """Return current annotations without mutating the append-only fact log."""
+        """Return annotations in one chronological pass without mutating facts."""
 
         annotated: list[MarketStructureEventRecord] = []
+        latest_current: dict[tuple[str, str, int], int] = {}
+        pending_choch: dict[tuple[str, int], list[int]] = {}
 
-        def latest_index(predicate) -> int | None:
-            for index in range(len(annotated) - 1, -1, -1):
-                if predicate(annotated[index]):
-                    return index
-            return None
+        def current_key(record: MarketStructureEventRecord) -> tuple[str, str, int]:
+            return (record.scope, record.event_type, int(record.direction))
+
+        def clear_current(index: int) -> None:
+            key = current_key(annotated[index])
+            if latest_current.get(key) == index:
+                latest_current.pop(key, None)
 
         for base_record in self._records:
-            same_index = latest_index(
-                lambda record: (
-                    record.scope == base_record.scope
-                    and record.event_type == base_record.event_type
-                    and record.direction is base_record.direction
-                    and record.relevance is StructureEventRelevance.CURRENT
-                )
-            )
+            key = current_key(base_record)
+            same_index = latest_current.get(key)
             if same_index is not None:
                 annotated[same_index] = replace(
                     annotated[same_index],
                     relevance=StructureEventRelevance.SUPERSEDED,
                 )
+                latest_current.pop(key, None)
 
             if base_record.event_type == EVENT_BOS:
-                choch_index = latest_index(
-                    lambda record: (
-                        record.scope == base_record.scope
-                        and record.event_type == EVENT_CHOCH
-                        and record.direction is base_record.direction
-                        and record.validity is StructureEventValidity.VALID
-                        and record.outcome is StructureEventOutcome.PENDING
-                    )
-                )
-                if choch_index is not None:
+                pending_key = (base_record.scope, int(base_record.direction))
+                stack = pending_choch.get(pending_key)
+                if stack:
+                    choch_index = stack.pop()
                     annotated[choch_index] = replace(
                         annotated[choch_index],
                         relevance=StructureEventRelevance.HISTORICAL,
                         outcome=StructureEventOutcome.FOLLOW_THROUGH_CONFIRMED,
                         confirmed_by_event_uid=base_record.event_uid,
                     )
+                    clear_current(choch_index)
 
             if base_record.event_type == EVENT_TRANSITION_FAIL:
-                choch_index = latest_index(
-                    lambda record: (
-                        record.scope == base_record.scope
-                        and record.event_type == EVENT_CHOCH
-                        and int(record.direction) == -int(base_record.direction)
-                        and record.validity is StructureEventValidity.VALID
-                        and record.outcome is StructureEventOutcome.PENDING
-                    )
-                )
-                if choch_index is not None:
+                pending_key = (base_record.scope, -int(base_record.direction))
+                stack = pending_choch.get(pending_key)
+                if stack:
+                    choch_index = stack.pop()
                     annotated[choch_index] = replace(
                         annotated[choch_index],
                         validity=StructureEventValidity.FAILED,
@@ -334,8 +322,19 @@ class MarketStructureEventLedger:
                         outcome=StructureEventOutcome.FAILED,
                         failed_by_event_uid=base_record.event_uid,
                     )
+                    clear_current(choch_index)
 
+            index = len(annotated)
             annotated.append(base_record)
+            latest_current[key] = index
+            if (
+                base_record.event_type == EVENT_CHOCH
+                and base_record.validity is StructureEventValidity.VALID
+                and base_record.outcome is StructureEventOutcome.PENDING
+            ):
+                pending_choch.setdefault(
+                    (base_record.scope, int(base_record.direction)), []
+                ).append(index)
 
         return tuple(
             replace(record, age_bars=max(0, current_bar - record.event_bar))
