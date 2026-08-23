@@ -255,15 +255,59 @@ These outputs are **not BUY/SELL**. They contain no entry, exit, stop, target, p
 
 `REDUCED_SIZE_ONLY` and other sizing semantics are intentionally absent.
 
+## P5 Builder and workspace shadow integration
+
+`context.builder` is the orchestration boundary for the completed P1-P4 contracts. It does not run or own native engine calculations. It accepts already-produced replay/domain outputs, projects them, applies one knowledge boundary, derives Zone Intelligence and context axes, then resolves scoped permission.
+
+The runtime path is:
+
+```text
+existing workspace/domain replays
+        ↓
+target/reference decision boundary (`target_as_of`)
+        ↓
+target-bounded Structure/SR replay
+        ↓
+context.builder
+        ↓
+thin projections
+        ↓
+future-fact filtering (`available_at <= as_of`)
+        ↓
+lineage + Zone Intelligence + context axes
+        ↓
+CrossDomainContextSnapshot
+        ↓
+PermissionEnvelope
+        ↓
+MarketAnalysisWorkspace.cross_domain  [shadow/read-only]
+```
+
+P5 rules:
+
+- The workspace's existing reference `target_as_of` is the single cross-domain decision boundary.
+- Canonical Structure/SR consumed by the builder comes from the already-created target-bounded replay, so structural scope is not evaluated with bars beyond `target_as_of`.
+- Other existing domain results are reused rather than rerun. If a projection contains a fact whose `available_at > target_as_of`, the builder removes that fact from axis/zone eligibility and retains it only as a `KnowledgeBoundary` exclusion diagnostic.
+- Pattern, Volume, Stabil Support, Volatility and HAM are therefore allowed to be produced by their existing workspace paths without being granted future knowledge.
+- Optional domain failure does not silently become neutral. The failed domain is omitted from semantic evaluation and an explicit `*_ERROR` unsupported-context diagnostic is attached.
+- FVG/Engulfing unsupported timeframes remain explicit diagnostics.
+- `market_workspace.py` only coordinates the builder call and stores `WorkspaceDomainResult`; cross-domain business logic remains inside `context.*`.
+- `context.builder` must not import `market_workspace`, UI modules, or native engine implementations.
+- The integration is additive/shadow-only. Existing observer, targeting, semantic-targeting, UI, and native-domain outputs are not rewritten by cross-domain context or permission.
+- `MarketAnalysisWorkspace.cross_domain` failure is isolated from existing native/targeting outputs.
+- The cross-domain result still ends at `PermissionEnvelope`; no BUY/SELL or Future Action Layer is introduced in P5.
+
+Anchor selection in the current workspace integration is explicit and deterministic: prefer `4h`, then `2h`, then the reference timeframe if the higher structural anchors are not requested. This is selection of the canonical context anchor, not an MTF vote.
+
 ## Knowledge boundary
 
-The planned decision-time boundary is the reference `target_as_of` used by the workspace. Every projected fact must satisfy:
+The decision-time boundary is the reference `target_as_of` used by the workspace. Every eligible projected fact must satisfy:
 
 ```text
 fact.available_at <= snapshot.as_of
 ```
 
-Projection creation records `available_at`; Step 5 builder integration will apply the common workspace decision boundary before context construction. Zone Intelligence already refuses future projected reaction/liquidity facts and future S/R snapshots. `KnowledgeBoundary` now provides the explicit diagnostic contract for excluded future facts.
+Projection creation records `available_at`; `context.builder` now enforces the common workspace decision boundary before Zone Intelligence/context construction. `KnowledgeBoundary` records facts excluded for future availability rather than treating them as neutral.
 
 ## Package boundary
 
@@ -307,7 +351,7 @@ Rules:
 
 - `context.*` must not import `market_workspace`.
 - `context.*` must not import UI modules.
-- `context.permissions` must not import native engines.
+- `context.permissions` and `context.builder` must not import native engines.
 - Existing targeting deduplication and semantic-targeting roles are reused rather than duplicated.
 - Native engine files remain unchanged during the foundation phases.
 
@@ -316,9 +360,9 @@ Rules:
 1. Contracts + Lineage — complete.
 2. All Domain Projections — complete.
 3. Zone Intelligence — complete.
-4. Cross-Domain Context + Permission — current step.
-5. Builder + Workspace shadow integration.
-6. Replay + no-lookahead + golden scenarios + final freeze.
+4. Cross-Domain Context + Permission — complete.
+5. Builder + Workspace shadow integration — complete pending final CI validation.
+6. Replay + no-lookahead + golden scenarios + final freeze — next.
 
 ## Deferred
 
