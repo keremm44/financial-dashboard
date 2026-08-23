@@ -1,8 +1,8 @@
 """Authority-preserving cross-domain context contracts.
 
 The package is read-only with respect to native domain engines. It exposes common
-fact references, causal/correlation metadata, and thin domain read projections;
-BUY/SELL and action authority are intentionally outside this package.
+fact references, causal/correlation metadata, thin domain read projections, and
+qualified location views; BUY/SELL and action authority remain outside this package.
 """
 
 from .envelope import (
@@ -39,6 +39,26 @@ from .projections import (
     project_structural_facts,
     project_volatility,
 )
+from .zone_interaction import (
+    ZoneInteractionEvent,
+    ZoneInteractionState,
+    classify_zone_interaction,
+    interval_distance,
+    price_position,
+    transition_event,
+)
+from .zones import (
+    QualifiedZone,
+    QualifiedZoneSide,
+    StructuralZoneRef,
+    ZoneAnchorKind,
+    ZoneFreshness,
+    ZoneIntelligenceConfig,
+    ZoneIntelligenceSnapshot,
+    ZoneQualification,
+    ZoneRelevance,
+    build_zone_intelligence,
+)
 
 __all__ = [
     "CausalFamily",
@@ -50,16 +70,31 @@ __all__ = [
     "LiquidityProjection",
     "ParticipationProjection",
     "PatternProjection",
+    "QualifiedZone",
+    "QualifiedZoneSide",
     "ReactionEvidenceProjection",
     "SourceFamily",
     "StabilSupportProjection",
     "StructuralFactsProjection",
+    "StructuralZoneRef",
     "VolatilityProjection",
+    "ZoneAnchorKind",
+    "ZoneFreshness",
+    "ZoneIntelligenceConfig",
+    "ZoneIntelligenceSnapshot",
+    "ZoneInteractionEvent",
+    "ZoneInteractionState",
+    "ZoneQualification",
+    "ZoneRelevance",
     "build_lineage_groups",
+    "build_zone_intelligence",
+    "classify_zone_interaction",
     "families_for",
+    "interval_distance",
     "known_independent_origin_count",
     "lineage_id_from_origin_event",
     "normalize_context_data_quality",
+    "price_position",
     "project_ham",
     "project_liquidity",
     "project_participation",
@@ -68,5 +103,6 @@ __all__ = [
     "project_stabil_support",
     "project_structural_facts",
     "project_volatility",
+    "transition_event",
     "unknown_lineage_refs",
 ]
