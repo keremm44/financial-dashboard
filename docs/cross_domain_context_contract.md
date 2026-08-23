@@ -88,6 +88,49 @@ Additional P2 rules:
 - Pattern, Volume, Volatility and HAM facts are observations/context, not independent votes.
 - Projection contracts are immutable/frozen data only; they do not calculate BUY/SELL, permission, continuation, reaction, or reversal states.
 
+## P3 Zone Intelligence contract
+
+`context.zones` creates a derived **qualified location view**. It does not rewrite S/R, Market Structure, Stabil Support, OB/FVG/Engulfing, or Liquidity native state.
+
+Anchor policy:
+
+- Native S/R zones are preferred geometry anchors and retain their own range-quality fields.
+- Protected High/Low may attach as structural significance; when no nearby S/R geometry exists they may remain point anchors.
+- Stabil Support may attach as daily support-lifecycle context or remain a standalone support anchor.
+- Order Block and FVG are reaction contributors only.
+- Engulfing is confirmation-only and never becomes persistent zone geometry.
+- Liquidity is an objective overlay only and never contributes to zone quality.
+
+Zone axes remain separate:
+
+```text
+Intrinsic S/R Quality
+Structural Significance
+Stabil Support Context
+Reaction Contributors
+Interaction Confirmation
+Objective Overlay
+Freshness
+Relevance
+Interaction State
+Semantic Qualification
+MTF Parent/Child Relation
+```
+
+`MODERATE/HIGH/VERY_HIGH` is a semantic gate, not a score or probability. The current implementation deliberately avoids numeric cross-domain weighting. Exact semantic calibration remains replay-reviewable.
+
+The public location queries are distinct:
+
+```text
+nearest_qualified_support / resistance
+strongest_relevant_support / resistance
+htf_primary_support / resistance
+```
+
+`nearest` is not treated as `strongest`, and MTF overlap is represented as parent/child hierarchy rather than multiple votes.
+
+`context.zone_interaction` derives replay-safe states such as `APPROACHING`, `TESTING`, `DEFENDED`, `WEAKENING`, `BEING_CONSUMED`, `ACCEPTED_THROUGH`, and `RECLAIMED`. Native lifecycle is observed, not duplicated or overwritten.
+
 ## Knowledge boundary
 
 The planned decision-time boundary is the reference `target_as_of` used by the workspace. Every projected fact must satisfy:
@@ -96,7 +139,7 @@ The planned decision-time boundary is the reference `target_as_of` used by the w
 fact.available_at <= snapshot.as_of
 ```
 
-Projection creation records `available_at`; eligibility filtering is enforced later by `context.builder`. Facts excluded by this rule must be reported through a `KnowledgeBoundary` diagnostic rather than silently treated as neutral.
+Projection creation records `available_at`; eligibility filtering is enforced later by `context.builder`. Zone Intelligence already refuses future projected reaction/liquidity facts and future S/R snapshots. Facts excluded by this rule must eventually be reported through a `KnowledgeBoundary` diagnostic rather than silently treated as neutral.
 
 ## Package boundary
 
@@ -146,9 +189,9 @@ Rules:
 
 ## Six-step implementation order
 
-1. Contracts + Lineage — complete in Step 1.
-2. All Domain Projections — this step.
-3. Zone Intelligence.
+1. Contracts + Lineage — complete.
+2. All Domain Projections — complete.
+3. Zone Intelligence — current step.
 4. Cross-Domain Context + Permission.
 5. Builder + Workspace shadow integration.
 6. Replay + no-lookahead + golden scenarios + final freeze.
