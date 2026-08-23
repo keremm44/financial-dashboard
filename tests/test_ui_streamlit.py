@@ -8,25 +8,9 @@ from _ui_test_data import make_ui_store
 
 
 APP_PATH = Path(__file__).parents[1] / "src" / "financial_dashboard" / "ui" / "app.py"
-STABIL_PAGE_PATH = (
-    Path(__file__).parents[1]
-    / "src"
-    / "financial_dashboard"
-    / "ui"
-    / "pages"
-    / "2_Stabil_Support.py"
-)
-VOLATILITY_PAGE_PATH = (
-    Path(__file__).parents[1]
-    / "src"
-    / "financial_dashboard"
-    / "ui"
-    / "pages"
-    / "3_Volatility.py"
-)
 
 
-def test_streamlit_app_smoke_renders_workspace_without_decision_actions(
+def test_streamlit_app_smoke_renders_cross_domain_without_action_layer(
     tmp_path, monkeypatch
 ) -> None:
     make_ui_store(tmp_path)
@@ -35,180 +19,88 @@ def test_streamlit_app_smoke_renders_workspace_without_decision_actions(
     app = AppTest.from_file(str(APP_PATH), default_timeout=120).run()
 
     assert not app.exception
-    assert [title.value for title in app.title] == [
-        "Financial Dashboard · Market Analysis Workspace"
-    ]
-    assert [metric.label for metric in app.metric] == [
-        "MTF pressure",
-        "Recovery evidence",
-        "Up structure",
-        "Down structure",
-        "Location",
-        "Observer state",
-    ]
-    assert app.metric[-1].value == "DOMAINS_REPORTED"
-    assert {tab.label for tab in app.tabs} >= {
-        "Genel görünüm",
-        "Grafik",
-        "Market Structure",
-        "Zones & location",
-        "Ham evidence",
-        "Volume Participation",
-        "Targeting",
-        "Diagnostics",
-    }
+    assert [title.value for title in app.title] == ["Financial Dashboard"]
 
-    overview_tab = next(tab for tab in app.tabs if tab.label == "Genel görünüm")
-    assert len(overview_tab.dataframe) >= 2
-    domain_health = overview_tab.dataframe[0].value
-    assert tuple(domain_health["Domain"]) == (
-        "Observer foundation",
-        "Ham evidence",
-        "Volume Participation",
-        "Stabil Support Lifecycle",
-        "Volatility / Bands / Fib",
-        "Liquidity",
-        "Order Block",
-        "FVG / Engulfing",
+    metric_labels = [metric.label for metric in app.metric]
+    for label in (
+        "Main thesis",
+        "Reaction",
+        "Reversal",
+        "Objective",
+        "Conflict",
+        "Gate",
+        "Permission scope",
+        "Permitted side",
+        "Continuation",
+    ):
+        assert label in metric_labels
+
+    tab_labels = {tab.label for tab in app.tabs}
+    assert {
+        "Context axes",
+        "Qualified zones",
+        "Permission",
+        "Knowledge boundary",
+        "Market",
+        "Evidence",
+        "Diagnostics",
+        "Chart",
+        "Market Structure",
+        "Zones",
         "Targeting",
-    )
+        "Volume",
+        "HAM",
+        "MTF foundation",
+    }.issubset(tab_labels)
+
+    diagnostics_tab = next(tab for tab in app.tabs if tab.label == "Diagnostics")
+    assert diagnostics_tab.dataframe
+    domain_health = diagnostics_tab.dataframe[0].value
+    assert tuple(domain_health["Domain"])[-1] == "Cross-Domain Context"
     assert set(domain_health["Status"]) == {"READY"}
 
-    confluence_toggle = next(
-        checkbox for checkbox in app.checkbox if checkbox.label == "Confluence"
-    )
-    conflict_toggle = next(
-        checkbox for checkbox in app.checkbox if checkbox.label == "Opposing conflicts"
-    )
-    nearest_targets = next(
-        checkbox for checkbox in app.checkbox if checkbox.label == "Nearest targets"
-    )
-    all_target_clusters = next(
-        checkbox for checkbox in app.checkbox if checkbox.label == "All target clusters"
-    )
-    assert not confluence_toggle.value
-    assert not conflict_toggle.value
-    assert nearest_targets.value
-    assert not all_target_clusters.value
+    context_tab = next(tab for tab in app.tabs if tab.label == "Context axes")
+    context_frame = context_tab.dataframe[0].value
+    assert "Structural thesis" in set(context_frame["Axis"])
+    assert "Reaction" in set(context_frame["Axis"])
+    assert "Reversal" in set(context_frame["Axis"])
 
-    targeting_tab = next(tab for tab in app.tabs if tab.label == "Targeting")
-    assert not targeting_tab.metric
-    assert not targeting_tab.button
-    assert targeting_tab.json
+    permission_tab = next(tab for tab in app.tabs if tab.label == "Permission")
+    permission_frame = permission_tab.dataframe[0].value
+    assert set(permission_frame["Field"]) >= {"Scope", "Permitted side", "Gate"}
+    assert "BUY" not in " ".join(permission_frame["Value"].astype(str)).upper()
+    assert "SELL" not in " ".join(permission_frame["Value"].astype(str)).upper()
 
-    ham_tab = next(tab for tab in app.tabs if tab.label == "Ham evidence")
-    assert not ham_tab.metric
-    assert not ham_tab.button
-    assert len(ham_tab.dataframe) == 3
-    assert len(ham_tab.dataframe[0].value) == 5
-    assert len(ham_tab.dataframe[1].value) == 10
-    assert len(ham_tab.dataframe[2].value) == 100
-    assert "Source warnings" in ham_tab.dataframe[0].value.columns
-    assert "Final confidence" not in ham_tab.dataframe[0].value.columns
-
-    volume_tab = next(tab for tab in app.tabs if tab.label == "Volume Participation")
-    assert not volume_tab.metric
-    assert not volume_tab.button
-    assert len(volume_tab.dataframe) == 8
-    assert len(volume_tab.dataframe[0].value) == 5
-    assert len(volume_tab.dataframe[1].value) == 40
-    assert len(volume_tab.dataframe[5].value) == 100
-    assert not volume_tab.dataframe[0].value["Raw volume summed"].any()
-    assert not volume_tab.dataframe[1].value["Lower-TF confirms target"].any()
-    assert volume_tab.dataframe[7].value.iloc[0]["Independent vote cap"] == 1
-    assert "Action" not in volume_tab.dataframe[0].value.columns
-    assert "Recommendation" not in volume_tab.dataframe[1].value.columns
-
-    rendered_text = " ".join(warning.value for warning in app.warning).lower()
-    assert "al/sat" in rendered_text
-    assert "öneri" in rendered_text
-    assert "take-profit" in rendered_text
-
-    all_history = next(
-        checkbox for checkbox in ham_tab.checkbox if checkbox.label == "Tüm geçmiş"
-    )
-    app = all_history.check().run(timeout=120)
-    assert not app.exception
-    ham_tab = next(tab for tab in app.tabs if tab.label == "Ham evidence")
-    assert len(ham_tab.dataframe[2].value) == 160
-    assert any("160 / 160" in caption.value for caption in ham_tab.caption)
-
-    volume_tab = next(tab for tab in app.tabs if tab.label == "Volume Participation")
-    all_volume_history = next(
-        checkbox
-        for checkbox in volume_tab.checkbox
-        if checkbox.label == "Tüm Volume geçmişi"
-    )
-    app = all_volume_history.check().run(timeout=120)
-    assert not app.exception
-    volume_tab = next(tab for tab in app.tabs if tab.label == "Volume Participation")
-    assert len(volume_tab.dataframe[5].value) == 160
-    assert any("160 / 160" in caption.value for caption in volume_tab.caption)
-
-
-def test_stabil_support_page_renders_typed_lifecycle_without_trading_authority(
-    tmp_path, monkeypatch
-) -> None:
-    make_ui_store(tmp_path)
-    monkeypatch.setenv("FINANCIAL_DASHBOARD_CACHE", str(tmp_path))
-
-    app = AppTest.from_file(str(STABIL_PAGE_PATH), default_timeout=120).run()
-
-    assert not app.exception
-    assert [title.value for title in app.title] == [
-        "Stabil · Günlük Yapısal Destek Yaşam Döngüsü"
-    ]
-    labels = [metric.label for metric in app.metric]
-    assert labels == [
-        "Durum",
-        "Günlük destek",
-        "Mesafe %",
-        "Mesafe ATR",
-        "Altında bar",
-        "Progression",
-    ]
-    assert {tab.label for tab in app.tabs} == {
-        "Lifecycle timeline",
-        "Event ledger",
-        "Breach / reclaim",
-        "Test / hold",
-        "Rebase",
-        "Provenance",
+    knowledge_tab = next(tab for tab in app.tabs if tab.label == "Knowledge boundary")
+    knowledge_frame = knowledge_tab.dataframe[0].value
+    assert set(knowledge_frame["Boundary"]) >= {
+        "as_of",
+        "eligible facts",
+        "future facts excluded",
+        "unconfirmed facts",
     }
+
+    confluence = next(item for item in app.checkbox if item.label == "Confluence")
+    conflicts = next(item for item in app.checkbox if item.label == "Conflicts")
+    targets = next(item for item in app.checkbox if item.label == "Targets")
+    assert not confluence.value
+    assert not conflicts.value
+    assert targets.value
+
     rendered = " ".join(
         [caption.value for caption in app.caption]
-        + [warning.value for warning in app.warning]
-        + [info.value for info in app.info]
+        + [markdown.value for markdown in app.markdown]
     ).lower()
-    assert "ana trend dönüşü" in rendered
-    assert "7–8" in rendered or "7-8" in rendered
-    assert "al/sat" in rendered
-    assert not app.button
+    assert "buy/sell" in rendered
+    assert "action layer" in rendered
+    assert "position sizing" in rendered
 
 
-def test_volatility_page_renders_early_and_confirmed_tracks_without_trading_authority(
-    tmp_path, monkeypatch
-) -> None:
-    make_ui_store(tmp_path)
-    monkeypatch.setenv("FINANCIAL_DASHBOARD_CACHE", str(tmp_path))
-
-    app = AppTest.from_file(str(VOLATILITY_PAGE_PATH), default_timeout=120).run()
-
-    assert not app.exception
-    assert [title.value for title in app.title] == ["Volatility · Direction Transition"]
-    assert len(app.dataframe) >= 1
-    latest = app.dataframe[0].value
-    assert set(latest["Timeframe"]) == {"1d", "4h", "2h"}
-    assert {"Early", "Confirmed state", "Fib state", "Coherence"}.issubset(latest.columns)
-    rendered = " ".join(
-        [caption.value for caption in app.caption]
-        + [warning.value for warning in app.warning]
-        + [info.value for info in app.info]
-    ).lower()
-    assert "early_up" in rendered
-    assert "fib" in rendered
-    assert "al/sat" in rendered
-    assert not app.button
+def test_removed_debug_pages_are_not_part_of_default_streamlit_navigation() -> None:
+    pages = APP_PATH.parent / "pages"
+    assert not (pages / "1_Target_Replay.py").exists()
+    assert not (pages / "2_Stabil_Support.py").exists()
+    assert not (pages / "3_Volatility.py").exists()
 
 
 def test_streamlit_app_explains_empty_cache_instead_of_failing(
@@ -219,4 +111,4 @@ def test_streamlit_app_explains_empty_cache_instead_of_failing(
     app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
 
     assert not app.exception
-    assert any("Parquet" in info.value for info in app.info)
+    assert any("cache" in info.value.lower() for info in app.info)
