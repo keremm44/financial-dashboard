@@ -1,11 +1,27 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
 
 from .schema import CANONICAL_COLUMNS, canonicalize_ohlcv
+
+
+@lru_cache(maxsize=64)
+def _read_parquet_cached(path_text: str, size: int, mtime_ns: int) -> pd.DataFrame:
+    """Read and normalize one immutable parquet snapshot.
+
+    ``size`` and ``mtime_ns`` are part of the cache key so a rewritten cache file
+    automatically produces a new entry without requiring explicit invalidation.
+    Callers receive a defensive copy from :meth:`ParquetOHLCVStore.load`.
+    """
+
+    del size, mtime_ns
+    frame = pd.read_parquet(path_text)
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="raise")
+    return frame.sort_values("timestamp", kind="stable").reset_index(drop=True)
 
 
 class ParquetOHLCVStore:
@@ -27,9 +43,9 @@ class ParquetOHLCVStore:
         path = self.path_for(symbol, timeframe)
         if not path.exists():
             return pd.DataFrame(columns=CANONICAL_COLUMNS)
-        frame = pd.read_parquet(path)
-        frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="raise")
-        return frame.sort_values("timestamp", kind="stable").reset_index(drop=True)
+        stat = path.stat()
+        frame = _read_parquet_cached(str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+        return frame.copy(deep=True)
 
     def merge_and_save(self, frame: pd.DataFrame, *, symbol: str, timeframe: str, source: str) -> pd.DataFrame:
         incoming = canonicalize_ohlcv(frame, symbol=symbol, timeframe=timeframe, source=source)
