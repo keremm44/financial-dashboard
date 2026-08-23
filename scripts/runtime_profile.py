@@ -23,8 +23,12 @@ def main() -> None:
     )
 
     print(f"TOTAL\t{result.total_seconds:.4f}s")
+    for timeframe in result.workspace.timeframes:
+        replay = result.workspace.observer.structure_location.replay_for(timeframe)
+        print(f"BARS:{timeframe}\t{len(replay.input_batch.frame)}")
     for item in result.stages:
         print(f"{item.stage}\t{item.seconds:.4f}s\t{item.calls} call(s)")
+    print("NOTE\tstage timings are inclusive when one profiled stage calls another")
     print("RUNTIME_PROFILE_OK")
 
 
