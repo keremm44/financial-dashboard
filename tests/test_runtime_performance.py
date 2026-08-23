@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
 from streamlit.testing.v1 import AppTest
 
 from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES
 from financial_dashboard.data.analysis_inputs import load_analysis_inputs
+from financial_dashboard.market_workspace import analysis_snapshots_share_all_timeframes
 from financial_dashboard.runtime_profile import profile_market_workspace_from_cache
 from financial_dashboard.structure_location_replay import CausalBarClock
 from financial_dashboard.targeting.causal_inputs import clip_analysis_inputs_at_cutoff
@@ -36,6 +38,30 @@ def test_causal_clip_reuses_timeframe_snapshot_when_every_bar_is_available(tmp_p
             clipped.for_timeframe(timeframe).input_batch
             is inputs.for_timeframe(timeframe).input_batch
         )
+    assert analysis_snapshots_share_all_timeframes(
+        clipped,
+        inputs,
+        timeframes=ANALYSIS_TIMEFRAMES,
+    )
+
+
+def test_structure_reuse_gate_fails_closed_when_any_timeframe_is_clipped(tmp_path) -> None:
+    store = make_ui_store(tmp_path)
+    inputs = load_analysis_inputs(store, symbol="THYAO", timeframes=ANALYSIS_TIMEFRAMES)
+    clock = CausalBarClock()
+    cutoff = pd.Timestamp("2026-01-03T00:00:00Z")
+
+    clipped = clip_analysis_inputs_at_cutoff(inputs, cutoff=cutoff, clock=clock)
+
+    assert any(
+        clipped.for_timeframe(timeframe) is not inputs.for_timeframe(timeframe)
+        for timeframe in ANALYSIS_TIMEFRAMES
+    )
+    assert not analysis_snapshots_share_all_timeframes(
+        clipped,
+        inputs,
+        timeframes=ANALYSIS_TIMEFRAMES,
+    )
 
 
 def test_runtime_profiler_reports_real_workspace_stages(tmp_path) -> None:
@@ -54,7 +80,7 @@ def test_runtime_profiler_reports_real_workspace_stages(tmp_path) -> None:
     assert stages["observer"].calls == 1
     assert stages["ham"].calls == 1
     assert stages["volume"].calls == 1
-    assert stages["structure_location"].calls >= 2
+    assert stages["structure_location"].calls >= 1
     assert stages["cross_domain"].calls == 1
 
 
