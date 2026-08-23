@@ -211,6 +211,8 @@ def _rma(values: list[float], length: int) -> list[float | None]:
 
 
 def _rolling_relative(values: list[float], length: int) -> list[float | None]:
+    """Reference batch implementation kept for parity tests and audit."""
+
     out: list[float | None] = []
     for end in range(1, len(values) + 1):
         average = _sma(values[:end], length)
@@ -269,12 +271,107 @@ class VolumeParticipationEngine(BaseEngine):
         self._metrics_history: list[VolumeParticipationMetrics] = []
         self._snapshot: EngineResult | None = None
         self.export_contract = ParticipationExport()
+        self._reset_runtime_series()
+
+    def _reset_runtime_series(self) -> None:
+        self._open_values: list[float] = []
+        self._high_values: list[float] = []
+        self._low_values: list[float] = []
+        self._close_values: list[float] = []
+        self._volume_values: list[float] = []
+        self._traded_values: list[float] = []
+        self._true_range_values: list[float] = []
+        self._atr_values: list[float | None] = []
+        self._volume_ema_values: list[float] = []
+        self._capital_ema_values: list[float] = []
+        self._rvol_values: list[float | None] = []
+        self._rtv_values: list[float | None] = []
+        self._nonzero_volume_flags: list[float] = []
+        self._close_locations: list[float] = []
+        self._signed_traded_values: list[float] = []
+        self._up_volume_values: list[float] = []
+        self._down_volume_values: list[float] = []
+        self._up_capital_values: list[float] = []
+        self._down_capital_values: list[float] = []
+        self._higher_close_flags: list[float] = []
+        self._lower_close_flags: list[float] = []
 
     def _reset(self) -> None:
         self._rows = []
         self._metrics_history = []
         self._snapshot = None
         self.export_contract = ParticipationExport()
+        self._reset_runtime_series()
+
+    @staticmethod
+    def _append_ema(history: list[float], value: float, length: int) -> None:
+        if not history:
+            history.append(value)
+            return
+        alpha = 2.0 / (length + 1.0)
+        history.append(alpha * value + (1.0 - alpha) * history[-1])
+
+    @staticmethod
+    def _append_relative(history: list[float | None], values: list[float], length: int) -> None:
+        average = _sma(values, length)
+        history.append(_safe_div(values[-1], average) if average else None)
+
+    def _append_runtime_series(self, row: dict[str, Any]) -> None:
+        open_ = float(row["open"])
+        high = float(row["high"])
+        low = float(row["low"])
+        close = float(row["close"])
+        volume = float(row["volume"])
+        previous_close = self._close_values[-1] if self._close_values else None
+
+        self._open_values.append(open_)
+        self._high_values.append(high)
+        self._low_values.append(low)
+        self._close_values.append(close)
+        self._volume_values.append(volume)
+
+        traded_value = volume * ((high + low + close) / 3.0)
+        self._traded_values.append(traded_value)
+
+        tr = high - low
+        if previous_close is not None:
+            tr = max(tr, abs(high - previous_close), abs(low - previous_close))
+        self._true_range_values.append(tr)
+
+        atr_length = self.config.atr_length
+        count = len(self._true_range_values)
+        if count < atr_length:
+            atr = None
+        elif count == atr_length:
+            atr = sum(self._true_range_values[:atr_length]) / atr_length
+        else:
+            previous_atr = self._atr_values[-1]
+            if previous_atr is None:
+                atr = sum(self._true_range_values[-atr_length:]) / atr_length
+            else:
+                atr = (previous_atr * (atr_length - 1) + tr) / atr_length
+        self._atr_values.append(atr)
+
+        self._append_ema(self._volume_ema_values, volume, self.config.volume_short_length)
+        self._append_ema(self._capital_ema_values, traded_value, self.config.volume_short_length)
+        self._append_relative(self._rvol_values, self._volume_values, self.config.volume_average_length)
+        self._append_relative(self._rtv_values, self._traded_values, self.config.volume_average_length)
+        self._nonzero_volume_flags.append(1.0 if volume > 0.0 else 0.0)
+
+        close_location = _safe_div(close - low, high - low, 0.5)
+        self._close_locations.append(close_location)
+        self._signed_traded_values.append(
+            traded_value * _clamp(close_location * 2.0 - 1.0, -1.0, 1.0)
+        )
+
+        up = previous_close is not None and close > previous_close
+        down = previous_close is not None and close < previous_close
+        self._up_volume_values.append(volume if up else 0.0)
+        self._down_volume_values.append(volume if down else 0.0)
+        self._up_capital_values.append(traded_value if up else 0.0)
+        self._down_capital_values.append(traded_value if down else 0.0)
+        self._higher_close_flags.append(1.0 if up else 0.0)
+        self._lower_close_flags.append(1.0 if down else 0.0)
 
     def _calculate(self) -> VolumeParticipationMetrics:
         c = self.config
@@ -282,20 +379,18 @@ class VolumeParticipationEngine(BaseEngine):
         if not n:
             return VolumeParticipationMetrics()
 
-        opens = [float(row["open"]) for row in self._rows]
-        highs = [float(row["high"]) for row in self._rows]
-        lows = [float(row["low"]) for row in self._rows]
-        closes = [float(row["close"]) for row in self._rows]
-        volumes = [float(row["volume"]) for row in self._rows]
-        traded_values = [volumes[i] * ((highs[i] + lows[i] + closes[i]) / 3.0) for i in range(n)]
+        opens = self._open_values
+        highs = self._high_values
+        lows = self._low_values
+        closes = self._close_values
+        volumes = self._volume_values
+        traded_values = self._traded_values
+        atr_series = self._atr_values
+        volume_ema = self._volume_ema_values
+        capital_ema = self._capital_ema_values
+        rvol_series = self._rvol_values
+        rtv_series = self._rtv_values
 
-        true_ranges = []
-        for i in range(n):
-            if i == 0:
-                true_ranges.append(highs[i] - lows[i])
-            else:
-                true_ranges.append(max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1])))
-        atr_series = _rma(true_ranges, c.atr_length)
         atr = atr_series[-1]
         prior_atr = atr_series[-2] if n > 1 else None
 
@@ -303,31 +398,76 @@ class VolumeParticipationEngine(BaseEngine):
         volume_long_average = _sma(volumes, c.volume_long_length)
         volume_std = _population_std(volumes, c.volume_long_length)
         volume_percentile = _percent_rank(volumes, c.percentile_length)
-        volume_ema = _ema_series(volumes, c.volume_short_length)
-        volume_slope = None if not volume_average or len(volume_ema) <= c.slope_lookback else _safe_div(volume_ema[-1] - volume_ema[-1 - c.slope_lookback], volume_average)
-        nonzero_share = _sma([1.0 if value > 0.0 else 0.0 for value in volumes], c.volume_average_length)
-        volume_usable = bool(volume_average and volume_average > 0.0 and nonzero_share is not None and nonzero_share >= c.minimum_nonzero_volume_share)
+        volume_slope = (
+            None
+            if not volume_average or len(volume_ema) <= c.slope_lookback
+            else _safe_div(volume_ema[-1] - volume_ema[-1 - c.slope_lookback], volume_average)
+        )
+        nonzero_share = _sma(self._nonzero_volume_flags, c.volume_average_length)
+        volume_usable = bool(
+            volume_average
+            and volume_average > 0.0
+            and nonzero_share is not None
+            and nonzero_share >= c.minimum_nonzero_volume_share
+        )
 
         capital_average = _sma(traded_values, c.volume_average_length)
         capital_long_average = _sma(traded_values, c.volume_long_length)
         capital_std = _population_std(traded_values, c.volume_long_length)
         capital_percentile = _percent_rank(traded_values, c.percentile_length)
-        capital_ema = _ema_series(traded_values, c.volume_short_length)
-        capital_slope = None if not capital_average or len(capital_ema) <= c.slope_lookback else _safe_div(capital_ema[-1] - capital_ema[-1 - c.slope_lookback], capital_average)
-        capital_usable = bool(volume_usable and capital_average and capital_average > 0.0 and capital_long_average and capital_long_average > 0.0)
+        capital_slope = (
+            None
+            if not capital_average or len(capital_ema) <= c.slope_lookback
+            else _safe_div(capital_ema[-1] - capital_ema[-1 - c.slope_lookback], capital_average)
+        )
+        capital_usable = bool(
+            volume_usable
+            and capital_average
+            and capital_average > 0.0
+            and capital_long_average
+            and capital_long_average > 0.0
+        )
 
-        history_ready = n >= c.minimum_history and atr is not None and prior_atr is not None and n > c.progress_lookback
-        metrics_ready = all(value is not None for value in (volume_average, volume_long_average, volume_std, volume_percentile, volume_slope, capital_average, capital_long_average, capital_std, capital_percentile, capital_slope))
+        history_ready = (
+            n >= c.minimum_history
+            and atr is not None
+            and prior_atr is not None
+            and n > c.progress_lookback
+        )
+        metrics_ready = all(
+            value is not None
+            for value in (
+                volume_average,
+                volume_long_average,
+                volume_std,
+                volume_percentile,
+                volume_slope,
+                capital_average,
+                capital_long_average,
+                capital_std,
+                capital_percentile,
+                capital_slope,
+            )
+        )
         data_ready = bool(history_ready and metrics_ready and volume_usable and capital_usable)
         if not data_ready:
-            return VolumeParticipationMetrics(volume_usable=volume_usable, capital_usable=capital_usable)
+            return VolumeParticipationMetrics(
+                volume_usable=volume_usable,
+                capital_usable=capital_usable,
+            )
 
-        assert volume_average is not None and volume_long_average is not None and volume_std is not None and volume_percentile is not None and volume_slope is not None
-        assert capital_average is not None and capital_long_average is not None and capital_std is not None and capital_percentile is not None and capital_slope is not None
+        assert volume_average is not None
+        assert volume_long_average is not None
+        assert volume_std is not None
+        assert volume_percentile is not None
+        assert volume_slope is not None
+        assert capital_average is not None
+        assert capital_long_average is not None
+        assert capital_std is not None
+        assert capital_percentile is not None
+        assert capital_slope is not None
         assert atr is not None and prior_atr is not None
 
-        rvol_series = _rolling_relative(volumes, c.volume_average_length)
-        rtv_series = _rolling_relative(traded_values, c.volume_average_length)
         rvol = rvol_series[-1] or 0.0
         rtv = rtv_series[-1] or 0.0
         volume_z = _safe_div(volumes[-1] - volume_long_average, volume_std) if volume_std > 1e-12 else 0.0
@@ -336,61 +476,117 @@ class VolumeParticipationEngine(BaseEngine):
         capital_short_long = _safe_div(capital_ema[-1], capital_long_average)
 
         volume_level = _classify_level(
-            rvol, volume_slope, volume_z, volume_percentile,
-            very_low=c.very_low_rvol, low=c.low_rvol, rising=c.rising_rvol, high=c.high_rvol, abnormal=c.abnormal_rvol,
-            high_z=c.high_volume_z, abnormal_z=c.abnormal_volume_z, high_percentile=c.high_percent_rank,
-            abnormal_percentile=c.abnormal_percent_rank, minimum_slope=c.minimum_volume_slope,
+            rvol,
+            volume_slope,
+            volume_z,
+            volume_percentile,
+            very_low=c.very_low_rvol,
+            low=c.low_rvol,
+            rising=c.rising_rvol,
+            high=c.high_rvol,
+            abnormal=c.abnormal_rvol,
+            high_z=c.high_volume_z,
+            abnormal_z=c.abnormal_volume_z,
+            high_percentile=c.high_percent_rank,
+            abnormal_percentile=c.abnormal_percent_rank,
+            minimum_slope=c.minimum_volume_slope,
         )
         capital_level = _classify_level(
-            rtv, capital_slope, capital_z, capital_percentile,
-            very_low=c.very_low_rtv, low=c.low_rtv, rising=c.rising_rtv, high=c.high_rtv, abnormal=c.abnormal_rtv,
-            high_z=c.high_capital_z, abnormal_z=c.abnormal_capital_z, high_percentile=c.high_percent_rank,
-            abnormal_percentile=c.abnormal_percent_rank, minimum_slope=c.minimum_capital_slope,
+            rtv,
+            capital_slope,
+            capital_z,
+            capital_percentile,
+            very_low=c.very_low_rtv,
+            low=c.low_rtv,
+            rising=c.rising_rtv,
+            high=c.high_rtv,
+            abnormal=c.abnormal_rtv,
+            high_z=c.high_capital_z,
+            abnormal_z=c.abnormal_capital_z,
+            high_percentile=c.high_percent_rank,
+            abnormal_percentile=c.abnormal_percent_rank,
+            minimum_slope=c.minimum_capital_slope,
         )
         volume_regime = _regime(volume_short_long, volume_slope, c.minimum_volume_slope)
         capital_regime = _regime(capital_short_long, capital_slope, c.minimum_capital_slope)
 
-        close_locations = [_safe_div(closes[i] - lows[i], highs[i] - lows[i], 0.5) for i in range(n)]
-        signed_traded_value = [traded_values[i] * _clamp(close_locations[i] * 2.0 - 1.0, -1.0, 1.0) for i in range(n)]
-        up_volume = [volumes[i] if i > 0 and closes[i] > closes[i - 1] else 0.0 for i in range(n)]
-        down_volume = [volumes[i] if i > 0 and closes[i] < closes[i - 1] else 0.0 for i in range(n)]
-        up_capital = [traded_values[i] if i > 0 and closes[i] > closes[i - 1] else 0.0 for i in range(n)]
-        down_capital = [traded_values[i] if i > 0 and closes[i] < closes[i - 1] else 0.0 for i in range(n)]
-
         volume5 = _sma(volumes, c.flow_short_length) or 0.0
         capital5 = _sma(traded_values, c.flow_short_length) or 0.0
         capital10 = _sma(traded_values, c.flow_medium_length) or 0.0
-        up_volume_share5 = _safe_div(_sma(up_volume, c.flow_short_length) or 0.0, volume5, 0.50)
-        down_volume_share5 = _safe_div(_sma(down_volume, c.flow_short_length) or 0.0, volume5, 0.50)
-        up_capital_share10 = _safe_div(_sma(up_capital, c.flow_medium_length) or 0.0, capital10, 0.50)
-        down_capital_share10 = _safe_div(_sma(down_capital, c.flow_medium_length) or 0.0, capital10, 0.50)
-        pressure5 = _clamp(_safe_div(_sma(signed_traded_value, c.flow_short_length) or 0.0, capital5), -1.0, 1.0)
-        pressure10 = _clamp(_safe_div(_sma(signed_traded_value, c.flow_medium_length) or 0.0, capital10), -1.0, 1.0)
+        up_volume_share5 = _safe_div(
+            _sma(self._up_volume_values, c.flow_short_length) or 0.0,
+            volume5,
+            0.50,
+        )
+        down_volume_share5 = _safe_div(
+            _sma(self._down_volume_values, c.flow_short_length) or 0.0,
+            volume5,
+            0.50,
+        )
+        up_capital_share10 = _safe_div(
+            _sma(self._up_capital_values, c.flow_medium_length) or 0.0,
+            capital10,
+            0.50,
+        )
+        down_capital_share10 = _safe_div(
+            _sma(self._down_capital_values, c.flow_medium_length) or 0.0,
+            capital10,
+            0.50,
+        )
+        pressure5 = _clamp(
+            _safe_div(_sma(self._signed_traded_values, c.flow_short_length) or 0.0, capital5),
+            -1.0,
+            1.0,
+        )
+        pressure10 = _clamp(
+            _safe_div(_sma(self._signed_traded_values, c.flow_medium_length) or 0.0, capital10),
+            -1.0,
+            1.0,
+        )
 
-        recent_atrs = [value for value in atr_series[-c.progress_lookback:] if value is not None]
-        progress_atr_reference = sum(recent_atrs) / len(recent_atrs) if recent_atrs else prior_atr
+        recent_atrs = [value for value in atr_series[-c.progress_lookback :] if value is not None]
+        progress_atr_reference = (
+            sum(recent_atrs) / len(recent_atrs) if recent_atrs else prior_atr
+        )
         net_progress = closes[-1] - closes[-1 - c.progress_lookback]
         net_progress_atr = _safe_div(net_progress, progress_atr_reference)
-        absolute_path = sum(abs(closes[i] - closes[i - 1]) for i in range(n - c.progress_lookback, n))
+        absolute_path = sum(
+            abs(closes[i] - closes[i - 1])
+            for i in range(n - c.progress_lookback, n)
+        )
         path_distance_atr = _safe_div(absolute_path, progress_atr_reference)
-        directional_efficiency = _clamp(_safe_div(abs(net_progress), absolute_path), 0.0, 1.0)
+        directional_efficiency = _clamp(
+            _safe_div(abs(net_progress), absolute_path),
+            0.0,
+            1.0,
+        )
 
-        progress_rvol_values = [value for value in rvol_series[-c.progress_lookback:] if value is not None]
-        progress_rtv_values = [value for value in rtv_series[-c.progress_lookback:] if value is not None]
-        progress_rvol = sum(progress_rvol_values) / len(progress_rvol_values) if progress_rvol_values else rvol
-        progress_rtv = sum(progress_rtv_values) / len(progress_rtv_values) if progress_rtv_values else rtv
+        progress_rvol_values = [
+            value for value in rvol_series[-c.progress_lookback :] if value is not None
+        ]
+        progress_rtv_values = [
+            value for value in rtv_series[-c.progress_lookback :] if value is not None
+        ]
+        progress_rvol = (
+            sum(progress_rvol_values) / len(progress_rvol_values)
+            if progress_rvol_values
+            else rvol
+        )
+        progress_rtv = (
+            sum(progress_rtv_values) / len(progress_rtv_values)
+            if progress_rtv_values
+            else rtv
+        )
         volume_result_efficiency = _safe_div(abs(net_progress_atr), max(progress_rvol, 0.10))
         capital_result_efficiency = _safe_div(abs(net_progress_atr), max(progress_rtv, 0.10))
 
-        close_location = close_locations[-1]
+        close_location = self._close_locations[-1]
         total_range = highs[-1] - lows[-1]
         body_to_atr = _safe_div(abs(closes[-1] - opens[-1]), prior_atr)
         upper_wick_ratio = _safe_div(highs[-1] - max(opens[-1], closes[-1]), total_range)
         lower_wick_ratio = _safe_div(min(opens[-1], closes[-1]) - lows[-1], total_range)
-        higher_flags = [1.0 if i > 0 and closes[i] > closes[i - 1] else 0.0 for i in range(n)]
-        lower_flags = [1.0 if i > 0 and closes[i] < closes[i - 1] else 0.0 for i in range(n)]
-        higher_close_share = _sma(higher_flags, c.flow_short_length) or 0.0
-        lower_close_share = _sma(lower_flags, c.flow_short_length) or 0.0
+        higher_close_share = _sma(self._higher_close_flags, c.flow_short_length) or 0.0
+        lower_close_share = _sma(self._lower_close_flags, c.flow_short_length) or 0.0
 
         up_progress = net_progress_atr >= c.minimum_progress_atr
         down_progress = net_progress_atr <= -c.minimum_progress_atr
@@ -406,26 +602,105 @@ class VolumeParticipationEngine(BaseEngine):
         lower_persistence = lower_close_share >= c.minimum_directional_close_share
         positive_slope = net_progress > 0.0
         negative_slope = net_progress < 0.0
-        up_proxy = up_capital_share10 >= c.minimum_directional_share and pressure5 >= c.minimum_capital_pressure
-        down_proxy = down_capital_share10 >= c.minimum_directional_share and pressure5 <= -c.minimum_capital_pressure
+        up_proxy = (
+            up_capital_share10 >= c.minimum_directional_share
+            and pressure5 >= c.minimum_capital_pressure
+        )
+        down_proxy = (
+            down_capital_share10 >= c.minimum_directional_share
+            and pressure5 <= -c.minimum_capital_pressure
+        )
 
-        up_direction_group = net_progress_atr > 0.0 and (up_progress or higher_persistence) and positive_slope
-        down_direction_group = net_progress_atr < 0.0 and (down_progress or lower_persistence) and negative_slope
-        up_candle_group = up_close and (bullish or closes[-1] > closes[-2]) and (limited_upper or body_strong)
-        down_candle_group = down_close and (bearish or closes[-1] < closes[-2]) and (limited_lower or body_strong)
-        up_efficiency_group = efficiency_ok and (up_progress or path_distance_atr >= c.minimum_progress_atr)
-        down_efficiency_group = efficiency_ok and (down_progress or path_distance_atr >= c.minimum_progress_atr)
+        up_direction_group = (
+            net_progress_atr > 0.0
+            and (up_progress or higher_persistence)
+            and positive_slope
+        )
+        down_direction_group = (
+            net_progress_atr < 0.0
+            and (down_progress or lower_persistence)
+            and negative_slope
+        )
+        up_candle_group = (
+            up_close
+            and (bullish or closes[-1] > closes[-2])
+            and (limited_upper or body_strong)
+        )
+        down_candle_group = (
+            down_close
+            and (bearish or closes[-1] < closes[-2])
+            and (limited_lower or body_strong)
+        )
+        up_efficiency_group = efficiency_ok and (
+            up_progress or path_distance_atr >= c.minimum_progress_atr
+        )
+        down_efficiency_group = efficiency_ok and (
+            down_progress or path_distance_atr >= c.minimum_progress_atr
+        )
 
-        up_evidence = sum(bool(value) for value in (up_progress, efficiency_ok, up_close, bullish, body_strong, limited_upper, higher_persistence, positive_slope, up_proxy))
-        down_evidence = sum(bool(value) for value in (down_progress, efficiency_ok, down_close, bearish, body_strong, limited_lower, lower_persistence, negative_slope, down_proxy))
+        up_evidence = sum(
+            bool(value)
+            for value in (
+                up_progress,
+                efficiency_ok,
+                up_close,
+                bullish,
+                body_strong,
+                limited_upper,
+                higher_persistence,
+                positive_slope,
+                up_proxy,
+            )
+        )
+        down_evidence = sum(
+            bool(value)
+            for value in (
+                down_progress,
+                efficiency_ok,
+                down_close,
+                bearish,
+                body_strong,
+                limited_lower,
+                lower_persistence,
+                negative_slope,
+                down_proxy,
+            )
+        )
 
-        persistence_window = [value for value in rvol_series[-c.persistence_length:] if value is not None]
-        elevated_share = sum(1 for value in persistence_window if value >= c.rising_rvol) / max(len(persistence_window), 1)
-        volume_persistence = len(persistence_window) == c.persistence_length and elevated_share >= 0.60 and volume_slope >= -c.minimum_volume_slope
-        participation_magnitude_rising = volume_level in {VolumeLevel.RISING, VolumeLevel.HIGH, VolumeLevel.ABNORMAL} or volume_persistence
+        persistence_window = [
+            value for value in rvol_series[-c.persistence_length :] if value is not None
+        ]
+        elevated_share = sum(
+            1 for value in persistence_window if value >= c.rising_rvol
+        ) / max(len(persistence_window), 1)
+        volume_persistence = (
+            len(persistence_window) == c.persistence_length
+            and elevated_share >= 0.60
+            and volume_slope >= -c.minimum_volume_slope
+        )
+        participation_magnitude_rising = (
+            volume_level in {VolumeLevel.RISING, VolumeLevel.HIGH, VolumeLevel.ABNORMAL}
+            or volume_persistence
+        )
 
-        up_candidate = participation_magnitude_rising and up_direction_group and up_candle_group and up_efficiency_group and up_proxy and up_evidence >= c.participation_minimum_evidence and down_evidence < c.participation_minimum_evidence
-        down_candidate = participation_magnitude_rising and down_direction_group and down_candle_group and down_efficiency_group and down_proxy and down_evidence >= c.participation_minimum_evidence and up_evidence < c.participation_minimum_evidence
+        up_candidate = (
+            participation_magnitude_rising
+            and up_direction_group
+            and up_candle_group
+            and up_efficiency_group
+            and up_proxy
+            and up_evidence >= c.participation_minimum_evidence
+            and down_evidence < c.participation_minimum_evidence
+        )
+        down_candidate = (
+            participation_magnitude_rising
+            and down_direction_group
+            and down_candle_group
+            and down_efficiency_group
+            and down_proxy
+            and down_evidence >= c.participation_minimum_evidence
+            and up_evidence < c.participation_minimum_evidence
+        )
         if up_candidate and down_candidate:
             if up_evidence > down_evidence and net_progress_atr > 0.0:
                 down_candidate = False
@@ -435,24 +710,59 @@ class VolumeParticipationEngine(BaseEngine):
                 up_candidate = False
                 down_candidate = False
 
-        previous_candidates = self._metrics_history[-(c.participation_confirmation_bars - 1):] if c.participation_confirmation_bars > 1 else []
-        up_consecutive = up_candidate and len(previous_candidates) == c.participation_confirmation_bars - 1 and all(metrics.up_candidate for metrics in previous_candidates)
-        down_consecutive = down_candidate and len(previous_candidates) == c.participation_confirmation_bars - 1 and all(metrics.down_candidate for metrics in previous_candidates)
+        previous_candidates = (
+            self._metrics_history[-(c.participation_confirmation_bars - 1) :]
+            if c.participation_confirmation_bars > 1
+            else []
+        )
+        up_consecutive = (
+            up_candidate
+            and len(previous_candidates) == c.participation_confirmation_bars - 1
+            and all(metrics.up_candidate for metrics in previous_candidates)
+        )
+        down_consecutive = (
+            down_candidate
+            and len(previous_candidates) == c.participation_confirmation_bars - 1
+            and all(metrics.down_candidate for metrics in previous_candidates)
+        )
         strong_counter_down = bearish and body_strong and down_close
         strong_counter_up = bullish and body_strong and up_close
-        up_retention = net_progress_atr > 0.0 and directional_efficiency >= c.minimum_efficiency * 0.75 and rvol >= c.confirmation_minimum_rvol and rtv >= c.confirmation_minimum_rtv and close_location >= 0.50 and pressure5 >= -c.minimum_capital_pressure * 0.25 and not strong_counter_down
-        down_retention = net_progress_atr < 0.0 and directional_efficiency >= c.minimum_efficiency * 0.75 and rvol >= c.confirmation_minimum_rvol and rtv >= c.confirmation_minimum_rtv and close_location <= 0.50 and pressure5 <= c.minimum_capital_pressure * 0.25 and not strong_counter_up
+        up_retention = (
+            net_progress_atr > 0.0
+            and directional_efficiency >= c.minimum_efficiency * 0.75
+            and rvol >= c.confirmation_minimum_rvol
+            and rtv >= c.confirmation_minimum_rtv
+            and close_location >= 0.50
+            and pressure5 >= -c.minimum_capital_pressure * 0.25
+            and not strong_counter_down
+        )
+        down_retention = (
+            net_progress_atr < 0.0
+            and directional_efficiency >= c.minimum_efficiency * 0.75
+            and rvol >= c.confirmation_minimum_rvol
+            and rtv >= c.confirmation_minimum_rtv
+            and close_location <= 0.50
+            and pressure5 <= c.minimum_capital_pressure * 0.25
+            and not strong_counter_up
+        )
         up_confirmed = up_consecutive and up_retention
         down_confirmed = down_consecutive and down_retention
         if up_confirmed and down_confirmed:
             up_confirmed = False
             down_confirmed = False
 
-        result_weak = abs(net_progress_atr) <= c.weak_result_progress_limit or directional_efficiency <= c.weak_result_efficiency_limit
+        result_weak = (
+            abs(net_progress_atr) <= c.weak_result_progress_limit
+            or directional_efficiency <= c.weak_result_efficiency_limit
+        )
         effort_rising = progress_rvol >= c.rising_rvol
         effort_high = progress_rvol >= c.high_rvol
         effort_very_high = effort_high and progress_rtv >= c.high_rtv
-        strong_result = (up_direction_group and up_candle_group and up_efficiency_group) or (down_direction_group and down_candle_group and down_efficiency_group)
+        strong_result = (
+            up_direction_group and up_candle_group and up_efficiency_group
+        ) or (
+            down_direction_group and down_candle_group and down_efficiency_group
+        )
         if effort_very_high and result_weak:
             effort_class = EffortResultClass.VERY_HIGH_EFFORT_WEAK_RESULT
         elif effort_high and result_weak:
@@ -525,8 +835,17 @@ class VolumeParticipationEngine(BaseEngine):
             return 0.0, 0.0
         dominant = max(metrics.up_evidence_count, metrics.down_evidence_count)
         separation = abs(metrics.up_evidence_count - metrics.down_evidence_count)
-        quality = _clamp(dominant / 9.0 * 70.0 + separation / 9.0 * 30.0, 0.0, 100.0)
-        magnitude = _clamp(metrics.rvol / self.config.high_rvol * 70.0 + metrics.rtv / self.config.high_rtv * 20.0, 0.0, 100.0)
+        quality = _clamp(
+            dominant / 9.0 * 70.0 + separation / 9.0 * 30.0,
+            0.0,
+            100.0,
+        )
+        magnitude = _clamp(
+            metrics.rvol / self.config.high_rvol * 70.0
+            + metrics.rtv / self.config.high_rtv * 20.0,
+            0.0,
+            100.0,
+        )
         return quality, magnitude
 
     def update(self, bar: Any) -> EngineResult | None:
@@ -538,6 +857,7 @@ class VolumeParticipationEngine(BaseEngine):
             raise ValueError("volume participation engine requires complete OHLCV bars")
 
         self._rows.append(row)
+        self._append_runtime_series(row)
         metrics = self._calculate()
         self._metrics_history.append(metrics)
         state, direction = self._resolve(metrics)
