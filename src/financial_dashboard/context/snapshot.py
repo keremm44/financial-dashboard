@@ -1,10 +1,136 @@
-"""Cross-domain context snapshot contract.
+from __future__ import annotations
 
-Planned responsibility only:
-- immutable, single-as-of cross-domain context output
-- knowledge-boundary reporting
-- normalized projections, qualified zones, lineage groups, axes, conflicts
-- source references for explainability
+from dataclasses import dataclass
+from typing import Any, Iterable
 
-This snapshot is context, not an action signal.
-"""
+from .axes import ContextAxes
+from .envelope import FactRef
+from .lineage import LineageGroup
+from .zones import ZoneIntelligenceSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeBoundary:
+    """Explain which facts were knowable at one deterministic decision boundary."""
+
+    as_of: Any
+    eligible_fact_ids: tuple[str, ...]
+    excluded_future_fact_ids: tuple[str, ...]
+    unconfirmed_fact_ids: tuple[str, ...]
+    unsupported_contexts: tuple[str, ...] = ()
+
+    @property
+    def excluded_count(self) -> int:
+        return len(self.excluded_future_fact_ids)
+
+    @property
+    def has_future_leakage_candidates(self) -> bool:
+        return bool(self.excluded_future_fact_ids)
+
+
+@dataclass(frozen=True, slots=True)
+class CrossDomainContextSnapshot:
+    """Immutable single-as-of context output; explicitly not an action signal."""
+
+    symbol: str
+    as_of: Any
+    anchor_timeframe: str
+    current_price: float
+    axes: ContextAxes
+    zones: ZoneIntelligenceSnapshot
+    source_refs: tuple[FactRef, ...]
+    lineage_groups: tuple[LineageGroup, ...]
+    knowledge_boundary: KnowledgeBoundary
+
+    def __post_init__(self) -> None:
+        if not self.symbol.strip():
+            raise ValueError("symbol must be non-empty")
+        if self.as_of is None:
+            raise ValueError("as_of must be known")
+        if not self.anchor_timeframe.strip():
+            raise ValueError("anchor_timeframe must be non-empty")
+        if self.axes.anchor_timeframe != self.anchor_timeframe.strip().lower():
+            raise ValueError("axes anchor_timeframe must match snapshot anchor_timeframe")
+        if self.zones.symbol != self.symbol:
+            raise ValueError("zone snapshot symbol must match context snapshot symbol")
+        if self.zones.as_of != self.as_of:
+            raise ValueError("zone snapshot as_of must match context snapshot as_of")
+        for ref in self.source_refs:
+            if ref.symbol != self.symbol:
+                raise ValueError("all source refs must match context snapshot symbol")
+            if not ref.is_available_at(self.as_of):
+                raise ValueError("source_refs cannot contain facts unavailable at snapshot as_of")
+
+
+
+def evaluate_knowledge_boundary(
+    facts: Iterable[FactRef],
+    *,
+    as_of: Any,
+    unsupported_contexts: Iterable[str] = (),
+) -> KnowledgeBoundary:
+    if as_of is None:
+        raise ValueError("as_of must be known")
+    unique = {ref.deterministic_key: ref for ref in facts}
+    refs = tuple(sorted(unique.values(), key=lambda ref: ref.deterministic_key))
+    eligible = tuple(ref.native_id for ref in refs if ref.is_available_at(as_of))
+    future = tuple(ref.native_id for ref in refs if not ref.is_available_at(as_of))
+    unconfirmed = tuple(ref.native_id for ref in refs if ref.confirmed_at is None)
+    unsupported = tuple(sorted({str(item).strip() for item in unsupported_contexts if str(item).strip()}))
+    return KnowledgeBoundary(
+        as_of=as_of,
+        eligible_fact_ids=eligible,
+        excluded_future_fact_ids=future,
+        unconfirmed_fact_ids=unconfirmed,
+        unsupported_contexts=unsupported,
+    )
+
+
+def eligible_fact_refs(facts: Iterable[FactRef], *, as_of: Any) -> tuple[FactRef, ...]:
+    """Apply only the knowledge-time boundary; semantic authority stays elsewhere."""
+
+    if as_of is None:
+        raise ValueError("as_of must be known")
+    unique = {ref.deterministic_key: ref for ref in facts if ref.is_available_at(as_of)}
+    return tuple(sorted(unique.values(), key=lambda ref: ref.deterministic_key))
+
+
+def build_context_snapshot(
+    *,
+    symbol: str,
+    as_of: Any,
+    anchor_timeframe: str,
+    axes: ContextAxes,
+    zones: ZoneIntelligenceSnapshot,
+    all_fact_refs: Iterable[FactRef],
+    lineage_groups: Iterable[LineageGroup] = (),
+    unsupported_contexts: Iterable[str] = (),
+) -> CrossDomainContextSnapshot:
+    all_refs = tuple(all_fact_refs)
+    boundary = evaluate_knowledge_boundary(
+        all_refs,
+        as_of=as_of,
+        unsupported_contexts=unsupported_contexts,
+    )
+    eligible = eligible_fact_refs(all_refs, as_of=as_of)
+    groups = tuple(sorted(lineage_groups, key=lambda group: group.lineage_id))
+    return CrossDomainContextSnapshot(
+        symbol=symbol,
+        as_of=as_of,
+        anchor_timeframe=anchor_timeframe.strip().lower(),
+        current_price=float(zones.current_price),
+        axes=axes,
+        zones=zones,
+        source_refs=eligible,
+        lineage_groups=groups,
+        knowledge_boundary=boundary,
+    )
+
+
+__all__ = [
+    "CrossDomainContextSnapshot",
+    "KnowledgeBoundary",
+    "build_context_snapshot",
+    "eligible_fact_refs",
+    "evaluate_knowledge_boundary",
+]
