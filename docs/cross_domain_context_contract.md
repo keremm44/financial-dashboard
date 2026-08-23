@@ -37,6 +37,34 @@ Future Action Layer — out of scope
 11. Derived identifiers must be deterministic and replay-safe.
 12. Permission is not action: no BUY/SELL, entry/exit, sizing, SL/TP, or probability authority belongs in this layer.
 
+## P1 fact-reference contract
+
+`FactRef` is the common immutable identity/causality block embedded by later domain projections. It is composition, not a universal base class.
+
+Required semantics:
+
+- `native_id` identifies the native fact and is always required.
+- `lineage_id` identifies a **known shared causal origin** and is optional.
+- `lineage_id=None` means causal lineage is unknown. It must not be replaced by `native_id` or another fabricated identity.
+- `confirmed_at=None` means the fact is still candidate/unconfirmed.
+- `available_at` is always required and is later checked against snapshot `as_of`.
+- `causal_family` and `source_family` are separate metadata axes; neither is a numerical weight.
+- Unknown native data-quality values fail closed rather than silently becoming `VALID` or neutral.
+
+The first foundation families are:
+
+```text
+CausalFamily:
+IMPULSE | STRUCTURAL_LEVEL | PARTICIPATION | REGIME | INDICATOR
+
+SourceFamily:
+PRICE_GEOMETRY | PRICE_DERIVED_INDICATOR | VOLUME_SERIES
+```
+
+Targeting remains the authority for same-timeframe origin-event deduplication. `context.lineage` only reads the existing `origin_event_id`; it does not reimplement `deduplicate_origin_events`.
+
+Cross-timeframe lineage remains deferred until replay calibration.
+
 ## Knowledge boundary
 
 The planned decision-time boundary is the reference `target_as_of` used by the workspace. Every projected fact must satisfy:
@@ -116,4 +144,3 @@ Rules:
 - database/event-store persistence
 - Auction/Volume Profile integration
 - native Liquidity/OB behavior changes
-
