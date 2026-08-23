@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES, normalize_timeframes
+from financial_dashboard.context.builder import (
+    CrossDomainBuildInputs,
+    CrossDomainBuildResult,
+    build_cross_domain_context,
+)
 from financial_dashboard.data.analysis_inputs import cache_fingerprint, load_analysis_inputs
 from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
@@ -76,6 +81,7 @@ class MarketAnalysisWorkspace:
     fvg_engulfing: WorkspaceDomainResult
     targeting: WorkspaceDomainResult
     semantic_targeting: WorkspaceDomainResult
+    cross_domain: WorkspaceDomainResult
 
     @property
     def ham_result(self) -> HamMTFEvidenceReplay | None:
@@ -112,6 +118,10 @@ class MarketAnalysisWorkspace:
     @property
     def semantic_targeting_result(self) -> SemanticTargetingSnapshot | None:
         return self.semantic_targeting.result if isinstance(self.semantic_targeting.result, SemanticTargetingSnapshot) else None
+
+    @property
+    def cross_domain_result(self) -> CrossDomainBuildResult | None:
+        return self.cross_domain.result if isinstance(self.cross_domain.result, CrossDomainBuildResult) else None
 
 
 class CacheSnapshotChangedError(RuntimeError):
@@ -188,6 +198,11 @@ class MarketAnalysisWorkspaceRunner:
         reference_bar_time = reference_full_frame.iloc[-1]["timestamp"]
         target_as_of = target_clock.available_at(reference_bar_time, reference_timeframe)
 
+        target_structure = None
+        target_inputs = None
+        reference_price: float | None = None
+        reference_atr: float | None = None
+
         try:
             target_inputs = clip_analysis_inputs_at_cutoff(inputs, cutoff=target_as_of, clock=target_clock)
         except Exception as error:
@@ -196,6 +211,7 @@ class MarketAnalysisWorkspaceRunner:
             fvg_engulfing = WorkspaceDomainResult.failed(error)
             targeting = WorkspaceDomainResult.failed(error)
             semantic_targeting = WorkspaceDomainResult.failed(error)
+            cross_domain = WorkspaceDomainResult.failed(error)
         else:
             try:
                 liquidity = WorkspaceDomainResult.ready(LiquidityMTFReplayRunner(self.store, clock=target_clock).replay(
@@ -272,6 +288,68 @@ class MarketAnalysisWorkspaceRunner:
                 targeting = WorkspaceDomainResult.failed(error)
                 semantic_targeting = WorkspaceDomainResult.failed(error)
 
+            if target_structure is None or reference_price is None:
+                cross_domain = WorkspaceDomainResult.failed(
+                    RuntimeError("cross-domain shadow build requires target-bounded structure replay")
+                )
+            else:
+                try:
+                    quality_by_timeframe = {
+                        timeframe: target_inputs.for_timeframe(timeframe).input_batch.source_quality.status
+                        for timeframe in normalized_timeframes
+                    }
+                    atr_by_timeframe = {
+                        timeframe: wilder_atr(target_inputs.for_timeframe(timeframe).input_batch.frame)
+                        for timeframe in normalized_timeframes
+                    }
+                    unsupported = tuple(
+                        f"{name.upper()}_ERROR"
+                        for name, result in (
+                            ("ham", ham),
+                            ("volume", volume),
+                            ("stabil_support", stabil_support),
+                            ("volatility", volatility),
+                            ("liquidity", liquidity),
+                            ("order_block", order_block),
+                            ("fvg_engulfing", fvg_engulfing),
+                        )
+                        if not result.is_ready
+                    )
+                    anchor_timeframe = (
+                        "4h"
+                        if "4h" in normalized_timeframes
+                        else "2h"
+                        if "2h" in normalized_timeframes
+                        else reference_timeframe
+                    )
+                    cross_domain = WorkspaceDomainResult.ready(build_cross_domain_context(
+                        CrossDomainBuildInputs(
+                            symbol=normalized_symbol,
+                            as_of=target_as_of,
+                            anchor_timeframe=anchor_timeframe,
+                            current_price=reference_price,
+                            structure_location=target_structure,
+                            available_at=target_clock.available_at,
+                            data_quality_by_timeframe=quality_by_timeframe,
+                            reference_atr_by_timeframe=atr_by_timeframe,
+                            pattern_replay=observer,
+                            liquidity_replay=liquidity.result if liquidity.is_ready else None,
+                            order_block_replay=order_block.result if order_block.is_ready else None,
+                            fvg_engulfing_replay=fvg_engulfing.result if fvg_engulfing.is_ready else None,
+                            stabil_support_replay=stabil_support.result if stabil_support.is_ready else None,
+                            participation_replay=volume.result if volume.is_ready else None,
+                            volatility_replay=volatility.result if volatility.is_ready else None,
+                            ham_replay=ham.result if ham.is_ready else None,
+                            requested_timeframes=normalized_timeframes,
+                            trigger_timeframes=tuple(
+                                timeframe for timeframe in ("1h", "30m") if timeframe in normalized_timeframes
+                            ),
+                            unsupported_contexts=unsupported,
+                        )
+                    ))
+                except Exception as error:
+                    cross_domain = WorkspaceDomainResult.failed(error)
+
         after = cache_fingerprint(self.store, symbol=normalized_symbol, timeframes=normalized_timeframes)
         if after != inputs.fingerprint:
             raise CacheSnapshotChangedError("cache files changed while the analysis workspace was replaying")
@@ -290,6 +368,7 @@ class MarketAnalysisWorkspaceRunner:
             fvg_engulfing=fvg_engulfing,
             targeting=targeting,
             semantic_targeting=semantic_targeting,
+            cross_domain=cross_domain,
         )
 
 
