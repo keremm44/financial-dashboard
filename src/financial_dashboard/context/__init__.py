@@ -1,10 +1,38 @@
-"""Cross-domain context package.
+"""Authority-preserving cross-domain context contracts.
 
-This package is intentionally authority-preserving and read-only with respect to
-native domain engines. It will host normalized projections, lineage/correlation,
-zone intelligence, context axes, permission envelopes, and orchestration.
-
-No BUY/SELL, entry, exit, sizing, stop, or target action authority belongs here.
+The package is read-only with respect to native domain engines. It exposes common
+fact references and causal/correlation metadata only; BUY/SELL and action authority
+are intentionally outside this package.
 """
 
-__all__: tuple[str, ...] = ()
+from .envelope import (
+    CausalFamily,
+    ContextDataQuality,
+    ContextDomain,
+    FactRef,
+    SourceFamily,
+    normalize_context_data_quality,
+)
+from .lineage import (
+    LineageGroup,
+    build_lineage_groups,
+    families_for,
+    known_independent_origin_count,
+    lineage_id_from_origin_event,
+    unknown_lineage_refs,
+)
+
+__all__ = [
+    "CausalFamily",
+    "ContextDataQuality",
+    "ContextDomain",
+    "FactRef",
+    "LineageGroup",
+    "SourceFamily",
+    "build_lineage_groups",
+    "families_for",
+    "known_independent_origin_count",
+    "lineage_id_from_origin_event",
+    "normalize_context_data_quality",
+    "unknown_lineage_refs",
+]
