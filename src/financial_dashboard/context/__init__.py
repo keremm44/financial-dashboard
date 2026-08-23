@@ -1,10 +1,28 @@
 """Authority-preserving cross-domain context contracts.
 
 The package is read-only with respect to native domain engines. It exposes common
-fact references, causal/correlation metadata, thin domain read projections, and
-qualified location views; BUY/SELL and action authority remain outside this package.
+fact references, causal/correlation metadata, thin domain read projections,
+qualified location views, context axes and scoped permission. BUY/SELL and action
+authority remain outside this package.
 """
 
+from .axes import (
+    AxisReason,
+    ConflictState,
+    ContextAxes,
+    ContextDirection,
+    ContinuationContext,
+    HamReadinessContext,
+    MTFContext,
+    ObjectiveContext,
+    ParticipationContext,
+    PatternReadiness,
+    ReactionContext,
+    ReversalContext,
+    StructuralThesis,
+    VolatilityContext,
+    evaluate_context_axes,
+)
 from .envelope import (
     CausalFamily,
     ContextDataQuality,
@@ -20,6 +38,13 @@ from .lineage import (
     known_independent_origin_count,
     lineage_id_from_origin_event,
     unknown_lineage_refs,
+)
+from .permissions import (
+    GateState,
+    PermissionEnvelope,
+    PermissionScope,
+    PermittedSide,
+    resolve_permission,
 )
 from .projections import (
     HamProjection,
@@ -38,6 +63,13 @@ from .projections import (
     project_stabil_support,
     project_structural_facts,
     project_volatility,
+)
+from .snapshot import (
+    CrossDomainContextSnapshot,
+    KnowledgeBoundary,
+    build_context_snapshot,
+    eligible_fact_refs,
+    evaluate_knowledge_boundary,
 )
 from .zone_interaction import (
     ZoneInteractionEvent,
@@ -61,22 +93,42 @@ from .zones import (
 )
 
 __all__ = [
+    "AxisReason",
     "CausalFamily",
+    "ConflictState",
+    "ContextAxes",
     "ContextDataQuality",
+    "ContextDirection",
     "ContextDomain",
+    "ContinuationContext",
+    "CrossDomainContextSnapshot",
     "FactRef",
+    "GateState",
     "HamProjection",
+    "HamReadinessContext",
+    "KnowledgeBoundary",
     "LineageGroup",
     "LiquidityProjection",
+    "MTFContext",
+    "ObjectiveContext",
+    "ParticipationContext",
     "ParticipationProjection",
     "PatternProjection",
+    "PatternReadiness",
+    "PermissionEnvelope",
+    "PermissionScope",
+    "PermittedSide",
     "QualifiedZone",
     "QualifiedZoneSide",
+    "ReactionContext",
     "ReactionEvidenceProjection",
+    "ReversalContext",
     "SourceFamily",
     "StabilSupportProjection",
     "StructuralFactsProjection",
+    "StructuralThesis",
     "StructuralZoneRef",
+    "VolatilityContext",
     "VolatilityProjection",
     "ZoneAnchorKind",
     "ZoneFreshness",
@@ -86,9 +138,13 @@ __all__ = [
     "ZoneInteractionState",
     "ZoneQualification",
     "ZoneRelevance",
+    "build_context_snapshot",
     "build_lineage_groups",
     "build_zone_intelligence",
     "classify_zone_interaction",
+    "eligible_fact_refs",
+    "evaluate_context_axes",
+    "evaluate_knowledge_boundary",
     "families_for",
     "interval_distance",
     "known_independent_origin_count",
@@ -103,6 +159,7 @@ __all__ = [
     "project_stabil_support",
     "project_structural_facts",
     "project_volatility",
+    "resolve_permission",
     "transition_event",
     "unknown_lineage_refs",
 ]
