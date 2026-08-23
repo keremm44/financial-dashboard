@@ -135,13 +135,13 @@ class MarketStructureEngine(_SwingCoreEngine):
             self._internal.swings,
             bar_index=bar_index,
         )
-        latest_external = self._event_ledger.latest(
-            current_bar=bar_index,
-            scope=SCOPE_EXTERNAL,
+        latest_external = next(
+            (record for record in reversed(event_history) if record.scope == SCOPE_EXTERNAL),
+            None,
         )
-        latest_internal = self._event_ledger.latest(
-            current_bar=bar_index,
-            scope=SCOPE_INTERNAL,
+        latest_internal = next(
+            (record for record in reversed(event_history) if record.scope == SCOPE_INTERNAL),
+            None,
         )
         external = self._runtime.external.context
         internal = self._runtime.internal.context
