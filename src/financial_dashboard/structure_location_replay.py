@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_right
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -213,14 +214,28 @@ def _support_snapshot(
     )
 
 
+def _observation_available_ns(
+    timeline: tuple[CausalZoneObservation, ...],
+) -> tuple[int, ...]:
+    """Build a monotonic integer index for causal timeline lookup."""
+
+    values = tuple(pd.Timestamp(observation.available_at).value for observation in timeline)
+    if any(left > right for left, right in zip(values, values[1:])):
+        raise ValueError("causal zone observation timeline must be ordered by availability")
+    return values
+
+
 def _latest_causal_observation(
     timeline: tuple[CausalZoneObservation, ...],
+    available_ns: tuple[int, ...],
     event_available_at: Any,
 ) -> CausalZoneObservation | None:
-    for observation in reversed(timeline):
-        if observation.available_at <= event_available_at:
-            return observation
-    return None
+    """Find the latest knowable zone observation in O(log n)."""
+
+    if not timeline:
+        return None
+    position = bisect_right(available_ns, pd.Timestamp(event_available_at).value) - 1
+    return None if position < 0 else timeline[position]
 
 
 class CachedStructureLocationMTFRunner:
@@ -279,6 +294,7 @@ class CachedStructureLocationMTFRunner:
 
         replays: dict[str, StructureLocationTimeframeReplay] = {}
         timelines: dict[str, tuple[CausalZoneObservation, ...]] = {}
+        timeline_available_ns: dict[str, tuple[int, ...]] = {}
         all_events = []
         final_active_zones: list[SupportResistanceZone] = []
 
@@ -340,7 +356,9 @@ class CachedStructureLocationMTFRunner:
                 market_structure=market_snapshot,
                 support_resistance=support_snapshot,
             )
-            timelines[timeframe] = tuple(observations)
+            timeline = tuple(observations)
+            timelines[timeframe] = timeline
+            timeline_available_ns[timeframe] = _observation_available_ns(timeline)
             all_events.extend(market_snapshot.events)
             final_active_zones.extend(
                 zone for zone in support_snapshot.zones if zone.is_confluence_eligible
@@ -361,7 +379,9 @@ class CachedStructureLocationMTFRunner:
                 for timeframe in normalized_timeframes
                 if (
                     observation := _latest_causal_observation(
-                        timelines[timeframe], event_available_at
+                        timelines[timeframe],
+                        timeline_available_ns[timeframe],
+                        event_available_at,
                     )
                 ) is not None
             )
