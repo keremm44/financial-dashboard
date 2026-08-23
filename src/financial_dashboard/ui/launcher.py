@@ -7,9 +7,9 @@ from streamlit.web import cli as streamlit_cli
 
 
 def main() -> None:
-    """Launch the local Streamlit inspector through the installed entry point."""
+    """Launch the lazy, fast-start local Streamlit inspector."""
 
-    app_path = Path(__file__).with_name("app.py")
+    app_path = Path(__file__).with_name("fast_app.py")
     sys.argv = [
         "streamlit",
         "run",
