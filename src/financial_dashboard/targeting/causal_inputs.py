@@ -26,10 +26,9 @@ def clip_analysis_inputs_at_cutoff(
 ) -> AnalysisInputSnapshot:
     """Return an immutable analysis snapshot containing only causally available bars.
 
-    This is deliberately stricter than filtering target evidence after an engine has
-    replayed the full cache. Engines are rerun on the clipped prefix so a future bar
-    cannot consume, invalidate, promote, or otherwise rewrite the state that was
-    knowable at ``cutoff``.
+    Engines must still be rerun when the cutoff removes future bars. When a timeframe
+    is already entirely causal at the requested cutoff, reuse its immutable prepared
+    snapshot instead of copying and validating the same frame again.
     """
 
     if minimum_bars_per_timeframe < 1:
@@ -40,17 +39,24 @@ def clip_analysis_inputs_at_cutoff(
     snapshots: dict[str, TimeframeInputSnapshot] = {}
 
     for timeframe in inputs.timeframes:
-        source = inputs.for_timeframe(timeframe).input_batch.frame
+        source_snapshot = inputs.for_timeframe(timeframe)
+        source = source_snapshot.input_batch.frame
         available_mask = [
             pd.Timestamp(clock.available_at(timestamp, timeframe)) <= cutoff_ts
             for timestamp in source["timestamp"]
         ]
-        clipped = source.loc[available_mask].copy().reset_index(drop=True)
-        if len(clipped) < minimum_bars_per_timeframe:
+        causal_count = sum(available_mask)
+        if causal_count < minimum_bars_per_timeframe:
             raise CausalInputUnavailableError(
-                f"{timeframe} has {len(clipped)} causal bars at {cutoff_ts}; "
+                f"{timeframe} has {causal_count} causal bars at {cutoff_ts}; "
                 f"requires {minimum_bars_per_timeframe}"
             )
+
+        if causal_count == len(source):
+            snapshots[timeframe] = source_snapshot
+            continue
+
+        clipped = source.loc[available_mask].copy().reset_index(drop=True)
         batch = prepare_engine_input(clipped)
         snapshots[timeframe] = TimeframeInputSnapshot(
             timeframe=timeframe,
