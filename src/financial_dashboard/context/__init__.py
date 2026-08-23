@@ -23,6 +23,7 @@ from .axes import (
     VolatilityContext,
     evaluate_context_axes,
 )
+from .builder import CrossDomainBuildInputs, CrossDomainBuildResult, build_cross_domain_context
 from .envelope import (
     CausalFamily,
     ContextDataQuality,
@@ -101,6 +102,8 @@ __all__ = [
     "ContextDirection",
     "ContextDomain",
     "ContinuationContext",
+    "CrossDomainBuildInputs",
+    "CrossDomainBuildResult",
     "CrossDomainContextSnapshot",
     "FactRef",
     "GateState",
@@ -139,6 +142,7 @@ __all__ = [
     "ZoneQualification",
     "ZoneRelevance",
     "build_context_snapshot",
+    "build_cross_domain_context",
     "build_lineage_groups",
     "build_zone_intelligence",
     "classify_zone_interaction",
