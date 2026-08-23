@@ -11,7 +11,7 @@ from financial_dashboard.context.builder import (
     CrossDomainBuildResult,
     build_cross_domain_context,
 )
-from financial_dashboard.data.analysis_inputs import cache_fingerprint, load_analysis_inputs
+from financial_dashboard.data.analysis_inputs import AnalysisInputSnapshot, cache_fingerprint, load_analysis_inputs
 from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.engines.pattern_compression_core import PatternCompressionConfig
@@ -128,6 +128,24 @@ class CacheSnapshotChangedError(RuntimeError):
     """Raised when cache files change while one workspace replay is being built."""
 
 
+def analysis_snapshots_share_all_timeframes(
+    left: AnalysisInputSnapshot,
+    right: AnalysisInputSnapshot,
+    *,
+    timeframes: tuple[str, ...],
+) -> bool:
+    """Return true only when two snapshots share the exact prepared TF objects.
+
+    ``clip_analysis_inputs_at_cutoff`` deliberately preserves object identity for a
+    timeframe whose causal prefix is unchanged. This lets the workspace prove that
+    a target-bounded Structure replay would consume byte-for-byte the same prepared
+    inputs as the already completed observer replay. Any clipped timeframe fails the
+    identity check and retains the canonical second replay.
+    """
+
+    return all(left.for_timeframe(tf) is right.for_timeframe(tf) for tf in timeframes)
+
+
 class MarketAnalysisWorkspaceRunner:
     """Execution coordinator for independent analysis domains with no trading authority."""
 
@@ -235,9 +253,16 @@ class MarketAnalysisWorkspaceRunner:
                 fvg_engulfing = WorkspaceDomainResult.failed(error)
 
             try:
-                target_structure = CachedStructureLocationMTFRunner(self.store, clock=target_clock).run(
-                    symbol=normalized_symbol, timeframes=normalized_timeframes, input_snapshot=target_inputs
-                )
+                if analysis_snapshots_share_all_timeframes(
+                    target_inputs,
+                    inputs,
+                    timeframes=normalized_timeframes,
+                ):
+                    target_structure = observer.structure_location
+                else:
+                    target_structure = CachedStructureLocationMTFRunner(self.store, clock=target_clock).run(
+                        symbol=normalized_symbol, timeframes=normalized_timeframes, input_snapshot=target_inputs
+                    )
                 reference_frame = target_inputs.for_timeframe(reference_timeframe).input_batch.frame
                 reference_price = float(reference_frame.iloc[-1]["close"])
                 reference_atr = wilder_atr(reference_frame)
@@ -390,5 +415,6 @@ __all__ = [
     "MarketAnalysisWorkspaceRunner",
     "WorkspaceDomainResult",
     "WorkspaceDomainStatus",
+    "analysis_snapshots_share_all_timeframes",
     "replay_market_workspace_from_cache",
 ]
