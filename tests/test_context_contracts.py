@@ -8,6 +8,7 @@ from pathlib import Path
 from financial_dashboard.context import FactRef, LineageGroup
 import financial_dashboard.context.envelope as envelope_module
 import financial_dashboard.context.lineage as lineage_module
+import financial_dashboard.context.projections as projections_module
 
 
 FORBIDDEN_ACTION_FIELDS = {
@@ -60,9 +61,25 @@ def test_lineage_does_not_import_targeting_or_replay_runtime() -> None:
     assert all("market_workspace" not in name for name in imports)
 
 
+def test_projection_layer_does_not_import_native_engines_workspace_or_ui() -> None:
+    imports = _imports(projections_module)
+    assert all("engines" not in name for name in imports)
+    assert all("market_workspace" not in name for name in imports)
+    assert all(".ui" not in name and not name.endswith("ui") for name in imports)
+
+
+def test_projection_layer_does_not_read_generic_engine_result_authority() -> None:
+    source = inspect.getsource(projections_module)
+    assert "EngineResult" not in source
+    assert ".result.direction" not in source
+    assert ".result.score" not in source
+    assert ".result.quality" not in source
+    assert ".result.is_confirmed" not in source
+
+
 def test_context_foundation_does_not_use_random_or_uuid_identity() -> None:
     package_dir = Path(inspect.getfile(envelope_module)).parent
-    for name in ("envelope.py", "lineage.py"):
+    for name in ("envelope.py", "lineage.py", "projections.py"):
         source = (package_dir / name).read_text(encoding="utf-8")
         assert "import uuid" not in source
         assert "from uuid" not in source
