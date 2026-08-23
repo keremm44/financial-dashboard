@@ -7,7 +7,7 @@ from streamlit.web import cli as streamlit_cli
 
 
 def main() -> None:
-    """Launch the lazy, fast-start local Streamlit inspector."""
+    """Launch the lazy fast-start UI; the legacy full inspector remains in app.py."""
 
     app_path = Path(__file__).with_name("fast_app.py")
     sys.argv = [
