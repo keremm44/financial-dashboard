@@ -1,8 +1,8 @@
 # Cross-Domain Context Contract
 
-Status: **DESIGN / FOUNDATION ONLY**
+Status: **FOUNDATION IMPLEMENTATION IN PROGRESS**
 
-This document freezes the package boundary before implementation. It does not define BUY/SELL logic.
+This document freezes the package and authority boundaries before decision/action work. It does not define BUY/SELL logic.
 
 ## Architecture chain
 
@@ -51,7 +51,7 @@ Required semantics:
 - `causal_family` and `source_family` are separate metadata axes; neither is a numerical weight.
 - Unknown native data-quality values fail closed rather than silently becoming `VALID` or neutral.
 
-The first foundation families are:
+The foundation families are:
 
 ```text
 CausalFamily:
@@ -65,6 +65,29 @@ Targeting remains the authority for same-timeframe origin-event deduplication. `
 
 Cross-timeframe lineage remains deferred until replay calibration.
 
+## P2 thin projection contract
+
+`context.projections` is a read-only semantic adapter. It must not import native engine implementations, `market_workspace`, UI code, or generic `EngineResult` authority fields.
+
+The P2 projection set is:
+
+- `StructuralFactsProjection` — Market Structure typed export/scope/event facts. Structural authority remains native Market Structure.
+- `LiquidityProjection` — objective/draw observations only. Liquidity does not become direction or reversal authority.
+- `ReactionEvidenceProjection` — Order Block/FVG as reaction-zone observations; Engulfing is kept separately as confirmation-only evidence.
+- `StabilSupportProjection` — daily structural-support lifecycle copied without rewriting its native validity/dynamics/progression.
+- `ParticipationProjection` — Volume participation observations plus explicit Structure↔Volume relations. A relation does not create shared lineage automatically.
+- `PatternProjection` — pattern-scoped typed export codes only. Generic `EngineResult.direction/score/quality/is_confirmed` is not consumed.
+- `VolatilityProjection` — regime/band/Fib context plus early-transition state; early state remains distinct from confirmed export state.
+- `HamProjection` — PRICE/MOMENTUM/TIMING/FLOW families remain separate; family counts/quorum are not promoted to authority. FLOW remains `VOLUME_SERIES`-correlated metadata.
+
+Additional P2 rules:
+
+- Existing TargetEvidence `origin_event_id` is preserved when known; unknown lineage stays `None`.
+- FVG/Engulfing unsupported timeframes are reported explicitly instead of being treated as neutral.
+- Projection data quality is explicit. Target-evidence projections require a caller-supplied per-timeframe native quality mapping because `TargetEvidenceMTFReplay` does not expose source quality itself.
+- Pattern, Volume, Volatility and HAM facts are observations/context, not independent votes.
+- Projection contracts are immutable/frozen data only; they do not calculate BUY/SELL, permission, continuation, reaction, or reversal states.
+
 ## Knowledge boundary
 
 The planned decision-time boundary is the reference `target_as_of` used by the workspace. Every projected fact must satisfy:
@@ -73,7 +96,7 @@ The planned decision-time boundary is the reference `target_as_of` used by the w
 fact.available_at <= snapshot.as_of
 ```
 
-Facts excluded by this rule must be reported through a `KnowledgeBoundary` diagnostic rather than silently treated as neutral.
+Projection creation records `available_at`; eligibility filtering is enforced later by `context.builder`. Facts excluded by this rule must be reported through a `KnowledgeBoundary` diagnostic rather than silently treated as neutral.
 
 ## Package boundary
 
@@ -121,19 +144,14 @@ Rules:
 - Existing targeting deduplication and semantic-targeting roles are reused rather than duplicated.
 - Native engine files remain unchanged during the foundation phases.
 
-## Planned implementation order
+## Six-step implementation order
 
-1. P0 — invariants and `as_of` freeze
-2. P1 — FactRef / data-quality / lineage foundations
-3. P2 — structural, liquidity, reaction projections
-4. P3 — Zone Intelligence
-5. P4 — core context axes and snapshot
-6. P5 — Volume, Pattern, Volatility supporting projections
-7. P6 — PermissionEnvelope
-8. P7 — builder + workspace shadow integration
-9. P8 — replay, no-lookahead, golden scenarios
-10. P9 — HAM integration
-11. P10 — diagnostics, docs, final architecture freeze
+1. Contracts + Lineage — complete in Step 1.
+2. All Domain Projections — this step.
+3. Zone Intelligence.
+4. Cross-Domain Context + Permission.
+5. Builder + Workspace shadow integration.
+6. Replay + no-lookahead + golden scenarios + final freeze.
 
 ## Deferred
 
