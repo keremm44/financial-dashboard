@@ -19,7 +19,8 @@ from .engines.mtf_story_models import RawTimeframeEvidence, role_for_timeframe
 from .engines.mtf_story_normalizer import normalize_timeframe_evidence
 from .engines.mtf_story_trigger import classify_trigger
 from .engines.pattern_compression_core import PatternCompressionConfig
-from .engines.pattern_compression_engine import PatternCompressionEngine, PatternExport
+from .engines.pattern_compression_engine import PatternExport
+from .engines.pattern_compression_runtime_engine import RuntimePatternCompressionEngine
 from .engines.models import EngineResult
 from .engines.structure_location import StructureZoneLinkConfig, ZoneConfluenceConfig
 from .engines.support_resistance_engine import SupportResistanceConfig
@@ -140,7 +141,7 @@ class CachedThreeDomainObserverRunner:
 
         for timeframe in normalized:
             replay = structure_location.replay_for(timeframe)
-            engine = PatternCompressionEngine(self.pattern_compression_config)
+            engine = RuntimePatternCompressionEngine(self.pattern_compression_config)
             for _, bar in replay.input_batch.frame.iterrows():
                 engine.update(bar)
             pattern_result = engine.snapshot()
