@@ -83,6 +83,29 @@ def test_maturity_and_approach_are_separate_dimensions() -> None:
     assert row.distance_delta_atr is not None and row.distance_delta_atr < 0
 
 
+def test_pool_is_left_behind_only_after_price_passes_it() -> None:
+    tracker = LiquidityBehaviorTracker()
+    bsl = _pool(
+        "BSL-1",
+        side=LiquiditySide.BSL,
+        level=100.0,
+        state=LiquidityPoolState.CONSUMED,
+        touch_indexes=(1, 3),
+    )
+
+    snapshot = tracker.update(
+        (bsl,),
+        bar_index=5,
+        timestamp=NOW,
+        high=102.0,
+        low=100.5,
+        close=101.5,
+        atr=2.0,
+    )
+
+    assert snapshot.for_pool("BSL-1").relation is LiquidityPriceRelation.LEFT_BEHIND
+
+
 def test_sweep_reclaim_and_consume_aftermath_are_descriptive_only() -> None:
     tracker = LiquidityBehaviorTracker(
         LiquidityBehaviorConfig(acceptance_bars=2)
@@ -193,3 +216,47 @@ def test_stale_pool_is_not_treated_as_mature_just_because_it_has_many_touches() 
     )
 
     assert snapshot.for_pool("BSL-old").maturity is LiquidityPoolMaturity.STALE
+
+
+def test_fresh_prefix_rebuild_matches_incremental_behavior() -> None:
+    pool = _pool(
+        "BSL-1",
+        side=LiquiditySide.BSL,
+        level=110.0,
+        state=LiquidityPoolState.ACTIVE,
+        touch_indexes=(2, 5, 8),
+    )
+    bars = (
+        (10, 105.0, 103.0, 104.0),
+        (11, 108.0, 106.0, 107.5),
+        (12, 110.2, 108.5, 109.8),
+    )
+
+    incremental = LiquidityBehaviorTracker()
+    incremental_snapshots = []
+    for index, high, low, close in bars:
+        incremental_snapshots.append(
+            incremental.update(
+                (pool,),
+                bar_index=index,
+                timestamp=NOW,
+                high=high,
+                low=low,
+                close=close,
+                atr=4.0,
+            )
+        )
+
+    rebuilt = LiquidityBehaviorTracker()
+    for index, high, low, close in bars[:2]:
+        prefix_snapshot = rebuilt.update(
+            (pool,),
+            bar_index=index,
+            timestamp=NOW,
+            high=high,
+            low=low,
+            close=close,
+            atr=4.0,
+        )
+
+    assert prefix_snapshot == incremental_snapshots[1]
