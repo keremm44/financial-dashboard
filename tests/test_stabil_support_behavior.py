@@ -78,6 +78,18 @@ def test_support_motion_is_separate_from_price_distance_and_flattens_after_lower
     assert mature.relation in {PriceSupportRelation.AT_SUPPORT, PriceSupportRelation.ABOVE_NEAR}
 
 
+def test_rising_support_with_expanding_distance_is_supported_advance() -> None:
+    items = (
+        _obs(3, close=103.0, low=102.0, support=100.0),
+        _obs(4, close=105.0, low=104.0, support=102.0, origin_day=2, confirmed_day=4, available_day=4),
+        _obs(5, close=108.0, low=107.0, support=102.0, origin_day=2, confirmed_day=4, available_day=4),
+    )
+    behavior = _behavior(items)
+    assert behavior.motion is SupportMotion.RISING
+    assert behavior.relation is PriceSupportRelation.ABOVE_FAR
+    assert behavior.interaction is SupportInteractionState.SUPPORTED_ADVANCE
+
+
 def test_price_approaching_flat_support_is_explicit_timing_context_not_breakdown() -> None:
     items = (
         _obs(3, close=104.0, low=103.0),
