@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Mapping
+from typing import Any, Mapping
 
 import pandas as pd
 
@@ -23,6 +23,52 @@ from .targeting.models import TargetEvidence, TargetEvidenceSnapshot
 
 
 @dataclass(frozen=True, slots=True)
+class FvgLifecycleSnapshot:
+    identity: str
+    direction: int
+    state: str
+    lower_boundary: float
+    upper_boundary: float
+    quality: float
+    gap_atr: float
+    formation_atr: float
+    formation_index: int
+    formation_time: Any
+    first_test_index: int | None
+    wick_fill_ratio: float
+    close_fill_ratio: float
+    maximum_fill_ratio: float
+    reaction_evidence_count: int
+    reaction_confirmed: bool
+    failed_reaction: bool
+    full_fill: bool
+    invalid: bool
+    invalid_reason: str
+    invalid_close_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class EngulfingLifecycleSnapshot:
+    identity: str
+    direction: int
+    state: str
+    lower_boundary: float
+    upper_boundary: float
+    quality: float
+    body_atr: float
+    formation_index: int
+    formation_time: Any
+    first_test_index: int | None
+    maximum_retrace_ratio: float
+    continuation_evidence_count: int
+    continuation_confirmed: bool
+    weakened: bool
+    weakened_index: int | None
+    invalid: bool
+    completion_reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class TargetEvidenceMTFReplay:
     symbol: str
     timeframes: tuple[str, ...]
@@ -30,6 +76,8 @@ class TargetEvidenceMTFReplay:
     evidence: tuple[TargetEvidence, ...]
     liquidity_behavior: Mapping[str, LiquidityBehaviorSnapshot] | None = None
     order_block_behavior: Mapping[str, tuple[OrderBlockBehaviorSnapshot, ...]] | None = None
+    fvg_lifecycle: Mapping[str, tuple[FvgLifecycleSnapshot, ...]] | None = None
+    engulfing_lifecycle: Mapping[str, tuple[EngulfingLifecycleSnapshot, ...]] | None = None
 
     def for_timeframe(self, timeframe: str) -> TargetEvidenceSnapshot:
         normalized = timeframe.strip().lower()
@@ -249,6 +297,72 @@ class OrderBlockMTFReplayRunner(_BaseTargetEvidenceRunner):
 
 
 class FvgEngulfingMTFReplayRunner(_BaseTargetEvidenceRunner):
+    @staticmethod
+    def _fvg_snapshots(timeframe: str, engine: FvgEngulfingEngine) -> tuple[FvgLifecycleSnapshot, ...]:
+        records = [engine.active_bullish_fvg, engine.active_bearish_fvg, *engine.completed_fvg]
+        out: dict[str, FvgLifecycleSnapshot] = {}
+        for record in records:
+            if record is None:
+                continue
+            identity = f"FVG:{timeframe}:{record.formation_index}:{int(record.direction)}"
+            out[identity] = FvgLifecycleSnapshot(
+                identity=identity,
+                direction=int(record.direction),
+                state=record.state.name,
+                lower_boundary=float(record.lower_boundary),
+                upper_boundary=float(record.upper_boundary),
+                quality=float(record.quality),
+                gap_atr=float(record.gap_atr),
+                formation_atr=float(record.formation_atr),
+                formation_index=int(record.formation_index),
+                formation_time=record.formation_time,
+                first_test_index=record.first_test_index,
+                wick_fill_ratio=float(record.wick_fill_ratio),
+                close_fill_ratio=float(record.close_fill_ratio),
+                maximum_fill_ratio=float(record.maximum_fill_ratio),
+                reaction_evidence_count=int(record.reaction_evidence_count),
+                reaction_confirmed=bool(record.reaction_confirmed),
+                failed_reaction=bool(record.failed_reaction),
+                full_fill=bool(record.full_fill),
+                invalid=bool(record.invalid),
+                invalid_reason=str(record.invalid_reason),
+                invalid_close_count=int(record.invalid_close_count),
+            )
+        return tuple(sorted(out.values(), key=lambda item: item.identity))
+
+    @staticmethod
+    def _engulfing_snapshots(timeframe: str, engine: FvgEngulfingEngine) -> tuple[EngulfingLifecycleSnapshot, ...]:
+        records = [
+            engine.active_bullish_engulfing,
+            engine.active_bearish_engulfing,
+            *engine.completed_engulfing,
+        ]
+        out: dict[str, EngulfingLifecycleSnapshot] = {}
+        for record in records:
+            if record is None:
+                continue
+            identity = f"ENG:{timeframe}:{record.formation_index}:{int(record.direction)}"
+            out[identity] = EngulfingLifecycleSnapshot(
+                identity=identity,
+                direction=int(record.direction),
+                state=record.state.name,
+                lower_boundary=float(record.lower_boundary),
+                upper_boundary=float(record.upper_boundary),
+                quality=float(record.quality),
+                body_atr=float(record.body_atr),
+                formation_index=int(record.formation_index),
+                formation_time=record.formation_time,
+                first_test_index=record.first_test_index,
+                maximum_retrace_ratio=float(record.maximum_retrace_ratio),
+                continuation_evidence_count=int(record.continuation_evidence_count),
+                continuation_confirmed=bool(record.continuation_confirmed),
+                weakened=bool(record.weakened),
+                weakened_index=record.weakened_index,
+                invalid=bool(record.invalid),
+                completion_reason=str(record.completion_reason),
+            )
+        return tuple(sorted(out.values(), key=lambda item: item.identity))
+
     def replay(
         self,
         symbol: str,
@@ -261,6 +375,8 @@ class FvgEngulfingMTFReplayRunner(_BaseTargetEvidenceRunner):
         )
         supported = tuple(tf for tf in normalized_requested if tf in SUPPORTED_TIMEFRAMES)
         snapshots: dict[str, TargetEvidenceSnapshot] = {}
+        fvg_lifecycle: dict[str, tuple[FvgLifecycleSnapshot, ...]] = {}
+        engulfing_lifecycle: dict[str, tuple[EngulfingLifecycleSnapshot, ...]] = {}
         all_evidence: list[TargetEvidence] = []
         for timeframe in supported:
             frame = inputs.for_timeframe(timeframe).input_batch.frame
@@ -302,17 +418,23 @@ class FvgEngulfingMTFReplayRunner(_BaseTargetEvidenceRunner):
                 evidence=evidence,
             )
             snapshots[timeframe] = snapshot
+            fvg_lifecycle[timeframe] = self._fvg_snapshots(timeframe, engine)
+            engulfing_lifecycle[timeframe] = self._engulfing_snapshots(timeframe, engine)
             all_evidence.extend(evidence)
         return TargetEvidenceMTFReplay(
             symbol=normalized_symbol,
             timeframes=supported,
             snapshots=snapshots,
             evidence=tuple(all_evidence),
+            fvg_lifecycle=fvg_lifecycle,
+            engulfing_lifecycle=engulfing_lifecycle,
         )
 
 
 __all__ = [
+    "EngulfingLifecycleSnapshot",
     "FvgEngulfingMTFReplayRunner",
+    "FvgLifecycleSnapshot",
     "LiquidityMTFReplayRunner",
     "OrderBlockMTFReplayRunner",
     "TargetEvidenceMTFReplay",
