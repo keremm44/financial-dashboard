@@ -11,6 +11,10 @@ from .fvg_engulfing_projection import (
     project_fvg_engulfing_lifecycle,
 )
 from .lineage import build_lineage_groups
+from .participation_behavior_projection import (
+    ParticipationBehaviorProjection,
+    project_participation_behavior,
+)
 from .permissions import PermissionEnvelope, resolve_permission
 from .projections import (
     HamProjection,
@@ -44,6 +48,7 @@ class CrossDomainBuildResult:
     context: CrossDomainContextSnapshot
     permission: PermissionEnvelope
     fvg_engulfing_lifecycle: FvgEngulfingLifecycleProjection | None = None
+    participation_behavior: ParticipationBehaviorProjection | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +129,12 @@ def _all_stabil_refs(projection: StabilSupportProjection | None) -> tuple[FactRe
 
 def _all_participation_refs(projection: ParticipationProjection | None) -> tuple[FactRef, ...]:
     return () if projection is None else tuple(item.ref for item in projection.timeframe_facts)
+
+
+def _all_participation_behavior_refs(
+    projection: ParticipationBehaviorProjection | None,
+) -> tuple[FactRef, ...]:
+    return () if projection is None else projection.refs
 
 
 def _all_pattern_refs(projection: PatternProjection | None) -> tuple[FactRef, ...]:
@@ -319,6 +330,10 @@ def build_cross_domain_context(inputs: CrossDomainBuildInputs) -> CrossDomainBui
         if inputs.participation_replay is None
         else project_participation(inputs.participation_replay, available_at=inputs.available_at)
     )
+    participation_behavior_raw = project_participation_behavior(
+        inputs.participation_replay,
+        available_at=inputs.available_at,
+    )
     pattern_raw = (
         None
         if inputs.pattern_replay is None
@@ -343,6 +358,7 @@ def build_cross_domain_context(inputs: CrossDomainBuildInputs) -> CrossDomainBui
             *_all_fvg_engulfing_lifecycle_refs(fvg_engulfing_lifecycle_raw),
             *_all_stabil_refs(stabil_raw),
             *_all_participation_refs(participation_raw),
+            *_all_participation_behavior_refs(participation_behavior_raw),
             *_all_pattern_refs(pattern_raw),
             *_all_volatility_refs(volatility_raw),
             *_all_ham_refs(ham_raw),
@@ -359,6 +375,11 @@ def build_cross_domain_context(inputs: CrossDomainBuildInputs) -> CrossDomainBui
     )
     stabil = _filter_stabil(stabil_raw, inputs.as_of)
     participation = _filter_participation(participation_raw, inputs.as_of)
+    participation_behavior = (
+        None
+        if participation_behavior_raw is None
+        else participation_behavior_raw.available_at(inputs.as_of)
+    )
     pattern = _filter_pattern(pattern_raw, inputs.as_of)
     volatility = _filter_volatility(volatility_raw, inputs.as_of)
     ham = _filter_ham(ham_raw, inputs.as_of)
@@ -401,6 +422,7 @@ def build_cross_domain_context(inputs: CrossDomainBuildInputs) -> CrossDomainBui
         context=context,
         permission=resolve_permission(context),
         fvg_engulfing_lifecycle=fvg_engulfing_lifecycle,
+        participation_behavior=participation_behavior,
     )
 
 
