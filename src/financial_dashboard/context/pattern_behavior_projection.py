@@ -178,7 +178,7 @@ def project_pattern_behavior(
         ).input_batch.source_quality.status
         quality = normalize_context_data_quality(source_quality)
         unavailable = quality is not ContextDataQuality.VALID
-        native_state = str(snapshot.native_state or ST_NONE)
+        native_state = str(getattr(snapshot, "native_state", None) or ST_NONE)
         phase = _phase(native_state, unavailable=unavailable)
         export = snapshot.export
         pattern_state_code = None if export is None else export.state
@@ -193,15 +193,17 @@ def project_pattern_behavior(
             data_quality=quality,
         )
         current_index = max(0, int(snapshot.bar_count) - 1)
+        active_start_bar = getattr(snapshot, "active_start_bar", None)
+        active_known_bar = getattr(snapshot, "active_known_bar", None)
         age_bars = (
             None
-            if snapshot.active_start_bar is None
-            else max(0, current_index - int(snapshot.active_start_bar))
+            if active_start_bar is None
+            else max(0, current_index - int(active_start_bar))
         )
         bars_since_known = (
             None
-            if snapshot.active_known_bar is None
-            else max(0, current_index - int(snapshot.active_known_bar))
+            if active_known_bar is None
+            else max(0, current_index - int(active_known_bar))
         )
         rows.append(
             PatternBehaviorTimeframeProjection(
@@ -215,14 +217,14 @@ def project_pattern_behavior(
                 identity=identity,
                 age_bars=age_bars,
                 bars_since_known=bars_since_known,
-                progress=snapshot.progress,
-                contraction=snapshot.contraction,
-                raw_quality=snapshot.raw_quality,
-                selection_score=snapshot.selection_score,
+                progress=getattr(snapshot, "progress", None),
+                contraction=getattr(snapshot, "contraction", None),
+                raw_quality=getattr(snapshot, "raw_quality", None),
+                selection_score=getattr(snapshot, "selection_score", None),
                 export_quality=None if export is None else export.quality,
-                upper_touches=int(snapshot.upper_touches),
-                lower_touches=int(snapshot.lower_touches),
-                quality_frozen=bool(snapshot.quality_frozen),
+                upper_touches=int(getattr(snapshot, "upper_touches", 0)),
+                lower_touches=int(getattr(snapshot, "lower_touches", 0)),
+                quality_frozen=bool(getattr(snapshot, "quality_frozen", False)),
                 break_state_code=None if export is None else export.break_state,
                 break_level=None if export is None else export.break_level,
                 break_strength=None if export is None else export.break_strength,
