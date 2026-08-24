@@ -15,6 +15,7 @@ from .engines.liquidity_behavior import LiquidityBehaviorSnapshot
 from .engines.liquidity_engine import LiquidityEngine
 from .engines.liquidity_models import LiquidityConfig, LiquidityPoolState
 from .engines.order_block import OrderBlockEngine
+from .engines.order_block_behavior import OrderBlockBehaviorSnapshot, OrderBlockBehaviorTracker
 from .engines.order_block_engine import OrderBlockConfig
 from .structure_location_replay import CausalBarClock
 from .targeting.adapters import fvg_engulfing_evidence, liquidity_evidence, order_block_evidence
@@ -28,6 +29,7 @@ class TargetEvidenceMTFReplay:
     snapshots: Mapping[str, TargetEvidenceSnapshot]
     evidence: tuple[TargetEvidence, ...]
     liquidity_behavior: Mapping[str, LiquidityBehaviorSnapshot] | None = None
+    order_block_behavior: Mapping[str, tuple[OrderBlockBehaviorSnapshot, ...]] | None = None
 
     def for_timeframe(self, timeframe: str) -> TargetEvidenceSnapshot:
         normalized = timeframe.strip().lower()
@@ -181,13 +183,23 @@ class OrderBlockMTFReplayRunner(_BaseTargetEvidenceRunner):
             symbol, timeframes, input_snapshot
         )
         snapshots: dict[str, TargetEvidenceSnapshot] = {}
+        behavior_by_timeframe: dict[str, tuple[OrderBlockBehaviorSnapshot, ...]] = {}
         all_evidence: list[TargetEvidence] = []
         for timeframe in normalized_timeframes:
             frame = inputs.for_timeframe(timeframe).input_batch.frame
             engine = OrderBlockEngine(self.config)
+            behavior = OrderBlockBehaviorTracker(self.config)
             confirmations: dict[str, tuple[object, object]] = {}
-            for row in frame.to_dict("records"):
+            latest_behavior: tuple[OrderBlockBehaviorSnapshot, ...] = ()
+            for bar_index, row in enumerate(frame.to_dict("records")):
                 engine.update(row)
+                latest_behavior = behavior.update(
+                    engine.records,
+                    bar_index=bar_index,
+                    high=float(row["high"]),
+                    low=float(row["low"]),
+                    close=float(row["close"]),
+                )
                 for record in engine.records:
                     identity = f"OB:{timeframe}:{record.source_index}:{1 if record.bullish else -1}"
                     if identity not in confirmations and record.active:
@@ -213,12 +225,14 @@ class OrderBlockMTFReplayRunner(_BaseTargetEvidenceRunner):
                 evidence=evidence,
             )
             snapshots[timeframe] = snapshot
+            behavior_by_timeframe[timeframe] = latest_behavior
             all_evidence.extend(evidence)
         return TargetEvidenceMTFReplay(
             symbol=normalized_symbol,
             timeframes=normalized_timeframes,
             snapshots=snapshots,
             evidence=tuple(all_evidence),
+            order_block_behavior=behavior_by_timeframe,
         )
 
 
