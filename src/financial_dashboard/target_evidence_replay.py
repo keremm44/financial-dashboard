@@ -215,13 +215,12 @@ class OrderBlockMTFReplayRunner(_BaseTargetEvidenceRunner):
                 confirmations=confirmations,
             )
             behavior_state = {item.identity: item.state.value for item in latest_behavior}
+            prefix = f"OB:{timeframe}:"
             evidence = tuple(
                 replace(
                     item,
                     source_state=behavior_state.get(
-                        f"OB:{item.origin_index}:{1 if item.low <= item.anchor_price <= item.high and any(
-                            record.source_index == item.origin_index and record.bullish for record in engine.records
-                        ) else -1}",
+                        str(item.native_origin_id).replace(prefix, "OB:", 1),
                         item.source_state,
                     ),
                 )
