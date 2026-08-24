@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+from financial_dashboard.context.builder import _filter_liquidity
 from financial_dashboard.context.envelope import ContextDomain
 from financial_dashboard.context.projections import project_liquidity
 from financial_dashboard.engines.liquidity_behavior import (
@@ -52,8 +53,8 @@ def _evidence() -> TargetEvidence:
     )
 
 
-def test_liquidity_behavior_is_projected_as_separate_causal_fact() -> None:
-    behavior = LiquidityBehaviorSnapshot(
+def _behavior() -> LiquidityBehaviorSnapshot:
+    return LiquidityBehaviorSnapshot(
         as_of=NOW,
         landscape=LiquidityLandscapeState.ONE_SIDED_OBJECTIVE,
         pools=(
@@ -72,18 +73,23 @@ def test_liquidity_behavior_is_projected_as_separate_causal_fact() -> None:
             ),
         ),
     )
-    replay = SimpleNamespace(
+
+
+def _replay(*, with_behavior: bool = True):
+    return SimpleNamespace(
         symbol="ASELS",
         timeframes=("1h",),
         evidence=(_evidence(),),
-        liquidity_behavior={"1h": behavior},
+        liquidity_behavior={"1h": _behavior()} if with_behavior else None,
         snapshots={
             "1h": SimpleNamespace(available_at=NOW + timedelta(minutes=1))
         },
     )
 
+
+def test_liquidity_behavior_is_projected_as_separate_causal_fact() -> None:
     projection = project_liquidity(
-        replay,
+        _replay(),
         data_quality_by_timeframe={"1h": "DATA_OK"},
     )
 
@@ -100,13 +106,27 @@ def test_liquidity_behavior_is_projected_as_separate_causal_fact() -> None:
     assert row.ref.lineage_id is None
 
 
-def test_liquidity_projection_remains_backward_compatible_without_behavior() -> None:
-    replay = SimpleNamespace(
-        symbol="ASELS",
-        timeframes=("1h",),
-        evidence=(_evidence(),),
-        snapshots={},
+def test_liquidity_behavior_is_filtered_by_its_own_availability() -> None:
+    projection = project_liquidity(
+        _replay(),
+        data_quality_by_timeframe={"1h": "DATA_OK"},
     )
+
+    before_behavior_available = _filter_liquidity(projection, NOW)
+    assert before_behavior_available is not None
+    assert len(before_behavior_available.observations) == 1
+    assert before_behavior_available.behavior_observations == ()
+
+    after_behavior_available = _filter_liquidity(
+        projection,
+        NOW + timedelta(minutes=1),
+    )
+    assert after_behavior_available is not None
+    assert len(after_behavior_available.behavior_observations) == 1
+
+
+def test_liquidity_projection_remains_backward_compatible_without_behavior() -> None:
+    replay = _replay(with_behavior=False)
 
     projection = project_liquidity(
         replay,
