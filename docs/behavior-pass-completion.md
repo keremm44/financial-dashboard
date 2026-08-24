@@ -1,6 +1,6 @@
 # Behavior Architecture Pass — Completion Note
 
-This note records the implemented outcome of the behavior-architecture review. It is intentionally narrower than `docs/behavior-architecture-review.md`: it documents what was actually changed, what was deliberately left unchanged, and the safety boundaries that must remain true for future BUY/SELL work.
+This note records the implemented outcome of the behavior-architecture review that guided this pass. It documents what was actually changed, what was deliberately left unchanged, and the safety boundaries that must remain true for future BUY/SELL work.
 
 ## Completed behavior/read-model passes
 
