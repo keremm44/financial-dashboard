@@ -139,12 +139,20 @@ def _fact_ref(
     )
 
 
-def _is_unavailable(status: str) -> bool:
-    return status in {"WARMUP", "VOLUME_UNAVAILABLE"}
+def _is_unavailable(status: str, quality: ContextDataQuality) -> bool:
+    return quality is not ContextDataQuality.VALID or status in {
+        "WARMUP",
+        "VOLUME_UNAVAILABLE",
+    }
 
 
-def _participation_trend(status: str, final_state: str, export: Any) -> ParticipationTrend:
-    if _is_unavailable(status):
+def _participation_trend(
+    status: str,
+    quality: ContextDataQuality,
+    final_state: str,
+    export: Any,
+) -> ParticipationTrend:
+    if _is_unavailable(status, quality):
         return ParticipationTrend.UNAVAILABLE
     stage = str(getattr(export, "participation_stage", "NONE") or "NONE").upper()
     if stage == "CONFIRMED":
@@ -164,8 +172,12 @@ def _participation_trend(status: str, final_state: str, export: Any) -> Particip
     return ParticipationTrend.NONE
 
 
-def _effort_result(status: str, export: Any) -> EffortResultBehavior:
-    if _is_unavailable(status):
+def _effort_result(
+    status: str,
+    quality: ContextDataQuality,
+    export: Any,
+) -> EffortResultBehavior:
+    if _is_unavailable(status, quality):
         return EffortResultBehavior.UNAVAILABLE
     value = str(getattr(export, "effort_result_class", "NEUTRAL") or "NEUTRAL").upper()
     if value in {"RISING_EFFORT_STRONG_RESULT", "HIGH_EFFORT_STRONG_RESULT"}:
@@ -175,8 +187,12 @@ def _effort_result(status: str, export: Any) -> EffortResultBehavior:
     return EffortResultBehavior.NEUTRAL
 
 
-def _absorption(status: str, export: Any) -> AbsorptionBehavior:
-    if _is_unavailable(status):
+def _absorption(
+    status: str,
+    quality: ContextDataQuality,
+    export: Any,
+) -> AbsorptionBehavior:
+    if _is_unavailable(status, quality):
         return AbsorptionBehavior.UNAVAILABLE
     stage = str(getattr(export, "absorption_stage", "NONE") or "NONE").upper()
     if stage == "CANDIDATE":
@@ -188,8 +204,12 @@ def _absorption(status: str, export: Any) -> AbsorptionBehavior:
     return AbsorptionBehavior.NONE
 
 
-def _break_participation(status: str, export: Any) -> BreakParticipationBehavior:
-    if _is_unavailable(status):
+def _break_participation(
+    status: str,
+    quality: ContextDataQuality,
+    export: Any,
+) -> BreakParticipationBehavior:
+    if _is_unavailable(status, quality):
         return BreakParticipationBehavior.UNAVAILABLE
     stage = str(getattr(export, "break_stage", "NONE") or "NONE").upper()
     mapping = {
@@ -202,8 +222,12 @@ def _break_participation(status: str, export: Any) -> BreakParticipationBehavior
     return mapping.get(stage, BreakParticipationBehavior.NONE)
 
 
-def _shock(status: str, export: Any) -> ShockBehavior:
-    if _is_unavailable(status):
+def _shock(
+    status: str,
+    quality: ContextDataQuality,
+    export: Any,
+) -> ShockBehavior:
+    if _is_unavailable(status, quality):
         return ShockBehavior.UNAVAILABLE
     return ShockBehavior.ONE_BAR if bool(getattr(export, "one_bar_shock", False)) else ShockBehavior.NONE
 
@@ -223,11 +247,11 @@ def project_participation_behavior(
         status = str(getattr(latest.status, "value", latest.status))
         final_state = str(latest.state)
         quality = normalize_context_data_quality(latest.data_quality)
-        trend = _participation_trend(status, final_state, export)
-        effort = _effort_result(status, export)
-        absorption = _absorption(status, export)
-        break_behavior = _break_participation(status, export)
-        shock = _shock(status, export)
+        trend = _participation_trend(status, quality, final_state, export)
+        effort = _effort_result(status, quality, export)
+        absorption = _absorption(status, quality, export)
+        break_behavior = _break_participation(status, quality, export)
+        shock = _shock(status, quality, export)
         native_state = ":".join(
             (
                 trend.value,
