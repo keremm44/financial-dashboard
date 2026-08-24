@@ -139,7 +139,7 @@ def test_runner_wires_explicit_engine_configs_into_each_independent_replay(
     captured_market: list[tuple[MarketStructureConfig | None, BreakConfig | None]] = []
     captured_support: list[SupportResistanceConfig | None] = []
     real_market_engine = replay_module.MarketStructureEngine
-    real_support_engine = replay_module.SupportResistanceRangeEngine
+    real_support_engine = replay_module.RuntimeSupportResistanceRangeEngine
 
     def market_factory(*, config=None, break_config=None):
         captured_market.append((config, break_config))
@@ -150,7 +150,7 @@ def test_runner_wires_explicit_engine_configs_into_each_independent_replay(
         return real_support_engine(config=config)
 
     monkeypatch.setattr(replay_module, "MarketStructureEngine", market_factory)
-    monkeypatch.setattr(replay_module, "SupportResistanceRangeEngine", support_factory)
+    monkeypatch.setattr(replay_module, "RuntimeSupportResistanceRangeEngine", support_factory)
     runner = CachedStructureLocationMTFRunner(
         _store(tmp_path),
         market_structure_config=market_config,
