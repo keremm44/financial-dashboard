@@ -43,6 +43,11 @@ from .structure_location_replay import (
 )
 
 
+# Keep the historical module-level injection seam used by tests/integrators while
+# routing production replay through the optimized runtime facade.
+PatternCompressionEngine = RuntimePatternCompressionEngine
+
+
 @dataclass(frozen=True, slots=True)
 class PatternTimeframeSnapshot:
     symbol: str
@@ -141,7 +146,7 @@ class CachedThreeDomainObserverRunner:
 
         for timeframe in normalized:
             replay = structure_location.replay_for(timeframe)
-            engine = RuntimePatternCompressionEngine(self.pattern_compression_config)
+            engine = PatternCompressionEngine(self.pattern_compression_config)
             for _, bar in replay.input_batch.frame.iterrows():
                 engine.update(bar)
             pattern_result = engine.snapshot()
