@@ -118,6 +118,7 @@ def stabil_support_replay_frame(
     rows: list[dict[str, object]] = []
     for point in replay.points:
         snapshot = point.snapshot
+        behavior = point.behavior
         rows.append(
             {
                 "As of": point.as_of,
@@ -125,6 +126,9 @@ def stabil_support_replay_frame(
                 "State": stabil_support_display_state(snapshot),
                 "Validity": snapshot.validity.value,
                 "Dynamics": snapshot.dynamics.value,
+                "Support motion": None if behavior is None else behavior.motion.value,
+                "Price relation": None if behavior is None else behavior.relation.value,
+                "Interaction": None if behavior is None else behavior.interaction.value,
                 "Support": snapshot.support_level,
                 "Floor": snapshot.support_floor,
                 "Distance %": snapshot.distance_pct,
@@ -134,6 +138,9 @@ def stabil_support_replay_frame(
                 "Bars below": snapshot.bars_below_support,
                 "Reclaims": snapshot.reclaim_count,
                 "Progression": snapshot.progression.value,
+                "Bars since rebase": None if behavior is None else behavior.bars_since_rebase,
+                "Support crosses": None if behavior is None else behavior.cross_count,
+                "Rebase step ATR": None if behavior is None else behavior.last_rebase_step_atr,
                 "Wick below": snapshot.intrabar_below_support,
                 "Close below": snapshot.close_below_support,
                 "Close below floor": snapshot.close_below_floor,
