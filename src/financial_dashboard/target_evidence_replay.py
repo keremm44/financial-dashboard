@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Mapping
 
 import pandas as pd
@@ -213,6 +213,19 @@ class OrderBlockMTFReplayRunner(_BaseTargetEvidenceRunner):
                 timeframe=timeframe,
                 engine=engine,
                 confirmations=confirmations,
+            )
+            behavior_state = {item.identity: item.state.value for item in latest_behavior}
+            evidence = tuple(
+                replace(
+                    item,
+                    source_state=behavior_state.get(
+                        f"OB:{item.origin_index}:{1 if item.low <= item.anchor_price <= item.high and any(
+                            record.source_index == item.origin_index and record.bullish for record in engine.records
+                        ) else -1}",
+                        item.source_state,
+                    ),
+                )
+                for item in evidence
             )
             last = frame.iloc[-1]
             snapshot = TargetEvidenceSnapshot(
