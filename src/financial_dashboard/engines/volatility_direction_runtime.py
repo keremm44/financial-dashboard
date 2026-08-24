@@ -6,7 +6,7 @@ from .volatility_direction_transition import (
     VolatilityDirectionSnapshot,
     VolatilityDirectionTransitionEngine,
 )
-from .volatility_runtime_engine import RuntimeVolatilityBandsFibEngine
+from .volatility_runtime_exact import ExactRuntimeVolatilityBandsFibEngine
 
 
 class RuntimeVolatilityDirectionTransitionEngine(VolatilityDirectionTransitionEngine):
@@ -14,7 +14,7 @@ class RuntimeVolatilityDirectionTransitionEngine(VolatilityDirectionTransitionEn
 
     def __init__(self, config: VolatilityBandsConfig | None = None) -> None:
         super().__init__(config)
-        self._core = RuntimeVolatilityBandsFibEngine(self.config)
+        self._core = ExactRuntimeVolatilityBandsFibEngine(self.config)
         self._snapshot = VolatilityDirectionSnapshot(
             timestamp=None,
             core_result=None,
