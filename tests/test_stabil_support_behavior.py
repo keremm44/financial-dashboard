@@ -11,6 +11,7 @@ from financial_dashboard.engines.stabil_support_behavior import (
 )
 from financial_dashboard.engines.stabil_support_lifecycle import (
     DailySupportObservation,
+    StabilSupportLifecycleEngine,
     build_support_lifecycle,
 )
 from financial_dashboard.stabil_support_replay import (
@@ -75,6 +76,17 @@ def test_support_motion_is_separate_from_price_distance_and_flattens_after_lower
     assert mature.motion is SupportMotion.FLAT_AFTER_FALL
     assert mature.bars_since_rebase == 4
     assert mature.relation in {PriceSupportRelation.AT_SUPPORT, PriceSupportRelation.ABOVE_NEAR}
+
+
+def test_price_approaching_flat_support_is_explicit_timing_context_not_breakdown() -> None:
+    items = (
+        _obs(3, close=104.0, low=103.0),
+        _obs(4, close=101.0, low=100.8),
+    )
+    behavior = _behavior(items)
+    assert behavior.motion is SupportMotion.FLAT
+    assert behavior.relation is PriceSupportRelation.ABOVE_NEAR
+    assert behavior.interaction is SupportInteractionState.APPROACHING_SUPPORT
 
 
 def test_price_below_fresh_falling_support_with_persistence_is_downside_continuation() -> None:
@@ -151,3 +163,10 @@ def test_replay_exposes_same_behavior_as_latest_historical_prefix(tmp_path) -> N
     )
     assert direct.behavior is not None
     assert historical.latest_behavior == direct.behavior
+
+
+def test_new_behavior_layer_does_not_change_canonical_lifecycle_snapshot(tmp_path) -> None:
+    store = make_ui_store(tmp_path)
+    direct = StabilSupportReplayRunner(store).replay("THYAO")
+    canonical = StabilSupportLifecycleEngine().analyze(direct.input_batch.frame)
+    assert direct.snapshot == canonical
