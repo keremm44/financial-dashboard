@@ -8,7 +8,6 @@ import streamlit as st
 from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES
 from financial_dashboard.engines.market_structure_state import EVENT_BOS, EVENT_CHOCH
 from financial_dashboard.engines.pattern_compression_core import PROFILE_VALUES
-from financial_dashboard.ui.charts import make_market_figure
 from financial_dashboard.ui.cross_domain_view_models import (
     cross_domain_context_frame,
     cross_domain_knowledge_frame,
@@ -115,42 +114,9 @@ def _domain_error(domain) -> str:
 
 
 def _render_market(observer, *, targeting=None) -> None:
-    chart_view, structure_view, zones_view, targets_view = st.tabs(
-        ("Chart", "Market Structure", "Zones", "Targeting")
+    structure_view, zones_view, targets_view = st.tabs(
+        ("Market Structure", "Zones", "Targeting")
     )
-    with chart_view:
-        left, middle, right = st.columns((1.1, 2.2, 1.2))
-        with left:
-            chart_timeframe = st.selectbox("Grafik TF", observer.timeframes, key="chart_timeframe")
-        with middle:
-            chart_zone_timeframes = st.multiselect(
-                "Zone TF", observer.timeframes, default=(chart_timeframe,)
-            )
-        with right:
-            bar_limit = st.slider("Mum", 50, 1000, 300, step=50)
-        options = st.columns(4)
-        show_events = options[0].checkbox("BOS/CHoCH", value=True)
-        show_confluence = options[1].checkbox("Confluence", value=False)
-        show_conflicts = options[2].checkbox("Conflicts", value=False)
-        show_targets = options[3].checkbox(
-            "Targets",
-            value=False,
-            disabled=targeting is None,
-            help="Target overlay tam analiz yüklendiğinde kullanılabilir.",
-        )
-        figure = make_market_figure(
-            observer,
-            timeframe=chart_timeframe,
-            zone_timeframes=chart_zone_timeframes,
-            bar_limit=bar_limit,
-            show_events=show_events,
-            show_confluence=show_confluence,
-            show_conflicts=show_conflicts,
-            targeting=targeting,
-            show_nearest_targets=show_targets,
-            show_all_target_clusters=False,
-        )
-        st.plotly_chart(figure, width="stretch")
 
     with structure_view:
         event_frame = structure_events_frame(observer)
