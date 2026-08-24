@@ -124,6 +124,7 @@ def test_warmup_is_unavailable_not_balanced() -> None:
     assert row.range_regime is VolatilityRangeRegime.UNAVAILABLE
     assert row.expansion_character is ExpansionCharacter.UNAVAILABLE
     assert row.transition_stage is VolatilityTransitionStage.UNAVAILABLE
+    assert row.expansion_direction == 0
 
 
 def test_environment_projection_respects_knowledge_boundary() -> None:
