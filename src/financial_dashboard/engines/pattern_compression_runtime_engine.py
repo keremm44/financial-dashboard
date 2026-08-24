@@ -1,15 +1,24 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from itertools import combinations
 from typing import Any
 
 import pandas as pd
 
-from .pattern_compression_active import is_break_lifecycle, refresh_active_candidate
+from .pattern_compression_active import (
+    is_break_lifecycle,
+    is_terminal,
+    refresh_active_candidate,
+    reset_quality_snapshot,
+)
 from .pattern_compression_core import (
     MAX_HISTORY_OFFSET,
     MAX_VIOLATION_CACHE,
     MAX_VIOLATION_SCAN,
+    SEARCH_PIVOTS,
+    ST_CANDIDATE,
+    PatternCandidate,
     line_price,
 )
 from .pattern_compression_engine import PatternCompressionEngine
@@ -18,6 +27,15 @@ from .pattern_compression_geometry import (
     ViolationStats,
     violation_penalty_from_stats,
 )
+from .pattern_compression_selection import (
+    candidate_preferred,
+    continuity_score,
+    identity_compatible,
+    same_completed_structure,
+    selection_score,
+    should_replace_active,
+)
+from .pattern_compression_specialized import PatternPoleEvaluator, SpecializedPatternEvaluator
 
 
 _GeometryKey = tuple[int, float, int, float, int, float, int, float]
@@ -266,6 +284,160 @@ class RuntimePatternCompressionEngine(PatternCompressionEngine):
             closes=self._runtime_closes,
             violation_end_bar=violation_end,
         )
+
+    def _scan_candidates(self, bar_index: int, safe_atr: float, events: list[str]) -> None:
+        """Canonical candidate selection with impossible chronology pruned early.
+
+        ``PatternGeometryEvaluator.analyze`` can never yield a valid generic or
+        specialized pattern when the four pivot bars do not alternate
+        high/low/high/low (or the inverse), because ``touch_basics`` includes that
+        chronology requirement and all specialized paths depend on touch_basics.
+        Skip those combinations before touch/violation scans while preserving the
+        exact ordering of every candidate that can affect state.
+        """
+
+        high_count = len(self._store.high_prices)
+        low_count = len(self._store.low_prices)
+        if high_count < 2 or low_count < 2:
+            return
+        high_start = max(0, high_count - SEARCH_PIVOTS)
+        low_start = max(0, low_count - SEARCH_PIVOTS)
+
+        viable: list[tuple[int, int, int, int]] = []
+        for high_a, high_b in combinations(range(high_start, high_count), 2):
+            hb1 = self._store.high_bars[high_a]
+            hb2 = self._store.high_bars[high_b]
+            for low_a, low_b in combinations(range(low_start, low_count), 2):
+                lb1 = self._store.low_bars[low_a]
+                lb2 = self._store.low_bars[low_b]
+                if (hb1 < lb1 < hb2 < lb2) or (lb1 < hb1 < lb2 < hb2):
+                    viable.append((high_a, high_b, low_a, low_b))
+        if not viable:
+            return
+
+        evaluator = self._geometry_evaluator(bar_index, safe_atr)
+        highs = self._runtime_highs
+        lows = self._runtime_lows
+        closes = self._runtime_closes
+        pole_evaluator = PatternPoleEvaluator(
+            store=self._store,
+            highs=highs,
+            lows=lows,
+            closes=closes,
+            atrs=self._atr_values,
+            current_bar=bar_index,
+            safe_atr=safe_atr,
+        )
+        specialized = SpecializedPatternEvaluator(
+            store=self._store,
+            highs=highs,
+            lows=lows,
+            closes=closes,
+        )
+
+        needed_high_a = {high_a for high_a, _, _, _ in viable}
+        needed_low_a = {low_a for _, _, low_a, _ in viable}
+        bull_poles = {
+            index: pole_evaluator.find_pole(
+                end_bar=self._store.high_bars[index],
+                end_price=self._store.high_prices[index],
+                direction=1,
+            )
+            for index in sorted(needed_high_a)
+        }
+        bear_poles = {
+            index: pole_evaluator.find_pole(
+                end_bar=self._store.low_bars[index],
+                end_price=self._store.low_prices[index],
+                direction=-1,
+            )
+            for index in sorted(needed_low_a)
+        }
+
+        best = PatternCandidate()
+        for high_a, high_b, low_a, low_b in viable:
+            analysis = evaluator.analyze(
+                high_a=high_a,
+                high_b=high_b,
+                low_a=low_a,
+                low_b=low_b,
+            )
+            candidate = specialized.apply(
+                analysis=analysis,
+                bull_pole=bull_poles[high_a],
+                bear_pole=bear_poles[low_a],
+            )
+            if not candidate.valid or same_completed_structure(
+                candidate,
+                self._completed,
+                safe_atr=safe_atr,
+                config=self.config,
+            ):
+                continue
+            candidate.selection_score = selection_score(
+                candidate,
+                active=self._active,
+                pattern_state=self._pattern_state,
+                bar_index=bar_index,
+                close=float(self._rows[bar_index]["close"]),
+                safe_atr=safe_atr,
+                config=self.config,
+                terminal=is_terminal(self._pattern_state),
+            )
+            if candidate_preferred(candidate, best, config=self.config):
+                best = candidate
+
+        if not best.valid or same_completed_structure(
+            best,
+            self._completed,
+            safe_atr=safe_atr,
+            config=self.config,
+        ):
+            return
+        lifecycle_can_update = not is_break_lifecycle(self._pattern_state)
+        continuity = (
+            continuity_score(
+                self._active,
+                best,
+                bar_index=bar_index,
+                safe_atr=safe_atr,
+                config=self.config,
+            )
+            if self._active.valid
+            else 0.0
+        )
+        if (
+            self._active.valid
+            and identity_compatible(self._active, best)
+            and lifecycle_can_update
+            and continuity >= 60.0
+        ):
+            preserved_identity = self._active.identity
+            best.identity = preserved_identity
+            self._active = reset_quality_snapshot(best)
+            self._store.lock_used_pivots(self._active)
+            self._reset_lifecycle()
+            events.append(f"PATTERN_CONTINUITY:{preserved_identity}:{continuity:.1f}")
+            return
+
+        replace, reason = should_replace_active(
+            self._active,
+            best,
+            state=self._pattern_state,
+            lifecycle_can_update=lifecycle_can_update,
+            terminal=is_terminal(self._pattern_state),
+            config=self.config,
+        )
+        if not replace:
+            events.append(f"PATTERN_REPLACEMENT_BLOCKED:{reason}")
+            return
+        self._next_pattern_identity += 1
+        best.identity = self._next_pattern_identity
+        self._active = reset_quality_snapshot(best)
+        self._store.lock_used_pivots(self._active)
+        self._pattern_state = ST_CANDIDATE
+        self._invalid_reason = "Yok"
+        self._reset_lifecycle()
 
 
 __all__ = ["RuntimePatternCompressionEngine", "RuntimePatternGeometryEvaluator"]
