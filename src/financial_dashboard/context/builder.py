@@ -38,6 +38,10 @@ from .projections import (
     project_volatility,
 )
 from .snapshot import CrossDomainContextSnapshot, build_context_snapshot
+from .volatility_environment_projection import (
+    VolatilityEnvironmentProjection,
+    project_volatility_environment,
+)
 from .zones import ZoneIntelligenceConfig, build_zone_intelligence
 
 
@@ -49,6 +53,7 @@ class CrossDomainBuildResult:
     permission: PermissionEnvelope
     fvg_engulfing_lifecycle: FvgEngulfingLifecycleProjection | None = None
     participation_behavior: ParticipationBehaviorProjection | None = None
+    volatility_environment: VolatilityEnvironmentProjection | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +152,12 @@ def _all_volatility_refs(projection: VolatilityProjection | None) -> tuple[FactR
     if projection is None:
         return ()
     return tuple(item.ref for item in projection.timeframe_facts if item.ref is not None)
+
+
+def _all_volatility_environment_refs(
+    projection: VolatilityEnvironmentProjection | None,
+) -> tuple[FactRef, ...]:
+    return () if projection is None else projection.refs
 
 
 def _all_ham_refs(projection: HamProjection | None) -> tuple[FactRef, ...]:
@@ -344,6 +355,10 @@ def build_cross_domain_context(inputs: CrossDomainBuildInputs) -> CrossDomainBui
         if inputs.volatility_replay is None
         else project_volatility(inputs.volatility_replay, available_at=inputs.available_at)
     )
+    volatility_environment_raw = project_volatility_environment(
+        inputs.volatility_replay,
+        available_at=inputs.available_at,
+    )
     ham_raw = (
         None
         if inputs.ham_replay is None
@@ -361,6 +376,7 @@ def build_cross_domain_context(inputs: CrossDomainBuildInputs) -> CrossDomainBui
             *_all_participation_behavior_refs(participation_behavior_raw),
             *_all_pattern_refs(pattern_raw),
             *_all_volatility_refs(volatility_raw),
+            *_all_volatility_environment_refs(volatility_environment_raw),
             *_all_ham_refs(ham_raw),
         )
     )
@@ -382,6 +398,11 @@ def build_cross_domain_context(inputs: CrossDomainBuildInputs) -> CrossDomainBui
     )
     pattern = _filter_pattern(pattern_raw, inputs.as_of)
     volatility = _filter_volatility(volatility_raw, inputs.as_of)
+    volatility_environment = (
+        None
+        if volatility_environment_raw is None
+        else volatility_environment_raw.available_at(inputs.as_of)
+    )
     ham = _filter_ham(ham_raw, inputs.as_of)
 
     zones = build_zone_intelligence(
@@ -423,6 +444,7 @@ def build_cross_domain_context(inputs: CrossDomainBuildInputs) -> CrossDomainBui
         permission=resolve_permission(context),
         fvg_engulfing_lifecycle=fvg_engulfing_lifecycle,
         participation_behavior=participation_behavior,
+        volatility_environment=volatility_environment,
     )
 
 
