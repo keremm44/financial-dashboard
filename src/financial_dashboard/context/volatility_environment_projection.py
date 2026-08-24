@@ -130,7 +130,9 @@ def _range_regime(regime: VolatilityState | None, unavailable: bool) -> Volatili
     return mapping.get(regime, VolatilityRangeRegime.PENDING)
 
 
-def _expansion_direction(regime: VolatilityState | None) -> int:
+def _expansion_direction(regime: VolatilityState | None, unavailable: bool) -> int:
+    if unavailable:
+        return 0
     if regime in {VolatilityState.UP_CANDIDATE, VolatilityState.UP_CONFIRMED}:
         return 1
     if regime in {VolatilityState.DOWN_CANDIDATE, VolatilityState.DOWN_CONFIRMED}:
@@ -228,12 +230,7 @@ def project_volatility_environment(
             continue
         export = latest.confirmed_export
         quality = normalize_context_data_quality(export.data_quality)
-        unavailable = str(export.data_quality).upper() in {
-            "WARMUP",
-            "SOURCE_GAP",
-            "INCOMPLETE_BAR",
-            "DATA_LIMITED",
-        }
+        unavailable = quality is not ContextDataQuality.VALID
         regime = _enum(VolatilityState, export.regime)
         band_state = _enum(BandState, export.band_state)
         band_agreement = _enum(BandAgreement, export.band_agreement)
@@ -264,7 +261,7 @@ def project_volatility_environment(
                 range_regime=range_regime,
                 expansion_character=expansion_character,
                 transition_stage=transition_stage,
-                expansion_direction=_expansion_direction(regime),
+                expansion_direction=_expansion_direction(regime, unavailable),
                 regime_code=None if export.regime is None else int(export.regime),
                 band_state_code=None if export.band_state is None else int(export.band_state),
                 band_agreement_code=(
