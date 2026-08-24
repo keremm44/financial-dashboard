@@ -40,6 +40,10 @@ class RuntimeSupportResistanceRangeEngine(SupportResistanceRangeEngine):
         self._runtime_sorted_close_blocks: list[list[float]] = []
         # score[i] is the overlap of rows i-1 and i; index zero has no pair.
         self._runtime_pair_scores: list[float] = []
+        # start_index -> (last included pair index, canonical left-to-right sum).
+        # Extending the previous sum by one immutable pair preserves exactly the
+        # same floating-point addition order as sum(scores[start+1:now+1]).
+        self._runtime_overlap_accumulators: dict[int, tuple[int, float]] = {}
 
     def _reset(self) -> None:
         super()._reset()
@@ -119,9 +123,25 @@ class RuntimeSupportResistanceRangeEngine(SupportResistanceRangeEngine):
         self._sync_runtime_index()
         if now <= start:
             return 0.0
-        # Keep canonical Python sum order exactly; only the immutable pair formula is cached.
-        values = self._runtime_pair_scores[start + 1 : now + 1]
-        return sum(values) / len(values) if values else 0.0
+
+        cached = self._runtime_overlap_accumulators.get(start)
+        if cached is None:
+            last_index = start
+            total = 0.0
+        else:
+            last_index, total = cached
+
+        # Engine replay is monotonic. Keep a defensive exact fallback in case an
+        # alternate caller asks for an earlier endpoint after a later one.
+        if last_index > now:
+            values = self._runtime_pair_scores[start + 1 : now + 1]
+            return sum(values) / len(values) if values else 0.0
+
+        first_missing = max(start + 1, last_index + 1)
+        for index in range(first_missing, now + 1):
+            total += self._runtime_pair_scores[index]
+        self._runtime_overlap_accumulators[start] = (now, total)
+        return total / float(now - start)
 
     def _build_geometry(self) -> RangeSnapshot:
         self._sync_runtime_index()
