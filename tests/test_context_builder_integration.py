@@ -22,6 +22,22 @@ def test_workspace_exposes_cross_domain_shadow_result_without_action_authority(t
     assert all(ref.available_at <= result.context.as_of for ref in result.context.source_refs)
     assert result.permission.is_actionable_signal is False
 
+    # Rich behavior projections remain additive read models. They participate in the
+    # same knowledge boundary but do not replace the established context axes.
+    assert result.fvg_engulfing_lifecycle is not None
+    assert result.participation_behavior is not None
+    assert result.volatility_environment is not None
+    assert result.pattern_behavior is not None
+    source_ids = {ref.native_id for ref in result.context.source_refs}
+    enriched_refs = (
+        *result.fvg_engulfing_lifecycle.refs,
+        *result.participation_behavior.refs,
+        *result.volatility_environment.refs,
+        *result.pattern_behavior.refs,
+    )
+    assert all(ref.available_at <= result.context.as_of for ref in enriched_refs)
+    assert all(ref.native_id in source_ids for ref in enriched_refs)
+
 
 def test_optional_ham_failure_is_reported_but_does_not_break_shadow_context(tmp_path, monkeypatch) -> None:
     store = make_ui_store(tmp_path)
