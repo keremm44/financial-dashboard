@@ -87,7 +87,12 @@ def _all_structural_refs(projection: StructuralFactsProjection) -> tuple[FactRef
 
 
 def _all_liquidity_refs(projection: LiquidityProjection | None) -> tuple[FactRef, ...]:
-    return () if projection is None else tuple(item.ref for item in projection.observations)
+    if projection is None:
+        return ()
+    return tuple(
+        item.ref
+        for item in (*projection.observations, *projection.behavior_observations)
+    )
 
 
 def _all_reaction_refs(projection: ReactionEvidenceProjection | None) -> tuple[FactRef, ...]:
@@ -142,6 +147,9 @@ def _filter_liquidity(projection: LiquidityProjection | None, as_of: Any) -> Liq
     return replace(
         projection,
         observations=tuple(item for item in projection.observations if item.ref.is_available_at(as_of)),
+        behavior_observations=tuple(
+            item for item in projection.behavior_observations if item.ref.is_available_at(as_of)
+        ),
     )
 
 
