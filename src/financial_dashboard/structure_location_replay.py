@@ -27,8 +27,8 @@ from .engines.structure_location import (
 from .engines.support_resistance_engine import (
     SupportResistanceConfig,
     SupportResistanceExport,
-    SupportResistanceRangeEngine,
 )
+from .engines.support_resistance_runtime_engine import RuntimeSupportResistanceRangeEngine
 from .engines.support_resistance_zones import (
     SupportResistanceZone,
     ZoneLifecycle,
@@ -189,7 +189,7 @@ def _support_snapshot(
     symbol: str,
     timeframe: str,
     batch: EngineInputBatch,
-    engine: SupportResistanceRangeEngine,
+    engine: RuntimeSupportResistanceRangeEngine,
     clock: CausalBarClock,
 ) -> SupportResistanceTimeframeSnapshot:
     export = namespace_support_resistance_export(
@@ -307,7 +307,7 @@ class CachedStructureLocationMTFRunner:
                 config=self.market_structure_config,
                 break_config=self.break_config,
             )
-            support_engine = SupportResistanceRangeEngine(
+            support_engine = RuntimeSupportResistanceRangeEngine(
                 config=self.support_resistance_config,
             )
             observations: list[CausalZoneObservation] = []
