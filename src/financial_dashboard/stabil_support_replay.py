@@ -10,8 +10,12 @@ from financial_dashboard.data.analysis_inputs import AnalysisInputSnapshot, load
 from financial_dashboard.data.engine_input import EngineInputBatch
 from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
+from financial_dashboard.engines.stabil_support_behavior import (
+    StabilSupportBehaviorConfig,
+    StabilSupportBehaviorSnapshot,
+    build_support_behavior,
+)
 from financial_dashboard.engines.stabil_support_lifecycle import (
-    StabilSupportLifecycleEngine,
     StabilSupportLifecycleSnapshot,
     build_daily_support_observations,
     build_support_lifecycle,
@@ -28,6 +32,7 @@ class StabilSupportReplayResult:
     timeframe: str
     input_batch: EngineInputBatch
     snapshot: StabilSupportLifecycleSnapshot
+    behavior: StabilSupportBehaviorSnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +40,7 @@ class StabilSupportReplayPoint:
     as_of: object
     close: float
     snapshot: StabilSupportLifecycleSnapshot
+    behavior: StabilSupportBehaviorSnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +53,10 @@ class StabilSupportHistoricalReplay:
     def latest(self) -> StabilSupportLifecycleSnapshot | None:
         return None if not self.points else self.points[-1].snapshot
 
+    @property
+    def latest_behavior(self) -> StabilSupportBehaviorSnapshot | None:
+        return None if not self.points else self.points[-1].behavior
+
 
 class StabilSupportReplayRunner:
     """Run the daily Stabil support lifecycle from the shared prepared input snapshot."""
@@ -56,9 +66,11 @@ class StabilSupportReplayRunner:
         store: ParquetOHLCVStore,
         *,
         config: StabilTrendConfig | None = None,
+        behavior_config: StabilSupportBehaviorConfig | None = None,
     ) -> None:
         self.store = store
         self.config = config or StabilTrendConfig()
+        self.behavior_config = behavior_config or StabilSupportBehaviorConfig()
 
     def replay(
         self,
@@ -81,12 +93,26 @@ class StabilSupportReplayRunner:
             )
 
         batch = inputs.for_timeframe(STABIL_SUPPORT_TIMEFRAME).input_batch
-        snapshot = StabilSupportLifecycleEngine(self.config).analyze(batch.frame)
+        observations = build_daily_support_observations(
+            batch.frame,
+            config=self.config,
+        )
+        snapshot = build_support_lifecycle(
+            observations,
+            min_tick=self.config.min_tick,
+        )
+        behavior = build_support_behavior(
+            observations,
+            snapshot,
+            config=self.behavior_config,
+            min_tick=self.config.min_tick,
+        )
         return StabilSupportReplayResult(
             symbol=clean_symbol,
             timeframe=STABIL_SUPPORT_TIMEFRAME,
             input_batch=batch,
             snapshot=snapshot,
+            behavior=behavior,
         )
 
 
@@ -95,8 +121,8 @@ class StabilSupportHistoricalReplayRunner:
 
     The full observation stream is causal because each support is exposed only after
     its confirmation/availability boundary. Each replay point then rebuilds the
-    lifecycle from the prefix available at that point; future tails cannot alter an
-    earlier point.
+    lifecycle and descriptive support behaviour from the prefix available at that
+    point; future tails cannot alter an earlier point.
     """
 
     def __init__(
@@ -104,9 +130,11 @@ class StabilSupportHistoricalReplayRunner:
         store: ParquetOHLCVStore,
         *,
         config: StabilTrendConfig | None = None,
+        behavior_config: StabilSupportBehaviorConfig | None = None,
     ) -> None:
         self.store = store
         self.config = config or StabilTrendConfig()
+        self.behavior_config = behavior_config or StabilSupportBehaviorConfig()
 
     def replay(
         self,
@@ -128,6 +156,7 @@ class StabilSupportHistoricalReplayRunner:
         latest = StabilSupportReplayRunner(
             self.store,
             config=self.config,
+            behavior_config=self.behavior_config,
         ).replay(symbol, input_snapshot=input_snapshot)
         frame = latest.input_batch.frame
         observations = build_daily_support_observations(
@@ -155,10 +184,17 @@ class StabilSupportHistoricalReplayRunner:
                 prefix,
                 min_tick=self.config.min_tick,
             )
+            behavior = build_support_behavior(
+                prefix,
+                snapshot,
+                config=self.behavior_config,
+                min_tick=self.config.min_tick,
+            )
             point = StabilSupportReplayPoint(
                 as_of=observations[index].timestamp,
                 close=float(observations[index].close),
                 snapshot=snapshot,
+                behavior=behavior,
             )
             points.append(point)
             if progress is not None:
@@ -176,10 +212,12 @@ def replay_stabil_support_from_cache(
     *,
     symbol: str,
     config: StabilTrendConfig | None = None,
+    behavior_config: StabilSupportBehaviorConfig | None = None,
 ) -> StabilSupportReplayResult:
     return StabilSupportReplayRunner(
         ParquetOHLCVStore(Path(cache_root).expanduser()),
         config=config,
+        behavior_config=behavior_config,
     ).replay(symbol)
 
 
@@ -188,6 +226,7 @@ def replay_stabil_support_history_from_cache(
     *,
     symbol: str,
     config: StabilTrendConfig | None = None,
+    behavior_config: StabilSupportBehaviorConfig | None = None,
     minimum_bars: int = 1,
     step: int = 1,
     max_points: int | None = 100,
@@ -196,6 +235,7 @@ def replay_stabil_support_history_from_cache(
     return StabilSupportHistoricalReplayRunner(
         ParquetOHLCVStore(Path(cache_root).expanduser()),
         config=config,
+        behavior_config=behavior_config,
     ).replay(
         symbol,
         minimum_bars=minimum_bars,
@@ -211,7 +251,6 @@ __all__ = [
     "StabilSupportHistoricalReplayRunner",
     "StabilSupportReplayPoint",
     "StabilSupportReplayResult",
-    "StabilSupportReplayRunner",
     "replay_stabil_support_from_cache",
     "replay_stabil_support_history_from_cache",
 ]
