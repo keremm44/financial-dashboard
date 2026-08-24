@@ -161,7 +161,13 @@ class CachedThreeDomainObserverRunner:
                 engine.update(bar)
             pattern_result = engine.snapshot()
             pattern_export = engine.export_contract
-            candidate = engine.active_candidate
+
+            # Behavior enrichment must not tighten the long-standing injection
+            # contract for tests/integrators that provide a thin pattern engine.
+            candidate = getattr(engine, "active_candidate", None)
+            candidate_valid = candidate is not None and bool(
+                getattr(candidate, "valid", False)
+            )
             pattern_snapshot = PatternTimeframeSnapshot(
                 symbol=normalized_symbol,
                 timeframe=timeframe,
@@ -169,16 +175,42 @@ class CachedThreeDomainObserverRunner:
                 bar_count=len(replay.input_batch.frame),
                 result=pattern_result,
                 export=pattern_export,
-                native_state=engine.pattern_state,
-                active_start_bar=candidate.start_bar if candidate.valid else None,
-                active_known_bar=candidate.known_bar if candidate.valid else None,
-                progress=candidate.progress if candidate.valid else None,
-                contraction=candidate.contraction if candidate.valid else None,
-                raw_quality=candidate.raw_quality if candidate.valid else None,
-                selection_score=candidate.selection_score if candidate.valid else None,
-                upper_touches=int(candidate.upper_touches) if candidate.valid else 0,
-                lower_touches=int(candidate.lower_touches) if candidate.valid else 0,
-                quality_frozen=bool(candidate.quality_frozen) if candidate.valid else False,
+                native_state=getattr(engine, "pattern_state", None),
+                active_start_bar=(
+                    getattr(candidate, "start_bar", None) if candidate_valid else None
+                ),
+                active_known_bar=(
+                    getattr(candidate, "known_bar", None) if candidate_valid else None
+                ),
+                progress=(
+                    getattr(candidate, "progress", None) if candidate_valid else None
+                ),
+                contraction=(
+                    getattr(candidate, "contraction", None) if candidate_valid else None
+                ),
+                raw_quality=(
+                    getattr(candidate, "raw_quality", None) if candidate_valid else None
+                ),
+                selection_score=(
+                    getattr(candidate, "selection_score", None)
+                    if candidate_valid
+                    else None
+                ),
+                upper_touches=(
+                    int(getattr(candidate, "upper_touches", 0))
+                    if candidate_valid
+                    else 0
+                ),
+                lower_touches=(
+                    int(getattr(candidate, "lower_touches", 0))
+                    if candidate_valid
+                    else 0
+                ),
+                quality_frozen=(
+                    bool(getattr(candidate, "quality_frozen", False))
+                    if candidate_valid
+                    else False
+                ),
             )
             pattern_snapshots.append(pattern_snapshot)
 
