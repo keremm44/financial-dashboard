@@ -213,14 +213,35 @@ class LiquidityObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class LiquidityBehaviorObservation:
+    ref: FactRef
+    pool_identity: str
+    side: str
+    level: float
+    maturity: str
+    relation: str
+    removal: str
+    age_bars: int
+    bars_since_touch: int
+    touch_count: int
+    distance_atr: float | None
+    distance_delta_atr: float | None
+
+
+@dataclass(frozen=True, slots=True)
 class LiquidityProjection:
     symbol: str
     timeframes: tuple[str, ...]
     observations: tuple[LiquidityObservation, ...]
+    behavior_observations: tuple[LiquidityBehaviorObservation, ...] = ()
 
     def for_timeframe(self, timeframe: str) -> tuple[LiquidityObservation, ...]:
         normalized = timeframe.strip().lower()
         return tuple(item for item in self.observations if item.ref.timeframe == normalized)
+
+    def behavior_for_timeframe(self, timeframe: str) -> tuple[LiquidityBehaviorObservation, ...]:
+        normalized = timeframe.strip().lower()
+        return tuple(item for item in self.behavior_observations if item.ref.timeframe == normalized)
 
 
 def project_liquidity(
@@ -259,10 +280,55 @@ def project_liquidity(
                 target_eligible=bool(evidence.target_eligible),
             )
         )
+
+    behavior_rows: list[LiquidityBehaviorObservation] = []
+    behavior_by_timeframe = getattr(replay, "liquidity_behavior", None) or {}
+    for timeframe, behavior in behavior_by_timeframe.items():
+        snapshot = replay.snapshots.get(timeframe)
+        if snapshot is None or behavior.as_of is None:
+            continue
+        quality = _quality(data_quality_by_timeframe[timeframe])
+        for pool in behavior.pools:
+            native_state = (
+                f"{_enum_value(pool.maturity)}:{_enum_value(pool.relation)}:"
+                f"{_enum_value(pool.removal)}"
+            )
+            ref = _fact_ref(
+                domain=ContextDomain.LIQUIDITY,
+                fact_type="POOL_BEHAVIOR",
+                symbol=replay.symbol,
+                timeframe=timeframe,
+                native_id=f"LIQ_BEHAVIOR:{timeframe}:{pool.identity}:{_token(behavior.as_of)}",
+                native_state=native_state,
+                origin_time=behavior.as_of,
+                confirmed_at=behavior.as_of,
+                available_at=snapshot.available_at,
+                data_quality=quality,
+            )
+            behavior_rows.append(
+                LiquidityBehaviorObservation(
+                    ref=ref,
+                    pool_identity=str(pool.identity),
+                    side=str(_enum_value(pool.side)),
+                    level=float(pool.level),
+                    maturity=str(_enum_value(pool.maturity)),
+                    relation=str(_enum_value(pool.relation)),
+                    removal=str(_enum_value(pool.removal)),
+                    age_bars=int(pool.age_bars),
+                    bars_since_touch=int(pool.bars_since_touch),
+                    touch_count=int(pool.touch_count),
+                    distance_atr=pool.distance_atr,
+                    distance_delta_atr=pool.distance_delta_atr,
+                )
+            )
+
     return LiquidityProjection(
         symbol=replay.symbol,
         timeframes=tuple(replay.timeframes),
         observations=tuple(sorted(observations, key=lambda item: item.ref.deterministic_key)),
+        behavior_observations=tuple(
+            sorted(behavior_rows, key=lambda item: item.ref.deterministic_key)
+        ),
     )
 
 
@@ -812,6 +878,7 @@ __all__ = [
     "HamFamilyProjection",
     "HamProjection",
     "HamTimeframeProjection",
+    "LiquidityBehaviorObservation",
     "LiquidityObservation",
     "LiquidityProjection",
     "ParticipationLinkProjection",
