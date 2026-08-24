@@ -22,7 +22,13 @@ def _available_at(timestamp, timeframe):
     return timestamp + timedelta(minutes=1)
 
 
-def _replay(*, status="READY", state="PARTICIPATION_UP_CONFIRMED", **export_values):
+def _replay(
+    *,
+    status="READY",
+    state="PARTICIPATION_UP_CONFIRMED",
+    data_quality="READY",
+    **export_values,
+):
     export = SimpleNamespace(
         participation_direction=export_values.get("participation_direction", 1),
         participation_stage=export_values.get("participation_stage", "CONFIRMED"),
@@ -48,7 +54,7 @@ def _replay(*, status="READY", state="PARTICIPATION_UP_CONFIRMED", **export_valu
     latest = SimpleNamespace(
         status=status,
         state=state,
-        data_quality="READY",
+        data_quality=data_quality,
         evidence_direction=1,
         timestamp=NOW,
         audit_export=export,
@@ -95,6 +101,19 @@ def test_projection_keeps_volume_dimensions_separate() -> None:
 
 def test_warmup_is_unavailable_not_neutral() -> None:
     replay = _replay(status="WARMUP", state="PARTICIPATION_PENDING")
+    projection = project_participation_behavior(replay, available_at=_available_at)
+    assert projection is not None
+    row = projection.for_timeframe("4h")
+
+    assert row.participation_trend is ParticipationTrend.UNAVAILABLE
+    assert row.effort_result is EffortResultBehavior.UNAVAILABLE
+    assert row.absorption is AbsorptionBehavior.UNAVAILABLE
+    assert row.break_participation is BreakParticipationBehavior.UNAVAILABLE
+    assert row.shock is ShockBehavior.UNAVAILABLE
+
+
+def test_limited_data_is_unavailable_even_when_native_stage_is_confirmed() -> None:
+    replay = _replay(data_quality="DATA_LIMITED", participation_stage="CONFIRMED")
     projection = project_participation_behavior(replay, available_at=_available_at)
     assert projection is not None
     row = projection.for_timeframe("4h")
