@@ -56,6 +56,16 @@ class PatternTimeframeSnapshot:
     bar_count: int
     result: EngineResult | None
     export: PatternExport | None
+    native_state: str | None = None
+    active_start_bar: int | None = None
+    active_known_bar: int | None = None
+    progress: float | None = None
+    contraction: float | None = None
+    raw_quality: float | None = None
+    selection_score: float | None = None
+    upper_touches: int = 0
+    lower_touches: int = 0
+    quality_frozen: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +161,7 @@ class CachedThreeDomainObserverRunner:
                 engine.update(bar)
             pattern_result = engine.snapshot()
             pattern_export = engine.export_contract
+            candidate = engine.active_candidate
             pattern_snapshot = PatternTimeframeSnapshot(
                 symbol=normalized_symbol,
                 timeframe=timeframe,
@@ -158,6 +169,16 @@ class CachedThreeDomainObserverRunner:
                 bar_count=len(replay.input_batch.frame),
                 result=pattern_result,
                 export=pattern_export,
+                native_state=engine.pattern_state,
+                active_start_bar=candidate.start_bar if candidate.valid else None,
+                active_known_bar=candidate.known_bar if candidate.valid else None,
+                progress=candidate.progress if candidate.valid else None,
+                contraction=candidate.contraction if candidate.valid else None,
+                raw_quality=candidate.raw_quality if candidate.valid else None,
+                selection_score=candidate.selection_score if candidate.valid else None,
+                upper_touches=int(candidate.upper_touches) if candidate.valid else 0,
+                lower_touches=int(candidate.lower_touches) if candidate.valid else 0,
+                quality_frozen=bool(candidate.quality_frozen) if candidate.valid else False,
             )
             pattern_snapshots.append(pattern_snapshot)
 
