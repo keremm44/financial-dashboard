@@ -15,6 +15,7 @@ class LiquidityPoolMaturity(StrEnum):
 
 class LiquidityPriceRelation(StrEnum):
     UNAVAILABLE = "UNAVAILABLE"
+    DISTANT = "DISTANT"
     APPROACHING = "APPROACHING"
     AT_POOL = "AT_POOL"
     LEFT_BEHIND = "LEFT_BEHIND"
@@ -151,12 +152,19 @@ class LiquidityBehaviorTracker:
                 self._previous_abs_distance_atr[pool.identity] = distance_atr
 
                 touched_now = float(low) <= float(pool.level) <= float(high)
+                passed_pool = (
+                    pool.side is LiquiditySide.BSL and float(close) > float(pool.level)
+                ) or (
+                    pool.side is LiquiditySide.SSL and float(close) < float(pool.level)
+                )
                 if touched_now or distance_atr <= self.config.near_atr * 0.25:
                     relation = LiquidityPriceRelation.AT_POOL
+                elif passed_pool:
+                    relation = LiquidityPriceRelation.LEFT_BEHIND
                 elif distance_atr <= self.config.near_atr and distance_delta_atr is not None and distance_delta_atr < 0:
                     relation = LiquidityPriceRelation.APPROACHING
                 else:
-                    relation = LiquidityPriceRelation.LEFT_BEHIND
+                    relation = LiquidityPriceRelation.DISTANT
 
             if pool.state is LiquidityPoolState.TESTED:
                 removal = LiquidityRemovalState.TESTING
@@ -216,6 +224,7 @@ class LiquidityBehaviorTracker:
                 LiquidityRemovalState.INVALIDATED,
             }
             and row.maturity is not LiquidityPoolMaturity.FORMING
+            and row.relation is not LiquidityPriceRelation.LEFT_BEHIND
         }
         if len(nearby_sides) >= 2:
             return LiquidityLandscapeState.COMPETING_OBJECTIVES
