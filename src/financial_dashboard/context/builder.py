@@ -6,6 +6,10 @@ from typing import Any, Iterable, Mapping
 
 from .axes import evaluate_context_axes
 from .envelope import ContextDataQuality, FactRef
+from .fvg_engulfing_projection import (
+    FvgEngulfingLifecycleProjection,
+    project_fvg_engulfing_lifecycle,
+)
 from .lineage import build_lineage_groups
 from .permissions import PermissionEnvelope, resolve_permission
 from .projections import (
@@ -39,6 +43,7 @@ class CrossDomainBuildResult:
 
     context: CrossDomainContextSnapshot
     permission: PermissionEnvelope
+    fvg_engulfing_lifecycle: FvgEngulfingLifecycleProjection | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +104,12 @@ def _all_reaction_refs(projection: ReactionEvidenceProjection | None) -> tuple[F
     if projection is None:
         return ()
     return tuple(item.ref for item in (*projection.reaction_zones, *projection.confirmations))
+
+
+def _all_fvg_engulfing_lifecycle_refs(
+    projection: FvgEngulfingLifecycleProjection | None,
+) -> tuple[FactRef, ...]:
+    return () if projection is None else projection.refs
 
 
 def _all_stabil_refs(projection: StabilSupportProjection | None) -> tuple[FactRef, ...]:
@@ -298,6 +309,10 @@ def build_cross_domain_context(inputs: CrossDomainBuildInputs) -> CrossDomainBui
         data_quality_by_timeframe=inputs.data_quality_by_timeframe,
         requested_timeframes=inputs.requested_timeframes,
     )
+    fvg_engulfing_lifecycle_raw = project_fvg_engulfing_lifecycle(
+        inputs.fvg_engulfing_replay,
+        data_quality_by_timeframe=inputs.data_quality_by_timeframe,
+    )
     stabil_raw = None if inputs.stabil_support_replay is None else project_stabil_support(inputs.stabil_support_replay)
     participation_raw = (
         None
@@ -325,6 +340,7 @@ def build_cross_domain_context(inputs: CrossDomainBuildInputs) -> CrossDomainBui
             *_all_structural_refs(structural_raw),
             *_all_liquidity_refs(liquidity_raw),
             *_all_reaction_refs(reaction_raw),
+            *_all_fvg_engulfing_lifecycle_refs(fvg_engulfing_lifecycle_raw),
             *_all_stabil_refs(stabil_raw),
             *_all_participation_refs(participation_raw),
             *_all_pattern_refs(pattern_raw),
@@ -336,6 +352,11 @@ def build_cross_domain_context(inputs: CrossDomainBuildInputs) -> CrossDomainBui
     structural = _filter_structural(structural_raw, inputs.as_of)
     liquidity = _filter_liquidity(liquidity_raw, inputs.as_of)
     reaction = _filter_reaction(reaction_raw, inputs.as_of)
+    fvg_engulfing_lifecycle = (
+        None
+        if fvg_engulfing_lifecycle_raw is None
+        else fvg_engulfing_lifecycle_raw.available_at(inputs.as_of)
+    )
     stabil = _filter_stabil(stabil_raw, inputs.as_of)
     participation = _filter_participation(participation_raw, inputs.as_of)
     pattern = _filter_pattern(pattern_raw, inputs.as_of)
@@ -376,7 +397,11 @@ def build_cross_domain_context(inputs: CrossDomainBuildInputs) -> CrossDomainBui
         lineage_groups=build_lineage_groups(eligible_refs),
         unsupported_contexts=_unsupported_tokens(reaction_raw, inputs.unsupported_contexts),
     )
-    return CrossDomainBuildResult(context=context, permission=resolve_permission(context))
+    return CrossDomainBuildResult(
+        context=context,
+        permission=resolve_permission(context),
+        fvg_engulfing_lifecycle=fvg_engulfing_lifecycle,
+    )
 
 
 __all__ = ["CrossDomainBuildInputs", "CrossDomainBuildResult", "build_cross_domain_context"]
