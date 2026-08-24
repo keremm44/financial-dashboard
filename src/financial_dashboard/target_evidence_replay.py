@@ -11,6 +11,7 @@ from .data.identity import normalize_symbol
 from .data.parquet_store import ParquetOHLCVStore
 from .engines.fvg_engulfing import FvgEngulfingEngine
 from .engines.fvg_engulfing_models import FvgEngulfingConfig, SUPPORTED_TIMEFRAMES
+from .engines.liquidity_behavior import LiquidityBehaviorSnapshot
 from .engines.liquidity_engine import LiquidityEngine
 from .engines.liquidity_models import LiquidityConfig, LiquidityPoolState
 from .engines.order_block import OrderBlockEngine
@@ -26,6 +27,7 @@ class TargetEvidenceMTFReplay:
     timeframes: tuple[str, ...]
     snapshots: Mapping[str, TargetEvidenceSnapshot]
     evidence: tuple[TargetEvidence, ...]
+    liquidity_behavior: Mapping[str, LiquidityBehaviorSnapshot] | None = None
 
     def for_timeframe(self, timeframe: str) -> TargetEvidenceSnapshot:
         normalized = timeframe.strip().lower()
@@ -111,6 +113,7 @@ class LiquidityMTFReplayRunner(_BaseTargetEvidenceRunner):
             symbol, timeframes, input_snapshot
         )
         snapshots: dict[str, TargetEvidenceSnapshot] = {}
+        behavior_by_timeframe: dict[str, LiquidityBehaviorSnapshot] = {}
         all_evidence: list[TargetEvidence] = []
         for timeframe in normalized_timeframes:
             frame = inputs.for_timeframe(timeframe).input_batch.frame
@@ -145,12 +148,14 @@ class LiquidityMTFReplayRunner(_BaseTargetEvidenceRunner):
                 evidence=evidence,
             )
             snapshots[timeframe] = snapshot
+            behavior_by_timeframe[timeframe] = engine.behavior_snapshot
             all_evidence.extend(evidence)
         return TargetEvidenceMTFReplay(
             symbol=normalized_symbol,
             timeframes=normalized_timeframes,
             snapshots=snapshots,
             evidence=tuple(all_evidence),
+            liquidity_behavior=behavior_by_timeframe,
         )
 
 
