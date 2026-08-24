@@ -373,6 +373,17 @@ class StabilSupportEventProjection:
 
 
 @dataclass(frozen=True, slots=True)
+class StabilSupportBehaviorProjection:
+    motion: str
+    relation: str
+    interaction: str
+    bars_since_rebase: int | None
+    cross_count: int
+    last_rebase_step_atr: float | None
+    reclaim_active: bool
+
+
+@dataclass(frozen=True, slots=True)
 class StabilSupportProjection:
     symbol: str
     timeframe: str
@@ -390,12 +401,27 @@ class StabilSupportProjection:
     bars_below_support: int
     reclaim_count: int
     events: tuple[StabilSupportEventProjection, ...]
+    behavior: StabilSupportBehaviorProjection | None = None
 
 
 def _token(value: Any) -> str:
     if hasattr(value, "isoformat"):
         return str(value.isoformat())
     return str(value)
+
+
+def _project_stabil_behavior(behavior: Any | None) -> StabilSupportBehaviorProjection | None:
+    if behavior is None:
+        return None
+    return StabilSupportBehaviorProjection(
+        motion=str(_enum_value(behavior.motion)),
+        relation=str(_enum_value(behavior.relation)),
+        interaction=str(_enum_value(behavior.interaction)),
+        bars_since_rebase=behavior.bars_since_rebase,
+        cross_count=int(behavior.cross_count),
+        last_rebase_step_atr=behavior.last_rebase_step_atr,
+        reclaim_active=bool(behavior.reclaim_active),
+    )
 
 
 def project_stabil_support(replay: Any) -> StabilSupportProjection:
@@ -467,6 +493,7 @@ def project_stabil_support(replay: Any) -> StabilSupportProjection:
         bars_below_support=int(snapshot.bars_below_support),
         reclaim_count=int(snapshot.reclaim_count),
         events=tuple(events),
+        behavior=_project_stabil_behavior(getattr(replay, "behavior", None)),
     )
 
 
@@ -794,6 +821,7 @@ __all__ = [
     "PatternTimeframeProjection",
     "ReactionEvidenceProjection",
     "ReactionObservation",
+    "StabilSupportBehaviorProjection",
     "StabilSupportEventProjection",
     "StabilSupportProjection",
     "StructuralEventProjection",
