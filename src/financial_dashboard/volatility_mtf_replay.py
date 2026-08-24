@@ -13,7 +13,9 @@ from financial_dashboard.engines.volatility_bands_fib_engine import (
 from financial_dashboard.engines.volatility_direction_transition import (
     EarlyDirectionTransition,
     VolatilityDirectionSnapshot,
-    VolatilityDirectionTransitionEngine,
+)
+from financial_dashboard.engines.volatility_direction_runtime import (
+    RuntimeVolatilityDirectionTransitionEngine,
 )
 
 VOLATILITY_TIMEFRAMES: tuple[str, ...] = ("1d", "4h", "2h")
@@ -202,7 +204,7 @@ class VolatilityMTFReplayRunner:
             frame = inputs.for_timeframe(timeframe).input_batch.frame
             if max_bars is not None and len(frame) > max_bars:
                 frame = frame.tail(max_bars).copy()
-            engine = VolatilityDirectionTransitionEngine(
+            engine = RuntimeVolatilityDirectionTransitionEngine(
                 VolatilityBandsConfig(profile=profile, timeframe=timeframe)
             )
             snapshots = engine.replay(frame)
