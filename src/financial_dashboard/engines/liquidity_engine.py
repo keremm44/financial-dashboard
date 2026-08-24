@@ -6,6 +6,7 @@ from typing import Any
 import pandas as pd
 
 from .base import BaseEngine
+from .liquidity_behavior import LiquidityBehaviorSnapshot, LiquidityBehaviorTracker
 from .liquidity_core import apply_bar_event, cluster_touch
 from .liquidity_models import LiquidityConfig, LiquidityPool, LiquidityPoolState, LiquiditySide, LiquidityTouch
 from .models import Direction, EngineResult
@@ -39,6 +40,7 @@ class LiquidityEngine(BaseEngine):
         self._pools: tuple[LiquidityPool, ...] = ()
         self._snapshot: EngineResult | None = None
         self._export: LiquidityExport | None = None
+        self._behavior_tracker = LiquidityBehaviorTracker()
 
     def replay(self, frame: pd.DataFrame) -> list[EngineResult]:
         self.reset()
@@ -59,6 +61,10 @@ class LiquidityEngine(BaseEngine):
     @property
     def pools(self) -> tuple[LiquidityPool, ...]:
         return self._pools
+
+    @property
+    def behavior_snapshot(self) -> LiquidityBehaviorSnapshot:
+        return self._behavior_tracker.snapshot
 
     def update(self, bar: pd.Series | dict[str, Any]) -> EngineResult | None:
         row = dict(bar) if isinstance(bar, dict) else bar.to_dict()
@@ -143,6 +149,18 @@ class LiquidityEngine(BaseEngine):
                     config=self.config,
                 )
                 events.append(f"SSL:PIVOT_CONFIRMED:{chosen.identity}")
+
+        # Additive behavior interpretation. It observes the final canonical pool
+        # snapshot for this closed bar and cannot mutate pool lifecycle state.
+        self._behavior_tracker.update(
+            self._pools,
+            bar_index=bar_index,
+            timestamp=clean["timestamp"],
+            high=clean["high"],
+            low=clean["low"],
+            close=clean["close"],
+            atr=safe_atr,
+        )
 
         direction, state, score, quality, latest = self._interpret(directional_events)
         levels = self._public_levels(clean["close"])
