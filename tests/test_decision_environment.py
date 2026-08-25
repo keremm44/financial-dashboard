@@ -37,6 +37,12 @@ def test_unstable_conflict_is_elevated_not_hard_gate():
     assert result.risk is EnvironmentRisk.ELEVATED
 
 
+def test_false_excursion_remains_descriptive_until_calibrated():
+    result = assess_environment(StructuralDirection.LONG, _projection(character=ExpansionCharacter.FALSE_EXCURSION), timeframe="1h")
+    assert result.risk is EnvironmentRisk.NORMAL
+    assert result.character is ExpansionCharacter.FALSE_EXCURSION
+
+
 def test_shock_is_marked_hard_block_for_later_gate_layer():
     result = assess_environment(StructuralDirection.LONG, _projection(regime=VolatilityRangeRegime.SHOCK), timeframe="1h")
     assert result.risk is EnvironmentRisk.HARD_BLOCK
