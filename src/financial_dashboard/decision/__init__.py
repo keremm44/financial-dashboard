@@ -34,6 +34,11 @@ from .historical_stream import (
     assess_snapshot_stream,
     decision_events_from_snapshot_stream,
 )
+from .history_single_pass import (
+    HistoricalReplayTimings,
+    SinglePassHistoricalDecisionInputReplay,
+    SinglePassHistoricalDecisionInputReplayRunner,
+)
 from .opportunity import (
     OpportunityAssessment,
     OpportunityCalibration,
@@ -91,6 +96,7 @@ __all__ = [
     "ExecutionTriggerState",
     "FinalDecision",
     "HistoricalDecisionStreamConfig",
+    "HistoricalReplayTimings",
     "HorizonDecisionAssessment",
     "HorizonRelation",
     "HorizonStructuralSnapshot",
@@ -103,6 +109,8 @@ __all__ = [
     "ReactionState",
     "SetupTriggerAssessment",
     "SetupTriggerState",
+    "SinglePassHistoricalDecisionInputReplay",
+    "SinglePassHistoricalDecisionInputReplayRunner",
     "StructuralAssessment",
     "StructuralDirection",
     "ThesisState",
