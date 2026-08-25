@@ -6,7 +6,7 @@ from financial_dashboard.context.envelope import ContextDataQuality, FactRef
 from financial_dashboard.context.permissions import PermissionEnvelope
 from financial_dashboard.decision_input import DecisionInputSnapshot
 
-from .composer import ActionPolicy, FinalDecision, compose_final_decision
+from .composer import ActionPolicy, FinalDecision, compose_position_decision
 from .conflict import ConflictAssessment, assess_conflict
 from .coverage import CoverageAssessment, CoverageFamily, assess_coverage
 from .durability import DurabilityAssessment, assess_durability
@@ -71,10 +71,7 @@ class HorizonDecisionAssessment:
 
 def _timeframe_policy(horizon: DecisionHorizon) -> tuple[tuple[str, ...], str, str, str]:
     if horizon is DecisionHorizon.LONG_TERM:
-        # LT Structure remains 1D-owned. 4H describes supporting participation/regime,
-        # while 1H is the immediate LT setup-timing context. 30m remains execution.
         return _LT_REACTION_TIMEFRAMES, "4h", "4h", "1h"
-    # ST Structure remains 1H-owned. 30m is setup timing / trigger context.
     return _ST_REACTION_TIMEFRAMES, "1h", "1h", "30m"
 
 
@@ -133,10 +130,9 @@ def _coverage(
             else ContextDataQuality.UNAVAILABLE
         ),
     }
-    expected = tuple(CoverageFamily)
     return assess_coverage(
         qualities,
-        expected_families=expected,
+        expected_families=tuple(CoverageFamily),
         critical_families=(CoverageFamily.STRUCTURE,),
     )
 
@@ -182,12 +178,9 @@ def assess_horizon_decision(
 ) -> HorizonDecisionAssessment:
     """Build one fully typed LT or ST v1 decision assessment.
 
-    The engine does not search history or infer fresh execution edges from sticky
-    snapshots. A flat-state BUY/SELL can occur only when ``execution_event`` is a
-    causal event for the current ``as_of``. For an existing position, the same 30m
-    execution channel becomes the mandatory micro-resolution channel for a
-    Structure-owned opposite/transition exit path; 30m never acquires structural
-    directional authority.
+    Flat entry and open-position management share the same frozen market assessment,
+    but position state is applied only at the action layer. The 30m execution channel
+    is mandatory for an active exit path and never acquires structural authority.
     """
 
     cfg = config or DecisionEngineConfig()
@@ -261,10 +254,6 @@ def assess_horizon_decision(
         coverage=coverage,
     )
 
-    # For a flat account, execution follows the Structure-owned market side. For an
-    # open position, a canonical opposite side/transition/invalidation switches the
-    # 30m execution channel into exit-monitoring mode. This does not promote 30m to
-    # structural authority and does not imply permission to open the opposite side.
     execution_side = position_exit_candidate(structural, current_position) or structural.direction
     execution = assess_execution_trigger(
         execution_side,
@@ -273,10 +262,11 @@ def assess_horizon_decision(
         data_quality=snapshot.quality_for_timeframe(cfg.execution_timeframe),
         event=execution_event,
     )
-    final = compose_final_decision(
+    final = compose_position_decision(
         structural,
         eligibility=eligibility,
         execution=execution,
+        position=current_position,
         policy=cfg.action_policy,
         additional_lineage=_additional_lineage(
             durability=durability,
@@ -287,7 +277,6 @@ def assess_horizon_decision(
             opportunity=opportunity,
             conflict=conflict,
         ),
-        position=current_position,
     )
 
     return HorizonDecisionAssessment(
