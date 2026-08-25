@@ -14,6 +14,7 @@ from .composer import ActionPolicy, DecisionAction
 from .engine import DecisionEngineConfig, HorizonDecisionAssessment, assess_horizon_decision
 from .execution import ExecutionTriggerEvent
 from .opportunity import OpportunityCalibration
+from .position import PositionContext, PositionSide
 from .structural import DecisionHorizon, StructuralDirection
 
 
@@ -25,14 +26,27 @@ class HistoricalDecisionStreamConfig:
     a causal, strictly increasing stream of already-built ``DecisionInputSnapshot``
     objects from a single-pass upstream replay. This prevents the decision audit from
     accidentally rebuilding the full market workspace once per historical bar.
+
+    ``position_aware`` is opt-in so the original raw decision timeline remains a
+    stable correctness oracle. When enabled, actual BUY/SELL events advance a causal
+    position state and future decisions receive that state. The readiness proxy is a
+    separate audit-only approximation and therefore cannot be enabled simultaneously.
     """
 
     horizon: DecisionHorizon = DecisionHorizon.SHORT_TERM
     opportunity_calibration: OpportunityCalibration | None = None
     readiness_position_proxy: bool = False
+    position_aware: bool = False
+    initial_position: PositionContext = PositionContext()
     action_policy: ActionPolicy = ActionPolicy(
         permitted_sides=(StructuralDirection.LONG, StructuralDirection.SHORT)
     )
+
+    def __post_init__(self) -> None:
+        if self.readiness_position_proxy and self.position_aware:
+            raise ValueError(
+                "readiness_position_proxy and position_aware are distinct audit modes"
+            )
 
 
 def _jsonable(value: Any) -> Any:
@@ -75,6 +89,9 @@ def _event_from_assessment(
         "historical_stream": True,
         "readiness_position_proxy": proxy_reason is not None,
         "horizon": assessment.horizon.value,
+        "position": _jsonable(assessment.position),
+        "position_before": final.position_before.value,
+        "position_after": final.position_after.value,
         "structural": _jsonable(assessment.structural),
         "relation": assessment.structural_snapshot.relation.value,
         "durability": _jsonable(assessment.durability),
@@ -101,6 +118,36 @@ def _event_from_assessment(
     )
 
 
+def _advance_position(
+    position: PositionContext,
+    assessment: HorizonDecisionAssessment,
+    *,
+    price: float,
+) -> PositionContext:
+    """Advance exposure only on actual composed BUY/SELL actions."""
+
+    action = assessment.final.action
+    if position.side is PositionSide.FLAT:
+        if action is DecisionAction.BUY:
+            return PositionContext.long(opened_at=assessment.as_of, entry_price=price)
+        if action is DecisionAction.SELL:
+            return PositionContext.short(opened_at=assessment.as_of, entry_price=price)
+        return position
+
+    if position.side is PositionSide.LONG:
+        if action is DecisionAction.SELL:
+            return PositionContext.flat()
+        if action is DecisionAction.BUY:
+            raise ValueError("position-aware stream cannot BUY again while already LONG")
+        return position
+
+    if action is DecisionAction.BUY:
+        return PositionContext.flat()
+    if action is DecisionAction.SELL:
+        raise ValueError("position-aware stream cannot SELL again while already SHORT")
+    return position
+
+
 def assess_snapshot_stream(
     snapshots: Iterable[DecisionInputSnapshot],
     *,
@@ -122,6 +169,7 @@ def assess_snapshot_stream(
     event_map = execution_events or {}
     previous_as_of: Any | None = None
     rows: list[tuple[HorizonDecisionAssessment, float]] = []
+    current_position = cfg.initial_position
 
     for snapshot in snapshots:
         if previous_as_of is not None and snapshot.as_of <= previous_as_of:
@@ -134,8 +182,16 @@ def assess_snapshot_stream(
             cfg.horizon,
             config=engine_config,
             execution_event=event_map.get(snapshot.as_of),
+            position=current_position if cfg.position_aware else None,
         )
-        rows.append((assessment, float(snapshot.current_price)))
+        price = float(snapshot.current_price)
+        rows.append((assessment, price))
+        if cfg.position_aware:
+            current_position = _advance_position(
+                current_position,
+                assessment,
+                price=price,
+            )
         previous_as_of = snapshot.as_of
     return tuple(rows)
 
