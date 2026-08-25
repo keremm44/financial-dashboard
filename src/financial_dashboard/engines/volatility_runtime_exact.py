@@ -2,68 +2,46 @@ from __future__ import annotations
 
 from typing import Any
 
-from .volatility_bands_fib_engine import _safe_div
-from .volatility_runtime_engine import RuntimeVolatilityBandsFibEngine
+from .volatility_bands_fib import VolatilityBandsFibEngine
 
 
-class ExactRuntimeVolatilityBandsFibEngine(RuntimeVolatilityBandsFibEngine):
-    """Runtime core whose RMA arithmetic follows the canonical operation order."""
+class ExactRuntimeVolatilityBandsFibEngine(VolatilityBandsFibEngine):
+    """Compatibility facade over the canonical prefix-incremental Volatility core.
 
-    def _append_runtime_row(self, row: dict[str, Any]) -> None:
-        open_ = float(row["open"])
-        high = float(row["high"])
-        low = float(row["low"])
-        close = float(row["close"])
-        prior_close = self._runtime_closes[-1] if self._runtime_closes else None
+    The canonical core now owns the exact causal series and bounded-history helpers
+    (`_hist_confirm`, `_hist_share`, `_hist_recent_prior`, etc.).  The older runtime
+    implementation duplicated the decision loop and rebuilt full boolean histories
+    on every bar, making a long 1d replay quadratic.  Reusing the canonical engine
+    removes that duplicate slow path while preserving every state, threshold and
+    final export bit-for-bit.
 
-        self._runtime_opens.append(open_)
-        self._runtime_highs.append(high)
-        self._runtime_lows.append(low)
-        self._runtime_closes.append(close)
+    The `_runtime_*` properties are retained for the existing parity/diagnostic
+    contract; they are aliases to the canonical engine's immutable causal caches.
+    """
 
-        true_range = high - low
-        if prior_close is not None:
-            true_range = max(true_range, abs(high - prior_close), abs(low - prior_close))
-        self._runtime_tr.append(true_range)
+    @property
+    def runtime_closes(self) -> list[float]:
+        return self._s["closes"]
 
-        count = len(self._runtime_tr)
-        if count < self.ATR_LENGTH:
-            atr = None
-        elif count == self.ATR_LENGTH:
-            atr = sum(self._runtime_tr[: self.ATR_LENGTH]) / self.ATR_LENGTH
-        else:
-            prior_atr = self._runtime_atr[-1]
-            if prior_atr is None:
-                atr = sum(self._runtime_tr[-self.ATR_LENGTH :]) / self.ATR_LENGTH
-            else:
-                alpha = 1.0 / self.ATR_LENGTH
-                atr = alpha * true_range + (1.0 - alpha) * float(prior_atr)
-        self._runtime_atr.append(atr)
-        self._runtime_atr_avg.append(
-            self._last_optional_sma(self._runtime_atr, self.ATR_AVERAGE_LENGTH)
-        )
+    @property
+    def runtime_atr(self) -> list[float | None]:
+        return self._s["atr"]
 
-        basis = self._last_sma(self._runtime_closes, self.BOLLINGER_LENGTH)
-        stdev = self._last_population_std(self._runtime_closes, self.BOLLINGER_LENGTH)
-        self._runtime_basis.append(basis)
-        self._runtime_stdev.append(stdev)
-        if basis is None or stdev is None:
-            upper = lower = norm_width = None
-        else:
-            dev = stdev * self.BOLLINGER_MULTIPLIER
-            upper = basis + dev
-            lower = basis - dev
-            norm_width = _safe_div(
-                upper - lower,
-                max(abs(basis), self.config.minimum_tick),
-                0.0,
-            )
-        self._runtime_upper.append(upper)
-        self._runtime_lower.append(lower)
-        self._runtime_norm_width.append(norm_width)
-        self._runtime_avg_width.append(
-            self._last_optional_sma(self._runtime_norm_width, self.BOLLINGER_LENGTH)
-        )
+    @property
+    def _runtime_atr_avg(self) -> list[float | None]:
+        return self._s["atr_avg"]
+
+    @property
+    def _runtime_basis(self) -> list[float | None]:
+        return self._s["basis"]
+
+    @property
+    def _runtime_stdev(self) -> list[float | None]:
+        return self._s["stdev"]
+
+    @property
+    def _runtime_calc(self) -> list[dict[str, Any]]:
+        return self._calc
 
 
 __all__ = ["ExactRuntimeVolatilityBandsFibEngine"]
