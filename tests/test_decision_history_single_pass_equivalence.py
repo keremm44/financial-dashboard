@@ -26,12 +26,15 @@ def _bars(start: str, periods: int, freq: str) -> pd.DataFrame:
 
 def _store(tmp_path) -> ParquetOHLCVStore:
     store = ParquetOHLCVStore(tmp_path)
+    # Volatility/1d engines need >=120 closed bars to leave warmup, so the daily
+    # and intraday caches stay above MINIMUM_HISTORY while decision-point history
+    # (1h) is kept at the smallest size that still exercises multi-cutoff capture.
     specs = {
-        "1d": ("2025-09-01 18:00", 150, "1D"),
-        "4h": ("2026-01-01 10:00", 180, "4h"),
-        "2h": ("2026-01-01 10:00", 240, "2h"),
-        "1h": ("2026-01-01 10:00", 320, "1h"),
-        "30m": ("2026-01-01 10:00", 640, "30min"),
+        "1d": ("2025-12-01 18:00", 140, "1D"),
+        "4h": ("2026-01-01 10:00", 140, "4h"),
+        "2h": ("2026-01-01 10:00", 140, "2h"),
+        "1h": ("2026-01-01 10:00", 80, "1h"),
+        "30m": ("2026-01-01 10:00", 160, "30min"),
     }
     for timeframe in ANALYSIS_TIMEFRAMES:
         start, periods, freq = specs[timeframe]

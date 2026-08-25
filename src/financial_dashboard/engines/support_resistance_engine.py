@@ -629,7 +629,7 @@ class SupportResistanceRangeEngine(BaseEngine):
     def replay(self, frame: pd.DataFrame) -> list[EngineResult]:
         self._reset()
         results: list[EngineResult] = []
-        for _, bar in frame.iterrows():
+        for bar in frame.to_dict("records"):
             result = self.update(bar)
             if result is not None:
                 results.append(result)

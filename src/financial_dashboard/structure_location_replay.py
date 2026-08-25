@@ -312,7 +312,7 @@ class CachedStructureLocationMTFRunner:
             )
             observations: list[CausalZoneObservation] = []
 
-            for bar_index, (_, bar) in enumerate(batch.frame.iterrows()):
+            for bar_index, bar in enumerate(batch.frame.to_dict("records")):
                 support_engine.update(bar)
                 market_engine.update(bar)
                 observed_at = bar.get("timestamp")

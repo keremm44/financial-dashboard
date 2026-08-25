@@ -168,6 +168,12 @@ class VolatilityDirectionTransitionEngine:
         self._reset_observation_direction = EarlyDirectionTransition.NONE
         self._reset_observation_kind: str | None = None
         self._reset_observation_count = 0
+        # Frozen causal caches for _early_evidence (previously recomputed per bar).
+        self._closes_cache: list[float] = []
+        self._tr_cache: list[float] = []
+        self._atr_cache: list[float | None] = []
+        self._atr_run = 0.0
+        self._atr_prev: float | None = None
         self._snapshot = VolatilityDirectionSnapshot(
             timestamp=None,
             core_result=None,
@@ -185,16 +191,52 @@ class VolatilityDirectionTransitionEngine:
         row.setdefault("is_complete", True)
         return row
 
+    def _append_caches(self, row: dict[str, Any]) -> None:
+        """Mirror _true_ranges/_wilder incrementally; identical arithmetic per bar."""
+        high = float(row["high"])
+        low = float(row["low"])
+        close = float(row["close"])
+        self._closes_cache.append(close)
+        i = len(self._tr_cache)
+        prior_close = self._closes_cache[i - 1] if i else None
+        tr_i = high - low if prior_close is None else max(high - low, abs(high - prior_close), abs(low - prior_close))
+        self._tr_cache.append(tr_i)
+        if i < self.ATR_LENGTH - 1:
+            self._atr_run += tr_i
+            self._atr_cache.append(None)
+        elif i == self.ATR_LENGTH - 1:
+            self._atr_run += tr_i
+            seed = self._atr_run / float(self.ATR_LENGTH)
+            self._atr_cache.append(seed)
+            self._atr_prev = seed
+        else:
+            prev = (1.0 / float(self.ATR_LENGTH)) * tr_i + (1.0 - 1.0 / float(self.ATR_LENGTH)) * self._atr_prev
+            self._atr_cache.append(prev)
+            self._atr_prev = prev
+
+    def _ensure_caches(self) -> None:
+        """Rebuild caches when rows were supplied without passing through update()."""
+        if len(self._atr_cache) == len(self._rows):
+            return
+        self._closes_cache = []
+        self._tr_cache = []
+        self._atr_cache = []
+        self._atr_run = 0.0
+        self._atr_prev = None
+        for row in self._rows:
+            self._append_caches(row)
+
     def _early_evidence(self, core_result: EngineResult | None) -> EarlyDirectionEvidence:
         rows = self._rows
         if len(rows) < self.MINIMUM_EARLY_HISTORY:
             return EarlyDirectionEvidence()
+        self._ensure_caches()
 
         i = len(rows) - 1
         current = rows[i]
         previous = rows[i - 1]
-        closes = [float(row["close"]) for row in rows]
-        atr = _wilder(_true_ranges(rows), self.ATR_LENGTH)
+        closes = self._closes_cache
+        atr = self._atr_cache
         prior_atr = atr[i - 1]
         if prior_atr is None or prior_atr <= 0:
             return EarlyDirectionEvidence()
@@ -518,6 +560,7 @@ class VolatilityDirectionTransitionEngine:
             return self._snapshot
 
         self._rows.append(row)
+        self._append_caches(row)
         core_result = self._core.update(row)
         raw = self._early_evidence(core_result)
         early = self._apply_episode_lifecycle(raw, self._core.final_export)
@@ -532,7 +575,7 @@ class VolatilityDirectionTransitionEngine:
     def replay(self, frame: pd.DataFrame) -> tuple[VolatilityDirectionSnapshot, ...]:
         self.__init__(self.config)
         out: list[VolatilityDirectionSnapshot] = []
-        for _, bar in frame.sort_values("timestamp", kind="stable").iterrows():
+        for bar in frame.sort_values("timestamp", kind="stable").to_dict("records"):
             before = len(self._rows)
             snapshot = self.update(bar)
             if len(self._rows) > before:

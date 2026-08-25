@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("streamlit")  # local dev installs may omit ui extras
+
 from pathlib import Path
 
 import pandas as pd

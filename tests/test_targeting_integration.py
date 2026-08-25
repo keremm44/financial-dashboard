@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("plotly")  # local dev installs may omit ui extras
+
 import pandas as pd
 import plotly.graph_objects as go
 

@@ -86,6 +86,9 @@ python -m pytest
 ```
 
 GitHub Actions uses the same `.[dev,ui]` dependency set so Streamlit/Plotly tests are part of the normal CI gate.
+UI-dependent tests skip (instead of erroring) when the `ui` extras are not installed, so `pip install -e ".[dev]"` plus `python -m pytest` also works for engine-only work.
+`pytest-xdist` ships with the dev extras: `python -m pytest -n auto` runs the suite in parallel.
+The slowest tests are listed at the end of every run via `--durations=10` (configured in `pyproject.toml`).
 
 For BIST/tvDatafeed refresh scripts, install the optional live-data dependencies in the same virtual environment used to run the script:
 

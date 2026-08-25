@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-import pandas as pd
 import pytest
+
+pytest.importorskip("plotly")  # local dev installs may omit ui extras
+
+import pandas as pd
 
 from financial_dashboard.engines.three_domain_observer import FOUNDATION_OBSERVER_TIMEFRAMES
 from financial_dashboard.ui.charts import make_market_figure

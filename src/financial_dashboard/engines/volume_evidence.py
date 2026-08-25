@@ -371,7 +371,7 @@ class VolumeEvidenceEngine:
 
     def replay(self, data: pd.DataFrame) -> tuple[VolumeEvidenceSnapshot, ...]:
         self._reset()
-        for _, row in data.iterrows():
+        for row in data.to_dict("records"):
             self.update(row)
         return self.history
 

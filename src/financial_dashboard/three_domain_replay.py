@@ -157,7 +157,7 @@ class CachedThreeDomainObserverRunner:
         for timeframe in normalized:
             replay = structure_location.replay_for(timeframe)
             engine = PatternCompressionEngine(self.pattern_compression_config)
-            for _, bar in replay.input_batch.frame.iterrows():
+            for bar in replay.input_batch.frame.to_dict("records"):
                 engine.update(bar)
             pattern_result = engine.snapshot()
             pattern_export = engine.export_contract

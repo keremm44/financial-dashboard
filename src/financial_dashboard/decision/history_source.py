@@ -219,7 +219,7 @@ def _build_structure_pattern_captures(
         tf_structure: dict[int, _StructureCapture] = {}
         tf_pattern: dict[int, PatternTimeframeSnapshot] = {}
 
-        for index, (_, bar) in enumerate(batch.frame.iterrows()):
+        for index, bar in enumerate(batch.frame.to_dict("records")):
             support_engine.update(bar)
             market_engine.update(bar)
             pattern_engine.update(bar)

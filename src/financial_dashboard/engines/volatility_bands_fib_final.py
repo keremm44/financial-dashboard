@@ -17,7 +17,7 @@ from .volatility_bands_fib_engine import (
     VolatilityBandsFibEngine as _VolatilityBandsCoreEngine,
     VolatilityState,
     _clamp,
-    _rma,
+    _rma,  # noqa: F401  (retained import: mirrors the core ATR series definition)
     _safe_div,
 )
 
@@ -256,19 +256,15 @@ class VolatilityBandsFibEngine(_VolatilityBandsCoreEngine):
         return self._tur2_snapshot if self._tur2_snapshot is not None else super().snapshot()
 
     def _atr_series(self) -> list[float | None]:
-        highs = [float(r["high"]) for r in self._rows]
-        lows = [float(r["low"]) for r in self._rows]
-        closes = [float(r["close"]) for r in self._rows]
-        tr: list[float] = []
-        for i in range(len(self._rows)):
-            tr.append(highs[i]-lows[i] if i == 0 else max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])))
-        return _rma(tr, self.ATR_LENGTH)
+        # The core engine maintains the identical _rma(tr, ATR_LENGTH) series
+        # incrementally; recomputing it per bar made Tur-2 updates quadratic.
+        return list(self._s["atr"])
 
     def _raw_metrics(self, atr: float | None) -> dict[str, float | bool]:
         i = len(self._rows)-1
         row = self._rows[i]
         o,h,l,c = map(float,(row["open"],row["high"],row["low"],row["close"]))
-        closes=[float(r["close"]) for r in self._rows]
+        closes=self._s["closes"]
         net=c-closes[i-3] if i>=3 else 0.0
         net_atr=_safe_div(net,atr,0.0)
         path=sum(abs(closes[j]-closes[j-1]) for j in range(i-2,i+1)) if i>=3 else 0.0

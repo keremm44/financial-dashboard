@@ -97,7 +97,7 @@ class OrderBlockEngine(BaseEngine):
     def replay(self, frame: pd.DataFrame) -> list[EngineResult]:
         self._reset()
         out: list[EngineResult] = []
-        for _, bar in frame.sort_values("timestamp", kind="stable").iterrows():
+        for bar in frame.sort_values("timestamp", kind="stable").to_dict("records"):
             before = len(self._rows)
             result = self.update(bar)
             if len(self._rows) > before and result is not None:

@@ -908,7 +908,7 @@ class VolumeParticipationEngine(BaseEngine):
 
     def replay(self, data: pd.DataFrame) -> list[EngineResult | None]:
         self._reset()
-        return [self.update(row) for _, row in data.iterrows()]
+        return [self.update(row) for row in data.to_dict("records")]
 
     def snapshot(self) -> EngineResult | None:
         return self._snapshot

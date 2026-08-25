@@ -45,7 +45,7 @@ class LiquidityEngine(BaseEngine):
     def replay(self, frame: pd.DataFrame) -> list[EngineResult]:
         self.reset()
         out: list[EngineResult] = []
-        for _, row in frame.iterrows():
+        for row in frame.to_dict("records"):
             result = self.update(row)
             if result is not None:
                 out.append(result)

@@ -173,6 +173,85 @@ def _bars_since(history: list[bool], i: int) -> int | None:
     return None
 
 
+def _sma_last(values: list[float | None], length: int) -> float | None:
+    """Element i of _sma(values, length) for i = len(values)-1 (same arithmetic)."""
+    i = len(values) - 1
+    if i < length - 1:
+        return None
+    w = values[i - length + 1 : i + 1]
+    if any(v is None or pd.isna(v) for v in w):
+        return None
+    return sum(float(v) for v in w) / length
+
+
+def _rolling_std_last(values: list[float], length: int) -> float | None:
+    """Element i of _rolling_std(values, length) for i = len(values)-1."""
+    i = len(values) - 1
+    if i < length - 1:
+        return None
+    w = values[i - length + 1 : i + 1]
+    mean = sum(w) / length
+    return math.sqrt(sum((x - mean) ** 2 for x in w) / length)
+
+
+def _hist_share(calc: list[dict[str, Any]], i: int, key: str, current: bool, length: int) -> float:
+    """_share([x.get(key, False) for x in calc] + [current], i, length)."""
+    if i - length + 1 < 0:
+        return 0.0
+    count = 1 if current else 0
+    for j in range(i - length + 1, i):
+        if calc[j].get(key, False):
+            count += 1
+    return count / float(length)
+
+
+def _hist_confirm(calc: list[dict[str, Any]], i: int, key: str, current: bool, bars: int) -> bool:
+    """_confirm([x.get(key, False) for x in calc] + [current], i, bars)."""
+    if i - bars + 1 < 0:
+        return False
+    if not current:
+        return False
+    for j in range(i - bars + 1, i):
+        if not calc[j].get(key, False):
+            return False
+    return True
+
+
+def _hist_bars_since(calc: list[dict[str, Any]], i: int, key: str) -> int | None:
+    """_bars_since over history whose last element is the current bar (never consulted)."""
+    for j in range(i - 1, -1, -1):
+        if calc[j].get(key, False):
+            return i - j
+    return None
+
+
+def _hist_recent_count(calc: list[dict[str, Any]], i: int, key: str, current: bool, window: int) -> int:
+    """sum(history[max(0, i-window) : i+1]) for the per-key history list."""
+    count = 1 if current else 0
+    for j in range(max(0, i - window), i):
+        if calc[j].get(key, False):
+            count += 1
+    return count
+
+
+def _hist_recent_prior(calc: list[dict[str, Any]], i: int, key: str, memory: int) -> bool:
+    """_recent_prior over the per-key history; the current bar is out of range."""
+    for j in range(max(0, i - memory), i):
+        if calc[j].get(key, False):
+            return True
+    return False
+
+
+def _hist_recent_prior_any(calc: list[dict[str, Any]], i: int, keys: tuple[str, ...], memory: int) -> bool:
+    """_recent_prior over an OR-composed history (e.g. uot|uoc); current bar out of range."""
+    for j in range(max(0, i - memory), i):
+        row = calc[j]
+        for key in keys:
+            if row.get(key, False):
+                return True
+    return False
+
+
 def _profile(config: VolatilityBandsConfig) -> dict[str, float | int]:
     s, q = config.profile == "Hassas", config.profile == "Seçici"
     return {
@@ -250,12 +329,42 @@ class VolatilityBandsFibEngine(BaseEngine):
         self._snapshot: EngineResult | None = None
         self.export = VolatilityBandsExport()
         self.last_data_quality = DataQualityStatus.WARMUP
+        self._init_series_state()
+
+    def _init_series_state(self) -> None:
+        """Frozen causal series cache; extended only by the bars _compute_last sees."""
+        self._s: dict[str, list[Any]] = {
+            "opens": [],
+            "highs": [],
+            "lows": [],
+            "closes": [],
+            "tr": [],
+            "atr": [],
+            "atr_avg": [],
+            "basis": [],
+            "stdev": [],
+            "norm_width": [],
+            "upper": [],
+            "lower": [],
+            "avg_width": [],
+        }
+        self._atr_run = 0.0
+        self._atr_prev: float | None = None
+        self._calc: list[dict[str, Any]] = []
 
     def _reset(self) -> None:
         self._rows = []
         self._snapshot = None
         self.export = VolatilityBandsExport()
         self.last_data_quality = DataQualityStatus.WARMUP
+        self._init_series_state()
+
+    def _atr_values(self) -> list[float | None]:
+        """The causal ATR series, identical to _rma(tr, ATR_LENGTH) over all rows."""
+        return self._s["atr"]
+
+    def _close_values(self) -> list[float]:
+        return self._s["closes"]
 
     @staticmethod
     def _normalize_bar(bar: pd.Series | dict[str, Any]) -> dict[str, Any]:
@@ -285,7 +394,7 @@ class VolatilityBandsFibEngine(BaseEngine):
     def replay(self, frame: pd.DataFrame) -> list[EngineResult]:
         self._reset()
         out: list[EngineResult] = []
-        for _, bar in frame.sort_values("timestamp", kind="stable").iterrows():
+        for bar in frame.sort_values("timestamp", kind="stable").to_dict("records"):
             before = len(self._rows)
             result = self.update(bar)
             if len(self._rows) > before and result is not None:
@@ -296,36 +405,72 @@ class VolatilityBandsFibEngine(BaseEngine):
         return self._snapshot
 
     def _compute_last(self) -> tuple[EngineResult, VolatilityBandsExport, DataQualityStatus]:
-        rows = self._rows
-        n = len(rows)
-        opens = [float(r["open"]) for r in rows]
-        highs = [float(r["high"]) for r in rows]
-        lows = [float(r["low"]) for r in rows]
-        closes = [float(r["close"]) for r in rows]
-        tr: list[float] = []
-        for i in range(n):
-            if i == 0:
-                tr.append(highs[i] - lows[i])
-            else:
-                tr.append(max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1])))
-        atr = _rma(tr, self.ATR_LENGTH)
-        atr_avg = _sma(atr, self.ATR_AVERAGE_LENGTH)
-        basis = _sma([float(x) for x in closes], self.BOLLINGER_LENGTH)
-        stdev = _rolling_std(closes, self.BOLLINGER_LENGTH)
-        norm_width: list[float | None] = [None]*n
-        upper: list[float | None] = [None]*n
-        lower: list[float | None] = [None]*n
-        for i in range(n):
-            if basis[i] is not None and stdev[i] is not None:
-                dev = stdev[i] * self.BOLLINGER_MULTIPLIER
-                upper[i], lower[i] = basis[i] + dev, basis[i] - dev
-                width = upper[i] - lower[i]
-                norm_width[i] = _safe_div(width, max(abs(basis[i]), self.config.minimum_tick), 0.0)
-        avg_width = _sma(norm_width, self.BOLLINGER_LENGTH)
+        """Extend the frozen causal series/calc state by exactly the new rows.
 
-        calc: list[dict[str, Any]] = []
+        Mirrors the closed-form helpers element-for-element, so per-bar results are
+        bit-identical to recomputing the full history while total replay stays O(n).
+        """
+        rows = self._rows
+        s = self._s
+        opens = s["opens"]
+        highs = s["highs"]
+        lows = s["lows"]
+        closes = s["closes"]
+        tr = s["tr"]
+        atr = s["atr"]
+        atr_avg = s["atr_avg"]
+        basis = s["basis"]
+        stdev = s["stdev"]
+        norm_width = s["norm_width"]
+        upper = s["upper"]
+        lower = s["lower"]
+        avg_width = s["avg_width"]
+        calc = self._calc
         p = self._p
-        for i in range(n):
+
+        for i in range(len(calc), len(rows)):
+            row = rows[i]
+            opens.append(float(row["open"]))
+            highs.append(float(row["high"]))
+            lows.append(float(row["low"]))
+            closes.append(float(row["close"]))
+            h = highs[i]
+            l = lows[i]
+            prev_close = closes[i - 1] if i else None
+            tr_i = h - l if prev_close is None else max(h - l, abs(h - prev_close), abs(l - prev_close))
+            tr.append(tr_i)
+            if i < self.ATR_LENGTH - 1:
+                self._atr_run += tr_i
+                atr.append(None)
+            elif i == self.ATR_LENGTH - 1:
+                self._atr_run += tr_i
+                seed = self._atr_run / self.ATR_LENGTH
+                atr.append(seed)
+                self._atr_prev = seed
+            else:
+                prev = (1.0 / self.ATR_LENGTH) * tr_i + (1.0 - 1.0 / self.ATR_LENGTH) * self._atr_prev
+                atr.append(prev)
+                self._atr_prev = prev
+            atr_avg.append(_sma_last(atr, self.ATR_AVERAGE_LENGTH))
+            basis_i = _sma_last(closes, self.BOLLINGER_LENGTH)
+            basis.append(basis_i)
+            stdev_i = _rolling_std_last(closes, self.BOLLINGER_LENGTH)
+            stdev.append(stdev_i)
+            if basis_i is not None and stdev_i is not None:
+                dev = stdev_i * self.BOLLINGER_MULTIPLIER
+                upper_i = basis_i + dev
+                lower_i = basis_i - dev
+                width = upper_i - lower_i
+                norm_width_i = _safe_div(width, max(abs(basis_i), self.config.minimum_tick), 0.0)
+            else:
+                upper_i = None
+                lower_i = None
+                norm_width_i = None
+            upper.append(upper_i)
+            lower.append(lower_i)
+            norm_width.append(norm_width_i)
+            avg_width.append(_sma_last(norm_width, self.BOLLINGER_LENGTH))
+
             d: dict[str, Any] = {}
             prior_atr = atr[i-1] if i >= 1 else None
             atr_ratio = _safe_div(atr[i], atr_avg[i], 0.0)
@@ -395,8 +540,7 @@ class VolatilityBandsFibEngine(BaseEngine):
             strong_up=closes[i]>opens[i] and body_to_atr>=p["min_body"] and close_loc>=.65
             up_ret=basis[i] is not None and closes[i]>basis[i] and net_atr>0 and efficiency>=p["min_eff"]*.75 and not strong_dn and band_pos>=.5
             dn_ret=basis[i] is not None and closes[i]<basis[i] and net_atr<0 and efficiency>=p["min_eff"]*.75 and not strong_up and band_pos<=.5
-            up_hist=[x.get("up_cand",False) for x in calc]+[up_cand]; dn_hist=[x.get("dn_cand",False) for x in calc]+[dn_cand]
-            up_conf=ready and _confirm(up_hist,i,int(p["confirm"])) and up_ret; dn_conf=ready and _confirm(dn_hist,i,int(p["confirm"])) and dn_ret
+            up_conf=ready and _hist_confirm(calc,i,"up_cand",up_cand,int(p["confirm"])) and up_ret; dn_conf=ready and _hist_confirm(calc,i,"dn_cand",dn_cand,int(p["confirm"])) and dn_ret
             if up_conf and dn_conf:
                 if net_atr>=p["min_progress"]: dn_conf=False
                 elif net_atr<=-p["min_progress"]: up_conf=False
@@ -404,10 +548,9 @@ class VolatilityBandsFibEngine(BaseEngine):
             contraction=ready and c_count>=4 and c_ag and c_wg and c_calm and not any((up_cand,dn_cand,up_conf,dn_conf,shock))
             consecutive=(calc[i-1].get("contract_consecutive",0)+1 if i and contraction else 1 if contraction else 0)
             squeeze=ready and bw_usable and contraction and atr_ratio<=p["mature_atr"] and bw_ratio<=p["mature_width"] and c_count>=5 and consecutive>=p["maturity_bars"] and width_near_low and c_prog and c_eff and not any((up_cand,dn_cand,up_conf,dn_conf,shock))
-            up_conf_hist=[x.get("up_conf",False) for x in calc]+[up_conf]; dn_conf_hist=[x.get("dn_conf",False) for x in calc]+[dn_conf]
-            up_since=_bars_since(up_conf_hist,i); dn_since=_bars_since(dn_conf_hist,i)
-            recent_up=(up_since is not None and up_since<=6) or sum(up_hist[max(0,i-5):i+1])>=2
-            recent_dn=(dn_since is not None and dn_since<=6) or sum(dn_hist[max(0,i-5):i+1])>=2
+            up_since=_hist_bars_since(calc,i,"up_conf"); dn_since=_hist_bars_since(calc,i,"dn_conf")
+            recent_up=(up_since is not None and up_since<=6) or _hist_recent_count(calc,i,"up_cand",up_cand,5)>=2
+            recent_dn=(dn_since is not None and dn_since<=6) or _hist_recent_count(calc,i,"dn_cand",dn_cand,5)>=2
             recent_dir=1 if recent_up and not recent_dn else -1 if recent_dn and not recent_up else (1 if recent_up and recent_dn and (up_since or 100000)<(dn_since or 100000) else -1 if recent_up and recent_dn and (dn_since or 100000)<(up_since or 100000) else 1 if recent_up and recent_dn and net_atr>p["low_progress"] else -1 if recent_up and recent_dn and net_atr<-p["low_progress"] else 0)
             weak_atr=atr_slope<=0; weak_bw=bw_slope<=0
             prev_net=calc[i-1]["net_atr"] if i else net_atr; prev_eff=calc[i-1]["eff"] if i else efficiency
@@ -476,9 +619,8 @@ class VolatilityBandsFibEngine(BaseEngine):
             higher=i>0 and closes[i]>closes[i-1]; lowerc=i>0 and closes[i]<closes[i-1]
             for key,val in (("above",above),("below",below),("uz",uz),("lz",lz),("uoc",uoc),("loc",loc),("ut",ut),("lt",lt),("uot",uot),("lot",lot),("higher",higher),("lowerc",lowerc)):
                 d[key]=val
-            hist=lambda k:[x.get(k,False) for x in calc]+[d[k]]
             obs=int(p["band_obs"])
-            above_s=_share(hist("above"),i,obs); below_s=_share(hist("below"),i,obs); uz_s=_share(hist("uz"),i,obs); lz_s=_share(hist("lz"),i,obs); uoc_s=_share(hist("uoc"),i,obs); loc_s=_share(hist("loc"),i,obs); ut_s=_share(hist("ut"),i,obs); lt_s=_share(hist("lt"),i,obs); higher_s=_share(hist("higher"),i,obs); lower_s=_share(hist("lowerc"),i,obs)
+            above_s=_hist_share(calc,i,"above",above,obs); below_s=_hist_share(calc,i,"below",below,obs); uz_s=_hist_share(calc,i,"uz",uz,obs); lz_s=_hist_share(calc,i,"lz",lz,obs); uoc_s=_hist_share(calc,i,"uoc",uoc,obs); loc_s=_hist_share(calc,i,"loc",loc,obs); ut_s=_hist_share(calc,i,"ut",ut,obs); lt_s=_hist_share(calc,i,"lt",lt,obs); higher_s=_hist_share(calc,i,"higher",higher,obs); lower_s=_hist_share(calc,i,"lowerc",lowerc,obs)
             d.update(above_s=above_s,below_s=below_s,uz_s=uz_s,lz_s=lz_s,uoc_s=uoc_s,loc_s=loc_s,ut_s=ut_s,lt_s=lt_s,higher_s=higher_s,lower_s=lower_s)
             dual=ut and lt; utest_event=ready and bw_usable and not dual and (ut or band_pos>=p["upper_test"]); ltest_event=ready and bw_usable and not dual and (lt or band_pos<=p["lower_test"])
             d["utest_event"]=utest_event; d["ltest_event"]=ltest_event
@@ -492,7 +634,7 @@ class VolatilityBandsFibEngine(BaseEngine):
             ua_sig=ready and bw_usable and not dual and ua_loc and ua_basis and ua_prog_e>=2 and ua_v and ua_def
             la_sig=ready and bw_usable and not dual and la_loc and la_basis and la_prog_e>=2 and la_v and la_def
             d["ua_sig"]=ua_sig; d["la_sig"]=la_sig
-            ua=_confirm([x.get("ua_sig",False) for x in calc]+[ua_sig],i,int(p["band_confirm"])); la=_confirm([x.get("la_sig",False) for x in calc]+[la_sig],i,int(p["band_confirm"]));
+            ua=_hist_confirm(calc,i,"ua_sig",ua_sig,int(p["band_confirm"])); la=_hist_confirm(calc,i,"la_sig",la_sig,int(p["band_confirm"]));
             if ua and la: ua=la=False
             up_persist=uz_s>=p["trend_zone_share"] and above_s>=p["basis_share"] and band_pos>=p["upper_accept"]
             lo_persist=lz_s>=p["trend_zone_share"] and below_s>=p["basis_share"] and band_pos<=p["lower_accept"]
@@ -504,13 +646,12 @@ class VolatilityBandsFibEngine(BaseEngine):
             up_def=below_s<p["zone_share"] and lower_s<p["basis_share"] and net_atr>0 and not la; lo_def=above_s<p["zone_share"] and higher_s<p["basis_share"] and net_atr<0 and not ua
             up_tr_sig=ready and bw_usable and not dual and up_persist and up_prog_grp and up_vol_grp and up_def; lo_tr_sig=ready and bw_usable and not dual and lo_persist and lo_prog_grp and lo_vol_grp and lo_def
             d["up_tr_sig"]=up_tr_sig; d["lo_tr_sig"]=lo_tr_sig
-            up_tr=_confirm([x.get("up_tr_sig",False) for x in calc]+[up_tr_sig],i,int(p["band_confirm"])); lo_tr=_confirm([x.get("lo_tr_sig",False) for x in calc]+[lo_tr_sig],i,int(p["band_confirm"]));
+            up_tr=_hist_confirm(calc,i,"up_tr_sig",up_tr_sig,int(p["band_confirm"])); lo_tr=_hist_confirm(calc,i,"lo_tr_sig",lo_tr_sig,int(p["band_confirm"]));
             if up_tr and lo_tr: up_tr=lo_tr=False
             d.update(ua=ua,la=la,up_tr=up_tr,lo_tr=lo_tr)
             memory=int(p["band_memory"])
-            recent_ua=_recent_prior([x.get("ua",False) for x in calc]+[ua],i,memory); recent_la=_recent_prior([x.get("la",False) for x in calc]+[la],i,memory); recent_ut=_recent_prior([x.get("up_tr",False) for x in calc]+[up_tr],i,memory); recent_lt=_recent_prior([x.get("lo_tr",False) for x in calc]+[lo_tr],i,memory)
-            upper_out_hist=[x.get("uot",False) or x.get("uoc",False) for x in calc]+[uot or uoc]; lower_out_hist=[x.get("lot",False) or x.get("loc",False) for x in calc]+[lot or loc]
-            recent_uout=_recent_prior(upper_out_hist,i,memory); recent_lout=_recent_prior(lower_out_hist,i,memory); recent_uoc=_recent_prior([x.get("uoc",False) for x in calc]+[uoc],i,memory); recent_loc=_recent_prior([x.get("loc",False) for x in calc]+[loc],i,memory)
+            recent_ua=_hist_recent_prior(calc,i,"ua",memory); recent_la=_hist_recent_prior(calc,i,"la",memory); recent_ut=_hist_recent_prior(calc,i,"up_tr",memory); recent_lt=_hist_recent_prior(calc,i,"lo_tr",memory)
+            recent_uout=_hist_recent_prior_any(calc,i,("uot","uoc"),memory); recent_lout=_hist_recent_prior_any(calc,i,("lot","loc"),memory); recent_uoc=_hist_recent_prior(calc,i,"uoc",memory); recent_loc=_hist_recent_prior(calc,i,"loc",memory)
             prev2_pos=calc[i-2]["band_pos"] if i>=2 else band_pos; prev_uzs=calc[i-1]["uz_s"] if i else uz_s; prev_lzs=calc[i-1]["lz_s"] if i else lz_s; prev_lower_s=calc[i-1]["lower_s"] if i else lower_s; prev_higher_s=calc[i-1]["higher_s"] if i else higher_s; prev_dist=calc[i-1]["dist_basis"] if i else dist_basis_atr
             uz_fall=uz_s<prev_uzs; lz_fall=lz_s<prev_lzs; up_retreat=band_pos<prev2_pos and pos_change<0; lo_retreat=band_pos>prev2_pos and pos_change>0
             up_net_fade=net_atr<prev_net and net_atr<p["trend_progress"]; lo_net_fade=net_atr>prev_net and net_atr>-p["trend_progress"]; eff_fall=efficiency<prev_eff
@@ -518,7 +659,7 @@ class VolatilityBandsFibEngine(BaseEngine):
             up_wband_e=sum(map(int,(uz_fall,up_retreat,up_net_fade,eff_fall,bw_slope<=0,up_basis_app,lower_s>prev_lower_s))); lo_wband_e=sum(map(int,(lz_fall,lo_retreat,lo_net_fade,eff_fall,bw_slope<=0,lo_basis_app,higher_s>prev_higher_s)))
             up_wband_sig=ready and not dual and (recent_ua or recent_ut) and up_wband_e>=3 and not up_tr and not up_conf and not lo_tr; lo_wband_sig=ready and not dual and (recent_la or recent_lt) and lo_wband_e>=3 and not lo_tr and not dn_conf and not up_tr
             d["up_wband_sig"]=up_wband_sig; d["lo_wband_sig"]=lo_wband_sig
-            up_wband=_confirm([x.get("up_wband_sig",False) for x in calc]+[up_wband_sig],i,int(p["band_confirm"])); lo_wband=_confirm([x.get("lo_wband_sig",False) for x in calc]+[lo_wband_sig],i,int(p["band_confirm"]));
+            up_wband=_hist_confirm(calc,i,"up_wband_sig",up_wband_sig,int(p["band_confirm"])); lo_wband=_hist_confirm(calc,i,"lo_wband_sig",lo_wband_sig,int(p["band_confirm"]));
             if up_wband and lo_wband: up_wband=lo_wband=False
             up_mr_pos=band_pos<p["basis_upper"] and up_retreat; lo_mr_pos=band_pos>p["basis_lower"] and lo_retreat
             up_mr_prog=net_atr<=0 or (up_net_fade and efficiency<p["trend_eff"]); lo_mr_prog=net_atr>=0 or (lo_net_fade and efficiency<p["trend_eff"])
@@ -527,12 +668,12 @@ class VolatilityBandsFibEngine(BaseEngine):
             up_mr_sig=ready and not dual and (recent_ua or recent_ut or recent_uoc) and sum(map(int,(up_mr_pos,up_mr_prog,up_mr_basis)))>=2 and up_mr_e>=3 and not up_tr and not up_conf and not lo_tr
             lo_mr_sig=ready and not dual and (recent_la or recent_lt or recent_loc) and sum(map(int,(lo_mr_pos,lo_mr_prog,lo_mr_basis)))>=2 and lo_mr_e>=3 and not lo_tr and not dn_conf and not up_tr
             d["up_mr_sig"]=up_mr_sig; d["lo_mr_sig"]=lo_mr_sig
-            up_mr=_confirm([x.get("up_mr_sig",False) for x in calc]+[up_mr_sig],i,int(p["band_confirm"])); lo_mr=_confirm([x.get("lo_mr_sig",False) for x in calc]+[lo_mr_sig],i,int(p["band_confirm"]));
+            up_mr=_hist_confirm(calc,i,"up_mr_sig",up_mr_sig,int(p["band_confirm"])); lo_mr=_hist_confirm(calc,i,"lo_mr_sig",lo_mr_sig,int(p["band_confirm"]));
             if up_mr and lo_mr: up_mr=lo_mr=False
             up_false_sig=ready and not dual and recent_uout and not recent_ut and not recent_ua and upper[i] is not None and closes[i]<=upper[i] and band_pos<.98 and band_pos<prev_pos and net_atr<p["accept_progress"] and bw_slope<=p["expand_width_slope"] and not up_conf and not uoc
             lo_false_sig=ready and not dual and recent_lout and not recent_lt and not recent_la and lower[i] is not None and closes[i]>=lower[i] and band_pos>.02 and band_pos>prev_pos and net_atr>-p["accept_progress"] and bw_slope<=p["expand_width_slope"] and not dn_conf and not loc
             d["up_false_sig"]=up_false_sig; d["lo_false_sig"]=lo_false_sig
-            up_false=_confirm([x.get("up_false_sig",False) for x in calc]+[up_false_sig],i,int(p["band_confirm"])); lo_false=_confirm([x.get("lo_false_sig",False) for x in calc]+[lo_false_sig],i,int(p["band_confirm"]));
+            up_false=_hist_confirm(calc,i,"up_false_sig",up_false_sig,int(p["band_confirm"])); lo_false=_hist_confirm(calc,i,"lo_false_sig",lo_false_sig,int(p["band_confirm"]));
             if up_false and lo_false: up_false=lo_false=False
             basis_bal=ready and bw_usable and p["basis_lower"]<=band_pos<=p["basis_upper"] and abs(above_s-below_s)<=p["basis_tol"] and abs(net_atr)<=p["basis_progress"] and efficiency<=p["basis_eff"] and not any((ua,la,up_tr,lo_tr,up_mr,lo_mr,up_false,lo_false))
             utest=utest_event and not recent_ua and not recent_ut and not any((ua,up_tr,up_wband,up_mr,up_false,la,lo_tr)); ltest=ltest_event and not recent_la and not recent_lt and not any((la,lo_tr,lo_wband,lo_mr,lo_false,ua,up_tr))
