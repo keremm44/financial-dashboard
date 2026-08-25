@@ -9,9 +9,9 @@ from financial_dashboard.decision.historical_stream import (
     HistoricalDecisionStreamConfig,
     decision_events_from_snapshot_stream,
 )
-from financial_dashboard.decision.history_source import (
-    HistoricalDecisionInputConfig,
-    HistoricalDecisionInputReplayRunner,
+from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
+from financial_dashboard.decision.history_single_pass import (
+    SinglePassHistoricalDecisionInputReplayRunner,
 )
 from financial_dashboard.decision.opportunity import OpportunityCalibration
 from financial_dashboard.decision.structural import DecisionHorizon
@@ -42,8 +42,8 @@ def _calibration(args: argparse.Namespace) -> OpportunityCalibration | None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Replay native domains once, materialize causal 1h decision snapshots, "
-            "evaluate the BUY/SELL layer, then run the separate hindsight audit."
+            "Replay each native market engine forward once, freeze causal 1h decision "
+            "states, evaluate BUY/SELL on those frozen states, then run hindsight audit."
         )
     )
     parser.add_argument("cache_root", type=Path)
@@ -51,7 +51,12 @@ def main() -> None:
     parser.add_argument("--horizon", choices=("lt", "st"), default="st")
     parser.add_argument("--start", default=None)
     parser.add_argument("--end", default=None)
-    parser.add_argument("--max-bars", type=int, default=None)
+    parser.add_argument(
+        "--max-bars",
+        type=int,
+        default=None,
+        help="Smoke/debug only: keep the last N 1h decision points; native history is still replayed once.",
+    )
     parser.add_argument("--pattern-profile", default=None)
     parser.add_argument(
         "--readiness-position-proxy",
@@ -81,7 +86,7 @@ def main() -> None:
     store = ParquetOHLCVStore(args.cache_root)
 
     started = perf_counter()
-    input_replay = HistoricalDecisionInputReplayRunner(store).replay(
+    input_replay = SinglePassHistoricalDecisionInputReplayRunner(store).replay(
         args.symbol,
         config=HistoricalDecisionInputConfig(
             pattern_profile=args.pattern_profile,
@@ -126,8 +131,17 @@ def main() -> None:
     )
     audit_seconds = perf_counter() - started
 
+    timings = input_replay.timings
     print(f"CAUSAL_SNAPSHOTS\t{len(input_replay.snapshots)}")
     print(f"DECISION_EVENTS\t{len(decisions)}")
+    print(f"LOAD_INPUTS_SECONDS\t{timings.load_inputs_seconds:.2f}")
+    print(f"NATIVE_CAPTURE_PASS_SECONDS\t{timings.native_capture_pass_seconds:.2f}")
+    print(f"HAM_REPLAY_SECONDS\t{timings.ham_seconds:.2f}")
+    print(f"VOLUME_REPLAY_SECONDS\t{timings.volume_seconds:.2f}")
+    print(f"VOLATILITY_REPLAY_SECONDS\t{timings.volatility_seconds:.2f}")
+    print(f"STABIL_REPLAY_SECONDS\t{timings.stabil_seconds:.2f}")
+    print(f"NATIVE_REPLAY_SECONDS\t{timings.native_replay_seconds:.2f}")
+    print(f"SNAPSHOT_ASSEMBLY_SECONDS\t{timings.snapshot_assembly_seconds:.2f}")
     print(f"DOMAIN_REPLAY_AND_SNAPSHOT_SECONDS\t{input_seconds:.2f}")
     print(f"DECISION_LAYER_SECONDS\t{decision_seconds:.2f}")
     print(f"HINDSIGHT_AUDIT_SECONDS\t{audit_seconds:.2f}")
