@@ -37,6 +37,15 @@ def test_weak_volume_is_not_opposing():
     assert result.state is ParticipationState.WEAK
 
 
+def test_low_participation_remains_weak_even_if_generic_direction_is_opposite():
+    result = assess_participation(
+        StructuralDirection.LONG,
+        _projection(status="LOW_PARTICIPATION", evidence_direction=-1, participation_direction=-1, participation_trend=ParticipationTrend.NONE),
+        timeframe="1h",
+    )
+    assert result.state is ParticipationState.WEAK
+
+
 def test_opposing_participation_is_material_input():
     result = assess_participation(StructuralDirection.LONG, _projection(evidence_direction=-1, participation_direction=-1), timeframe="1h")
     assert result.state is ParticipationState.OPPOSING
