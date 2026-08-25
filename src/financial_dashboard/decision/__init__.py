@@ -4,6 +4,7 @@ from .composer import (
     DecisionAction,
     FinalDecision,
     compose_final_decision,
+    compose_position_decision,
 )
 from .conflict import (
     ConflictAssessment,
@@ -143,6 +144,7 @@ __all__ = [
     "build_horizon_structural_snapshot",
     "classify_horizon_relation",
     "compose_final_decision",
+    "compose_position_decision",
     "decision_events_from_snapshot_stream",
     "opposing_structural_side",
     "position_exit_candidate",
