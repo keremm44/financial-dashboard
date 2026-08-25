@@ -97,12 +97,13 @@ def test_long_dwell_is_one_visit_then_favorable_acceptance_confirms_reaction() -
     assert exiting.bars_held_favorable == 1
 
     holding = _one(
-        tracker.update((record,), bar_index=8, high=113.0, low=111.5, close=112.5)
+        tracker.update((record,), bar_index=8, high=112.0, low=110.5, close=111.0)
     )
     assert holding.interaction is OrderBlockInteractionState.HOLDING_FAVORABLE
     assert holding.state is OrderBlockBehaviorState.HOLDING_FAVORABLE
     assert holding.visit_count == 1
     assert holding.bars_held_favorable == 2
+    assert holding.max_favorable_move_atr < CONFIG.reaction_move_atr
 
     confirmed = _one(
         tracker.update((record,), bar_index=9, high=118.0, low=113.0, close=116.0)
