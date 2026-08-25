@@ -94,33 +94,17 @@ def assess_participation(
     break_unsupported = row.break_participation is BreakParticipationBehavior.UNSUPPORTED
     reasons: list[str] = []
 
-    opposed_participation = (
-        row.participation_direction == -direction
-        and row.participation_trend
-        in {ParticipationTrend.BUILDING, ParticipationTrend.CONFIRMED, ParticipationTrend.PROTECTED}
-    )
-    opposed_break = (
-        row.break_direction == -direction
-        and row.break_participation
-        in {BreakParticipationBehavior.SUPPORTED, BreakParticipationBehavior.PROTECTED}
-    )
-    opposed_evidence = row.evidence_direction == -direction and row.evidence_direction != 0
-
-    if row.heavy_conflict or opposed_participation or opposed_break or opposed_evidence:
-        if row.heavy_conflict:
-            reasons.append("PARTICIPATION_HEAVY_CONFLICT")
-        if opposed_participation:
-            reasons.append("PARTICIPATION_TREND_OPPOSES_STRUCTURE")
-        if opposed_break:
-            reasons.append("SUPPORTED_BREAK_OPPOSES_STRUCTURE")
-        if opposed_evidence:
-            reasons.append("PARTICIPATION_EVIDENCE_OPPOSES_STRUCTURE")
+    # Heavy conflict is an explicit native severity flag and remains OPPOSING even
+    # if other volume fields are weak. Ordinary LOW_PARTICIPATION, fading/ended
+    # participation, weak effort/result and an unsupported same-side break are WEAK
+    # before generic directional evidence is considered.
+    if row.heavy_conflict:
         return ParticipationAssessment(
             ParticipationState.OPPOSING,
-            bool(row.heavy_conflict),
+            True,
             break_unsupported,
             quality,
-            tuple(reasons),
+            ("PARTICIPATION_HEAVY_CONFLICT",),
             (row.ref,),
         )
 
@@ -141,8 +125,35 @@ def assess_participation(
             reasons.append("UNSUPPORTED_BREAK")
         return ParticipationAssessment(
             ParticipationState.WEAK,
-            bool(row.heavy_conflict),
+            False,
             break_unsupported,
+            quality,
+            tuple(reasons),
+            (row.ref,),
+        )
+
+    opposed_participation = (
+        row.participation_direction == -direction
+        and row.participation_trend
+        in {ParticipationTrend.BUILDING, ParticipationTrend.CONFIRMED, ParticipationTrend.PROTECTED}
+    )
+    opposed_break = (
+        row.break_direction == -direction
+        and row.break_participation
+        in {BreakParticipationBehavior.SUPPORTED, BreakParticipationBehavior.PROTECTED}
+    )
+    opposed_evidence = row.evidence_direction == -direction and row.evidence_direction != 0
+    if opposed_participation or opposed_break or opposed_evidence:
+        if opposed_participation:
+            reasons.append("PARTICIPATION_TREND_OPPOSES_STRUCTURE")
+        if opposed_break:
+            reasons.append("SUPPORTED_BREAK_OPPOSES_STRUCTURE")
+        if opposed_evidence:
+            reasons.append("PARTICIPATION_EVIDENCE_OPPOSES_STRUCTURE")
+        return ParticipationAssessment(
+            ParticipationState.OPPOSING,
+            False,
+            False,
             quality,
             tuple(reasons),
             (row.ref,),
