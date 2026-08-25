@@ -46,6 +46,6 @@ def test_conflict_accepts_independent_assessments_not_context_or_permission():
     assert parameters == {"side", "reaction", "participation", "environment"}
 
 
-def test_opportunity_has_no_embedded_default_calibration():
+def test_opportunity_requires_explicit_calibration_decision():
     signature = inspect.signature(opportunity_module.assess_opportunity)
-    assert signature.parameters["calibration"].default is None
+    assert signature.parameters["calibration"].default is inspect.Signature.empty
