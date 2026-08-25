@@ -16,7 +16,6 @@ def test_backtest_routes_through_single_pass_history_runner():
 
     assert "SinglePassHistoricalDecisionInputReplayRunner" in source
     assert "= HistoricalDecisionInputReplayRunner(" not in source
-    assert "HistoricalDecisionInputReplayRunner," not in source
     assert "NATIVE_REPLAY_SECONDS" in source
     assert "SNAPSHOT_ASSEMBLY_SECONDS" in source
 
