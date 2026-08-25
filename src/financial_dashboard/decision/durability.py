@@ -42,7 +42,8 @@ def assess_durability(
 
     This function intentionally cannot modify LT/ST Structure. It adds no distance,
     persistence, ATR or score threshold; all category changes come from existing
-    Stabil lifecycle/behavior states.
+    Stabil lifecycle/behavior states. Historical counters such as reclaim_count are
+    preserved as facts but are not interpreted as monotonic weakness.
     """
 
     if stabil is None:
@@ -102,7 +103,6 @@ def assess_durability(
             "RECLAIM_ATTEMPT",
             "RANGE_AROUND_SUPPORT",
         }
-        or stabil.reclaim_count > 0
     )
     if softening:
         return DurabilityAssessment(
