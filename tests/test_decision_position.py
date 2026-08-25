@@ -10,7 +10,7 @@ from financial_dashboard.decision.composer import (
     ActionPolicy,
     ActionSide,
     DecisionAction,
-    compose_final_decision,
+    compose_position_decision,
 )
 from financial_dashboard.decision.eligibility import EligibilityAssessment, EligibilityState
 from financial_dashboard.decision.execution import ExecutionTriggerAssessment, ExecutionTriggerState
@@ -103,7 +103,7 @@ def test_position_context_is_explicit_and_does_not_invent_entry_metadata() -> No
 
 
 def test_flat_short_market_side_still_cannot_bypass_cash_equity_entry_policy() -> None:
-    decision = compose_final_decision(
+    decision = compose_position_decision(
         _structural(StructuralDirection.SHORT),
         eligibility=_eligibility(),
         execution=_execution(StructuralDirection.SHORT, ExecutionTriggerState.CONFIRMED),
@@ -119,7 +119,7 @@ def test_flat_short_market_side_still_cannot_bypass_cash_equity_entry_policy() -
 
 
 def test_open_long_does_not_emit_duplicate_buy_when_long_thesis_remains_intact() -> None:
-    decision = compose_final_decision(
+    decision = compose_position_decision(
         _structural(StructuralDirection.LONG),
         eligibility=_eligibility(),
         execution=_execution(StructuralDirection.LONG, ExecutionTriggerState.CONFIRMED),
@@ -136,7 +136,7 @@ def test_open_long_exit_is_not_blocked_by_short_entry_policy_or_fresh_entry_gate
     structural = _structural(StructuralDirection.SHORT)
     assert position_exit_candidate(structural, PositionContext.long()) is StructuralDirection.SHORT
 
-    decision = compose_final_decision(
+    decision = compose_position_decision(
         structural,
         eligibility=_eligibility(EligibilityState.BLOCKED),
         execution=_execution(StructuralDirection.SHORT, ExecutionTriggerState.CONFIRMED),
@@ -161,7 +161,7 @@ def test_transitioning_long_only_monitors_exit_until_fresh_30m_event_exists() ->
     position = PositionContext.long()
     assert position_exit_candidate(structural, position) is StructuralDirection.SHORT
 
-    waiting = compose_final_decision(
+    waiting = compose_position_decision(
         structural,
         eligibility=_eligibility(EligibilityState.WAITING),
         execution=_execution(StructuralDirection.SHORT, ExecutionTriggerState.ABSENT),
@@ -171,7 +171,7 @@ def test_transitioning_long_only_monitors_exit_until_fresh_30m_event_exists() ->
     assert waiting.position_after is PositionSide.LONG
     assert waiting.waiting_for == ("FRESH_POSITION_EXIT_EVENT",)
 
-    exit_decision = compose_final_decision(
+    exit_decision = compose_position_decision(
         structural,
         eligibility=_eligibility(EligibilityState.WAITING),
         execution=_execution(StructuralDirection.SHORT, ExecutionTriggerState.CONFIRMED),
@@ -189,7 +189,7 @@ def test_invalidated_long_thesis_activates_exit_monitoring_without_declaring_sho
     position = PositionContext.long()
 
     assert position_exit_candidate(structural, position) is StructuralDirection.SHORT
-    decision = compose_final_decision(
+    decision = compose_position_decision(
         structural,
         eligibility=_eligibility(EligibilityState.BLOCKED),
         execution=_execution(StructuralDirection.SHORT, ExecutionTriggerState.ABSENT),
