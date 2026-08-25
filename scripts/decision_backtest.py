@@ -4,6 +4,9 @@ import argparse
 from pathlib import Path
 from time import perf_counter
 
+import pandas as pd
+
+from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.decision.historical_stream import (
     HistoricalDecisionStreamConfig,
@@ -16,6 +19,7 @@ from financial_dashboard.decision.history_single_pass import (
 from financial_dashboard.decision.opportunity import OpportunityCalibration
 from financial_dashboard.decision.structural import DecisionHorizon
 from financial_dashboard.decision_audit import DecisionAuditConfig, audit_decisions, render_json, render_text
+from financial_dashboard.structure_location_replay import CausalBarClock
 
 
 def _calibration(args: argparse.Namespace) -> OpportunityCalibration | None:
@@ -37,6 +41,62 @@ def _calibration(args: argparse.Namespace) -> OpportunityCalibration | None:
         compressed_max_atr=float(values[1]),
         moderate_max_atr=float(values[2]),
     )
+
+
+def _align_requested_start(value: str, reference: pd.Timestamp) -> pd.Timestamp:
+    requested = pd.Timestamp(value)
+    if reference.tzinfo is not None and requested.tzinfo is None:
+        requested = requested.tz_localize(reference.tzinfo)
+    elif reference.tzinfo is None and requested.tzinfo is not None:
+        requested = requested.tz_localize(None)
+    elif reference.tzinfo is not None and requested.tzinfo is not None:
+        requested = requested.tz_convert(reference.tzinfo)
+    return requested
+
+
+def _causal_warmup_start(
+    store: ParquetOHLCVStore,
+    *,
+    symbol: str,
+    requested_start: str | None,
+    decision_timeframe: str = "1h",
+) -> pd.Timestamp:
+    """Return the first decision-bar timestamp with all MTF inputs causally available.
+
+    Early 1h bars can exist before the first closed/available 4h or 1d bar. Those bars
+    are warmup, not invalid market history. They must be skipped rather than passed to
+    ``_capture_indices`` where no causal index can exist yet.
+    """
+
+    clock = CausalBarClock()
+    first_available: list[pd.Timestamp] = []
+    for timeframe in ANALYSIS_TIMEFRAMES:
+        frame = store.load(symbol, timeframe)
+        if frame.empty:
+            raise SystemExit(f"No historical bars found for {symbol} {timeframe}")
+        first_timestamp = pd.Timestamp(frame.iloc[0]["timestamp"])
+        first_available.append(pd.Timestamp(clock.available_at(first_timestamp, timeframe)))
+
+    common_cutoff = max(first_available)
+    decision_frame = store.load(symbol, decision_timeframe)
+    if decision_frame.empty:
+        raise SystemExit(f"No historical bars found for {symbol} {decision_timeframe}")
+
+    warmup_start: pd.Timestamp | None = None
+    for value in decision_frame["timestamp"]:
+        timestamp = pd.Timestamp(value)
+        if pd.Timestamp(clock.available_at(timestamp, decision_timeframe)) >= common_cutoff:
+            warmup_start = timestamp
+            break
+    if warmup_start is None:
+        raise SystemExit(
+            "No decision bar exists after all required timeframe histories become causally available"
+        )
+
+    if requested_start is None:
+        return warmup_start
+    requested = _align_requested_start(requested_start, warmup_start)
+    return max(warmup_start, requested)
 
 
 def main() -> None:
@@ -84,6 +144,11 @@ def main() -> None:
     horizon = DecisionHorizon.LONG_TERM if args.horizon == "lt" else DecisionHorizon.SHORT_TERM
     calibration = _calibration(args)
     store = ParquetOHLCVStore(args.cache_root)
+    effective_start = _causal_warmup_start(
+        store,
+        symbol=args.symbol,
+        requested_start=args.start,
+    )
 
     started = perf_counter()
     input_replay = SinglePassHistoricalDecisionInputReplayRunner(store).replay(
@@ -91,7 +156,7 @@ def main() -> None:
         config=HistoricalDecisionInputConfig(
             pattern_profile=args.pattern_profile,
             max_bars=args.max_bars,
-            start_at=args.start,
+            start_at=effective_start,
             end_at=args.end,
         ),
     )
@@ -132,6 +197,7 @@ def main() -> None:
     audit_seconds = perf_counter() - started
 
     timings = input_replay.timings
+    print(f"CAUSAL_WARMUP_START\t{effective_start}")
     print(f"CAUSAL_SNAPSHOTS\t{len(input_replay.snapshots)}")
     print(f"DECISION_EVENTS\t{len(decisions)}")
     print(f"LOAD_INPUTS_SECONDS\t{timings.load_inputs_seconds:.2f}")
