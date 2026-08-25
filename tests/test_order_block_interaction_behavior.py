@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from financial_dashboard.engines.order_block_behavior import (
     OrderBlockBehaviorConfig,
+    OrderBlockBehaviorState,
     OrderBlockBehaviorTracker,
     OrderBlockInteractionState,
 )
@@ -78,7 +79,9 @@ def test_long_dwell_is_one_visit_then_favorable_acceptance_confirms_reaction() -
         tracker.update((record,), bar_index=6, high=109.0, low=103.0, close=108.0)
     )
     assert dwell_2.interaction is OrderBlockInteractionState.DWELLING_INSIDE
+    assert dwell_2.state is OrderBlockBehaviorState.DWELLING_INSIDE
     assert dwell_3.interaction is OrderBlockInteractionState.DWELLING_INSIDE
+    assert dwell_3.state is OrderBlockBehaviorState.DWELLING_INSIDE
     assert dwell_3.visit_count == 1
     assert dwell_3.mitigation_count == 1
     assert dwell_3.current_visit_bars == 3
@@ -97,6 +100,7 @@ def test_long_dwell_is_one_visit_then_favorable_acceptance_confirms_reaction() -
         tracker.update((record,), bar_index=8, high=113.0, low=111.5, close=112.5)
     )
     assert holding.interaction is OrderBlockInteractionState.HOLDING_FAVORABLE
+    assert holding.state is OrderBlockBehaviorState.HOLDING_FAVORABLE
     assert holding.visit_count == 1
     assert holding.bars_held_favorable == 2
 
@@ -104,6 +108,7 @@ def test_long_dwell_is_one_visit_then_favorable_acceptance_confirms_reaction() -
         tracker.update((record,), bar_index=9, high=118.0, low=113.0, close=116.0)
     )
     assert confirmed.interaction is OrderBlockInteractionState.REACTION_CONFIRMED
+    assert confirmed.state is OrderBlockBehaviorState.REACTION_CONFIRMED
     assert confirmed.visit_count == 1
     assert confirmed.mitigation_count == 1
     assert confirmed.max_favorable_move_atr >= CONFIG.reaction_move_atr
@@ -126,6 +131,7 @@ def test_second_mitigation_requires_exit_separation_and_reentry() -> None:
     assert revisited.mitigation_count == 2
     assert revisited.current_visit_bars == 1
     assert revisited.interaction is OrderBlockInteractionState.ENTERED
+    assert revisited.state is OrderBlockBehaviorState.REPEATED_MITIGATION
 
 
 def test_bearish_order_block_uses_symmetric_favorable_side() -> None:
@@ -149,8 +155,10 @@ def test_bearish_order_block_uses_symmetric_favorable_side() -> None:
 
     assert entered.interaction is OrderBlockInteractionState.ENTERED
     assert dwell.interaction is OrderBlockInteractionState.DWELLING_INSIDE
+    assert dwell.state is OrderBlockBehaviorState.DWELLING_INSIDE
     assert exiting.interaction is OrderBlockInteractionState.EXITING_FAVORABLE
     assert confirmed.interaction is OrderBlockInteractionState.REACTION_CONFIRMED
+    assert confirmed.state is OrderBlockBehaviorState.REACTION_CONFIRMED
     assert confirmed.visit_count == 1
 
 
