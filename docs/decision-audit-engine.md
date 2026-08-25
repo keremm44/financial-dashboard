@@ -11,9 +11,37 @@ It deliberately has two boundaries:
 
 Hindsight fields are evaluation targets only. They must never become inputs to the decision that they grade.
 
+## Historical replay performance contract
+
+The causal replay must be **single-pass upstream, decision-only downstream**.
+
+Accepted shape:
+
+```text
+historical OHLCV
+    -> native/domain replay once
+    -> causal DecisionInputSnapshot stream
+    -> decision layer over snapshots
+    -> DecisionEvent stream
+    -> hindsight audit
+```
+
+Forbidden shape:
+
+```text
+for every historical decision bar:
+    clip cache
+    rebuild full MarketAnalysisWorkspace
+    rerun all native/domain engines
+```
+
+The historical decision layer must not import or invoke `MarketAnalysisWorkspaceRunner`, `ParquetOHLCVStore`, cache-clipping helpers, or native market engines. Its input is an already-causal, strictly increasing `DecisionInputSnapshot` stream. This keeps historical decision evaluation approximately O(number of decision snapshots) after the normal one-pass domain replay instead of O(number of bars × full workspace runtime).
+
+This boundary is enforced by tests. A future upstream history builder may evolve independently, but it must emit immutable target-bounded snapshots and preserve closed-bar / `available_at` semantics.
+
 ## Decision event contract
 
-The future BUY/SELL engine should emit one event per evaluated closed bar (or at minimum every state transition):
+The BUY/SELL engine should emit one event per evaluated closed bar (or at minimum every state transition):
 
 ```json
 {
@@ -98,7 +126,7 @@ When `meaningful_move_atr` is supplied, the hindsight layer detects local lows f
 
 The threshold belongs to the audit/calibration layer, not the live decision architecture.
 
-## One-command usage
+## One-command usage for an existing causal decision stream
 
 ```powershell
 python scripts/decision_audit.py storage/cache ASELS decisions.json --timeframe 30m
@@ -118,12 +146,14 @@ python scripts/decision_audit.py storage/cache ASELS decisions.json --timeframe 
 
 The `2.0` value above is an example audit parameter, not a recommended market threshold. It must be calibrated later.
 
-## Integration rule for the future decision engine
+## Integration rule for the decision engine
 
-The decision engine should not import hindsight-audit results. Integration is one-way:
+The decision engine does not import hindsight-audit results. Integration is one-way:
 
 ```text
-causal closed-bar replay
+single-pass causal domain replay
+        -> DecisionInputSnapshot stream
+        -> decision layer
         -> DecisionEvent stream
         -> Historical Decision Audit
         -> reports / calibration datasets
