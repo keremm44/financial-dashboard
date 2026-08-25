@@ -14,8 +14,8 @@ from .market_structure import (
     MarketStructureEngine as _SwingCoreEngine,
     SwingPoint,
 )
+from .market_structure_event_runtime import RuntimeMarketStructureEventLedger
 from .market_structure_events import (
-    MarketStructureEventLedger,
     MarketStructureEventRecord,
     MarketStructureScopeSnapshot,
 )
@@ -46,7 +46,7 @@ class MarketStructureEngine(_SwingCoreEngine):
     def reset(self) -> None:
         super().reset()
         self._runtime = MarketStructureRuntime(self.break_config)
-        self._event_ledger = MarketStructureEventLedger()
+        self._event_ledger = RuntimeMarketStructureEventLedger()
         self._export = None
 
     def _candidate_update(self, candidate, incoming, locked_by_break: bool):
