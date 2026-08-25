@@ -20,12 +20,34 @@ class OrderBlockBehaviorState(StrEnum):
     EXPIRED_CANDIDATE = "EXPIRED_CANDIDATE"
 
 
+class OrderBlockInteractionState(StrEnum):
+    """Current closed-bar relation between price and one canonical OB.
+
+    This is deliberately separate from ``OrderBlockBehaviorState``. The existing
+    behavior state keeps freshness/mitigation semantics, while this axis answers
+    whether price is entering, dwelling inside, exiting, accepting outside, or has
+    already confirmed a favorable reaction.
+    """
+
+    UNAVAILABLE = "UNAVAILABLE"
+    OUTSIDE = "OUTSIDE"
+    APPROACHING = "APPROACHING"
+    ENTERED = "ENTERED"
+    DWELLING_INSIDE = "DWELLING_INSIDE"
+    EXITING_FAVORABLE = "EXITING_FAVORABLE"
+    HOLDING_FAVORABLE = "HOLDING_FAVORABLE"
+    REACTION_CONFIRMED = "REACTION_CONFIRMED"
+    FAILED = "FAILED"
+
+
 @dataclass(frozen=True, slots=True)
 class OrderBlockBehaviorConfig:
     atr_length: int = 14
     near_atr: float = 0.75
     deep_fill_ratio: float = 0.50
     reaction_move_atr: float = 0.50
+    dwell_bars: int = 2
+    favorable_hold_bars: int = 2
     terminal_retention_bars: int = 24
 
     def __post_init__(self) -> None:
@@ -37,6 +59,10 @@ class OrderBlockBehaviorConfig:
             raise ValueError("deep_fill_ratio must be between 0 and 1")
         if self.reaction_move_atr <= 0:
             raise ValueError("reaction_move_atr must be positive")
+        if self.dwell_bars < 2:
+            raise ValueError("dwell_bars must be >= 2")
+        if self.favorable_hold_bars < 1:
+            raise ValueError("favorable_hold_bars must be >= 1")
         if self.terminal_retention_bars < 1:
             raise ValueError("terminal_retention_bars must be >= 1")
 
@@ -48,12 +74,24 @@ class OrderBlockBehaviorSnapshot:
     top: float
     bottom: float
     state: OrderBlockBehaviorState
+    interaction: OrderBlockInteractionState
     active: bool
     age_bars: int
     bars_since_confirmation: int | None
     mitigation_count: int
+    visit_count: int
     deepest_fill_ratio: float
     distance_atr: float | None
+    total_inside_bars: int
+    inside_close_bars: int
+    current_visit_bars: int
+    close_inside: bool
+    range_intersects: bool
+    first_entry_index: int | None
+    last_entry_index: int | None
+    favorable_exit_index: int | None
+    bars_held_favorable: int
+    max_favorable_move_atr: float
     terminal_reason: str | None = None
 
 
@@ -63,10 +101,23 @@ class _Episode:
     first_seen_index: int
     confirmed_index: int | None = None
     mitigation_count: int = 0
+    visit_count: int = 0
     deepest_fill_ratio: float = 0.0
     touched_previous_bar: bool = False
     last_touch_index: int | None = None
     last_touch_close: float | None = None
+    total_inside_bars: int = 0
+    inside_close_bars: int = 0
+    current_visit_bars: int = 0
+    visit_open: bool = False
+    reentry_armed: bool = True
+    first_entry_index: int | None = None
+    last_entry_index: int | None = None
+    favorable_exit_index: int | None = None
+    bars_held_favorable: int = 0
+    max_favorable_move_atr: float = 0.0
+    reaction_confirmed: bool = False
+    interaction: OrderBlockInteractionState = OrderBlockInteractionState.OUTSIDE
     terminal_index: int | None = None
     terminal_reason: str | None = None
 
@@ -78,6 +129,11 @@ class OrderBlockBehaviorTracker:
     creation, imbalance confirmation, fill accumulation and removal. This tracker
     observes those immutable facts on closed bars and preserves a bounded terminal
     ledger so consumers can distinguish fresh, mitigated and consumed blocks.
+
+    A visit is an *episode*, not a bar count. Consecutive bars interacting with the
+    same OB count as one mitigation visit. A new visit is armed only after price has
+    first separated to the favorable side and then returns. This prevents a long
+    dwell inside one OB from being mislabeled as repeated mitigation.
     """
 
     def __init__(
@@ -112,7 +168,14 @@ class OrderBlockBehaviorTracker:
         high: float,
         low: float,
         close: float,
+        is_closed: bool = True,
+        is_complete: bool = True,
     ) -> tuple[OrderBlockBehaviorSnapshot, ...]:
+        # The behavior layer has the same causal contract as the canonical engine:
+        # open/incomplete bars must not advance visits, dwell, holds, ATR, or state.
+        if not is_closed or not is_complete:
+            return self._snapshots
+
         atr = self._update_atr(float(high), float(low), float(close))
         current = {self.identity(record): record for record in records}
 
@@ -125,13 +188,26 @@ class OrderBlockBehaviorTracker:
             if record.active and episode.confirmed_index is None:
                 episode.confirmed_index = int(bar_index)
 
-            touched = self._entered(record, high=float(high), low=float(low)) and record.active
-            if touched and episode.last_touch_index != int(bar_index):
-                episode.mitigation_count += 1
-                episode.last_touch_index = int(bar_index)
-                episode.last_touch_close = float(close)
+            intersects = self._entered(record, high=float(high), low=float(low)) and record.active
+            close_inside = self._close_inside(record, close=float(close)) and record.active
+
+            if record.active:
+                self._update_interaction(
+                    episode,
+                    record,
+                    bar_index=int(bar_index),
+                    high=float(high),
+                    low=float(low),
+                    close=float(close),
+                    atr=atr,
+                    intersects=intersects,
+                    close_inside=close_inside,
+                )
+            else:
+                episode.interaction = OrderBlockInteractionState.UNAVAILABLE
+
             episode.deepest_fill_ratio = max(episode.deepest_fill_ratio, float(record.fill_ratio))
-            episode.touched_previous_bar = touched
+            episode.touched_previous_bar = intersects
             episode.terminal_index = None
             episode.terminal_reason = None
 
@@ -146,14 +222,120 @@ class OrderBlockBehaviorTracker:
                     high=float(high),
                     low=float(low),
                 )
+                episode.interaction = (
+                    OrderBlockInteractionState.UNAVAILABLE
+                    if episode.confirmed_index is None
+                    else OrderBlockInteractionState.FAILED
+                )
+                episode.visit_open = False
+                episode.current_visit_bars = 0
+                episode.bars_held_favorable = 0
 
         self._prune(int(bar_index))
         rows = [
-            self._snapshot_for(identity, episode, bar_index=int(bar_index), close=float(close), atr=atr)
+            self._snapshot_for(
+                identity,
+                episode,
+                bar_index=int(bar_index),
+                high=float(high),
+                low=float(low),
+                close=float(close),
+                atr=atr,
+            )
             for identity, episode in self._episodes.items()
         ]
         self._snapshots = tuple(sorted(rows, key=lambda row: row.identity))
         return self._snapshots
+
+    def _update_interaction(
+        self,
+        episode: _Episode,
+        record: OrderBlockRecord,
+        *,
+        bar_index: int,
+        high: float,
+        low: float,
+        close: float,
+        atr: float,
+        intersects: bool,
+        close_inside: bool,
+    ) -> None:
+        favorable_close = self._favorable_close(record, close=close)
+        fully_favorable = self._fully_favorable(record, high=high, low=low)
+
+        # Enter only once per visit. Consecutive contact/inside bars remain the
+        # same visit until price separates to the favorable side.
+        if intersects and not episode.visit_open and episode.reentry_armed:
+            episode.visit_open = True
+            episode.reentry_armed = False
+            episode.visit_count += 1
+            episode.mitigation_count = episode.visit_count
+            episode.current_visit_bars = 0
+            episode.last_entry_index = bar_index
+            if episode.first_entry_index is None:
+                episode.first_entry_index = bar_index
+            episode.favorable_exit_index = None
+            episode.bars_held_favorable = 0
+            episode.max_favorable_move_atr = 0.0
+            episode.reaction_confirmed = False
+
+        if episode.visit_open and intersects:
+            episode.current_visit_bars += 1
+            episode.total_inside_bars += 1
+            episode.last_touch_index = bar_index
+            episode.last_touch_close = close
+            if close_inside:
+                episode.inside_close_bars += 1
+
+        if episode.visit_open and favorable_close:
+            # A favorable close marks the first accepted exit even if its wick still
+            # overlaps the zone. Persistence is evaluated on later closed bars.
+            episode.visit_open = False
+            episode.favorable_exit_index = bar_index
+            episode.bars_held_favorable = 1
+            move = self._favorable_move_atr(record, close=close, atr=atr)
+            episode.max_favorable_move_atr = max(episode.max_favorable_move_atr, move)
+            episode.interaction = OrderBlockInteractionState.EXITING_FAVORABLE
+            return
+
+        if episode.favorable_exit_index is not None and favorable_close:
+            episode.bars_held_favorable += 1
+            move = self._favorable_move_atr(record, close=close, atr=atr)
+            episode.max_favorable_move_atr = max(episode.max_favorable_move_atr, move)
+            if fully_favorable:
+                episode.reentry_armed = True
+            if (
+                episode.bars_held_favorable >= self.config.favorable_hold_bars
+                and episode.max_favorable_move_atr >= self.config.reaction_move_atr
+            ):
+                episode.reaction_confirmed = True
+                episode.interaction = OrderBlockInteractionState.REACTION_CONFIRMED
+            elif episode.bars_held_favorable >= self.config.favorable_hold_bars:
+                episode.interaction = OrderBlockInteractionState.HOLDING_FAVORABLE
+            else:
+                episode.interaction = OrderBlockInteractionState.EXITING_FAVORABLE
+            return
+
+        if intersects:
+            if episode.current_visit_bars >= self.config.dwell_bars:
+                episode.interaction = OrderBlockInteractionState.DWELLING_INSIDE
+            else:
+                episode.interaction = OrderBlockInteractionState.ENTERED
+            return
+
+        if episode.reaction_confirmed and favorable_close:
+            episode.interaction = OrderBlockInteractionState.REACTION_CONFIRMED
+            return
+
+        if episode.visit_count == 0:
+            distance = self._distance_to_zone(record, close=close) / atr if atr > 0 else None
+            episode.interaction = (
+                OrderBlockInteractionState.APPROACHING
+                if distance is not None and distance <= self.config.near_atr
+                else OrderBlockInteractionState.OUTSIDE
+            )
+        else:
+            episode.interaction = OrderBlockInteractionState.OUTSIDE
 
     def _update_atr(self, high: float, low: float, close: float) -> float:
         tr = high - low
@@ -173,6 +355,25 @@ class OrderBlockBehaviorTracker:
     def _entered(record: OrderBlockRecord, *, high: float, low: float) -> bool:
         return low <= float(record.top) and high >= float(record.bottom)
 
+    @staticmethod
+    def _close_inside(record: OrderBlockRecord, *, close: float) -> bool:
+        return float(record.bottom) <= close <= float(record.top)
+
+    @staticmethod
+    def _favorable_close(record: OrderBlockRecord, *, close: float) -> bool:
+        return close > float(record.top) if record.bullish else close < float(record.bottom)
+
+    @staticmethod
+    def _fully_favorable(record: OrderBlockRecord, *, high: float, low: float) -> bool:
+        return low > float(record.top) if record.bullish else high < float(record.bottom)
+
+    @staticmethod
+    def _favorable_move_atr(record: OrderBlockRecord, *, close: float, atr: float) -> float:
+        if atr <= 0:
+            return 0.0
+        raw = close - float(record.top) if record.bullish else float(record.bottom) - close
+        return max(0.0, raw / atr)
+
     def _terminal_reason(self, record: OrderBlockRecord, *, bar_index: int, high: float, low: float) -> str:
         if not record.has_imbalance and bar_index > int(record.imbalance_end_index):
             return "IMBALANCE_NOT_CONFIRMED"
@@ -190,6 +391,8 @@ class OrderBlockBehaviorTracker:
         episode: _Episode,
         *,
         bar_index: int,
+        high: float,
+        low: float,
         close: float,
         atr: float,
     ) -> OrderBlockBehaviorSnapshot:
@@ -231,12 +434,24 @@ class OrderBlockBehaviorTracker:
             top=float(record.top),
             bottom=float(record.bottom),
             state=state,
+            interaction=episode.interaction,
             active=bool(record.active and not terminal),
             age_bars=age_bars,
             bars_since_confirmation=bars_since_confirmation,
             mitigation_count=int(episode.mitigation_count),
+            visit_count=int(episode.visit_count),
             deepest_fill_ratio=float(episode.deepest_fill_ratio),
             distance_atr=None if distance is None else float(distance),
+            total_inside_bars=int(episode.total_inside_bars),
+            inside_close_bars=int(episode.inside_close_bars),
+            current_visit_bars=int(episode.current_visit_bars),
+            close_inside=self._close_inside(record, close=close) if record.active and not terminal else False,
+            range_intersects=self._entered(record, high=high, low=low) if record.active and not terminal else False,
+            first_entry_index=episode.first_entry_index,
+            last_entry_index=episode.last_entry_index,
+            favorable_exit_index=episode.favorable_exit_index,
+            bars_held_favorable=int(episode.bars_held_favorable),
+            max_favorable_move_atr=float(episode.max_favorable_move_atr),
             terminal_reason=episode.terminal_reason,
         )
 
@@ -270,4 +485,5 @@ __all__ = [
     "OrderBlockBehaviorSnapshot",
     "OrderBlockBehaviorState",
     "OrderBlockBehaviorTracker",
+    "OrderBlockInteractionState",
 ]
