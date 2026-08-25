@@ -15,7 +15,8 @@ def test_backtest_routes_through_single_pass_history_runner():
     source = Path("scripts/decision_backtest.py").read_text(encoding="utf-8")
 
     assert "SinglePassHistoricalDecisionInputReplayRunner" in source
-    assert "HistoricalDecisionInputReplayRunner(store)" not in source
+    assert "= HistoricalDecisionInputReplayRunner(" not in source
+    assert "HistoricalDecisionInputReplayRunner," not in source
     assert "NATIVE_REPLAY_SECONDS" in source
     assert "SNAPSHOT_ASSEMBLY_SECONDS" in source
 
