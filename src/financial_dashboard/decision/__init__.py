@@ -50,6 +50,12 @@ from .participation import (
     ParticipationState,
     assess_participation,
 )
+from .position import (
+    PositionContext,
+    PositionSide,
+    opposing_structural_side,
+    position_exit_candidate,
+)
 from .reaction import ReactionAssessment, ReactionState, assess_reaction
 from .structural import (
     DecisionHorizon,
@@ -105,6 +111,8 @@ __all__ = [
     "OpportunityState",
     "ParticipationAssessment",
     "ParticipationState",
+    "PositionContext",
+    "PositionSide",
     "ReactionAssessment",
     "ReactionState",
     "SetupTriggerAssessment",
@@ -136,4 +144,6 @@ __all__ = [
     "classify_horizon_relation",
     "compose_final_decision",
     "decision_events_from_snapshot_stream",
+    "opposing_structural_side",
+    "position_exit_candidate",
 ]
