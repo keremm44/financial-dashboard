@@ -99,4 +99,4 @@ def test_fast_streamlit_default_does_not_build_full_workspace(
     assert not app.exception
     assert [title.value for title in app.title] == ["Financial Dashboard"]
     assert any("FAST FOUNDATION" in caption.value for caption in app.caption)
-    assert any("hızlı başlangıç" in caption.value.lower() for caption in app.caption)
+    assert any("hızlı gözlem" in caption.value.lower() for caption in app.caption)
