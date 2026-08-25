@@ -378,8 +378,8 @@ def main() -> None:
 
     st.title("Financial Dashboard")
     st.caption(
-        "Market facts → cross-domain context → permission → LT/ST decision → 30m execution. "
-        "Pozisyon bilgisi yalnız action yönetiminde kullanılır."
+        "Market hızlı gözlem içindir. Tam analiz: market facts → cross-domain context → "
+        "permission → LT/ST decision → 30m execution. Pozisyon bilgisi yalnız action yönetiminde kullanılır."
     )
 
     if not symbol:
