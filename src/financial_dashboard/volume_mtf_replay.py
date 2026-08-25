@@ -20,7 +20,9 @@ from financial_dashboard.engines.volume_evidence import (
     VolumeEvidenceSnapshot,
     VolumeEvidenceStatus,
     find_participation_without_structure,
-    link_structure_events_to_volume,
+)
+from financial_dashboard.engines.volume_structure_link_runtime import (
+    link_structure_events_to_volume_indexed,
 )
 from financial_dashboard.engines.volume_participation_engine import VolumeParticipationConfig
 from financial_dashboard.engines.volume_participation_lifecycle import ParticipationLifecycleConfig
@@ -255,7 +257,7 @@ class VolumeMTFEvidenceReplayRunner:
                 raise ValueError(
                     f"no closed and complete Volume evidence bars for {normalized_symbol} {timeframe}"
                 )
-            links = link_structure_events_to_volume(
+            links = link_structure_events_to_volume_indexed(
                 structure_snapshot.events,
                 history,
                 pre_event_bars=self.pre_event_bars,
