@@ -11,6 +11,14 @@ from .fvg_engulfing_projection import (
     project_fvg_engulfing_lifecycle,
 )
 from .lineage import build_lineage_groups
+from .liquidity_landscape_projection import (
+    LiquidityLandscapeProjection,
+    project_liquidity_landscape,
+)
+from .order_block_behavior_projection import (
+    OrderBlockBehaviorProjection,
+    project_order_block_behavior,
+)
 from .participation_behavior_projection import (
     ParticipationBehaviorProjection,
     project_participation_behavior,
@@ -42,19 +50,39 @@ from .projections import (
     project_volatility,
 )
 from .snapshot import CrossDomainContextSnapshot, build_context_snapshot
+from .support_resistance_projection import (
+    SupportResistanceProjection,
+    project_support_resistance,
+)
 from .volatility_environment_projection import (
     VolatilityEnvironmentProjection,
     project_volatility_environment,
 )
-from .zones import ZoneIntelligenceConfig, build_zone_intelligence
+from .zones import (
+    ZoneIntelligenceConfig,
+    ZoneIntelligenceSnapshot,
+    build_zone_intelligence,
+)
 
 
 @dataclass(frozen=True, slots=True)
 class CrossDomainBuildResult:
-    """Shadow output produced beside the existing workspace domains."""
+    """Causal shadow output plus immutable read models for later decision layers."""
 
     context: CrossDomainContextSnapshot
     permission: PermissionEnvelope
+    structural: StructuralFactsProjection | None = None
+    support_resistance: SupportResistanceProjection | None = None
+    liquidity: LiquidityProjection | None = None
+    liquidity_landscape: LiquidityLandscapeProjection | None = None
+    reaction: ReactionEvidenceProjection | None = None
+    stabil_support: StabilSupportProjection | None = None
+    participation: ParticipationProjection | None = None
+    pattern: PatternProjection | None = None
+    volatility: VolatilityProjection | None = None
+    ham: HamProjection | None = None
+    zones: ZoneIntelligenceSnapshot | None = None
+    order_block_behavior: OrderBlockBehaviorProjection | None = None
     fvg_engulfing_lifecycle: FvgEngulfingLifecycleProjection | None = None
     participation_behavior: ParticipationBehaviorProjection | None = None
     volatility_environment: VolatilityEnvironmentProjection | None = None
@@ -106,6 +134,12 @@ def _all_structural_refs(projection: StructuralFactsProjection) -> tuple[FactRef
     return tuple(event.ref for tf in projection.timeframe_facts for event in tf.events)
 
 
+def _all_support_resistance_refs(
+    projection: SupportResistanceProjection | None,
+) -> tuple[FactRef, ...]:
+    return () if projection is None else projection.refs
+
+
 def _all_liquidity_refs(projection: LiquidityProjection | None) -> tuple[FactRef, ...]:
     if projection is None:
         return ()
@@ -115,10 +149,22 @@ def _all_liquidity_refs(projection: LiquidityProjection | None) -> tuple[FactRef
     )
 
 
+def _all_liquidity_landscape_refs(
+    projection: LiquidityLandscapeProjection | None,
+) -> tuple[FactRef, ...]:
+    return () if projection is None else projection.refs
+
+
 def _all_reaction_refs(projection: ReactionEvidenceProjection | None) -> tuple[FactRef, ...]:
     if projection is None:
         return ()
     return tuple(item.ref for item in (*projection.reaction_zones, *projection.confirmations))
+
+
+def _all_order_block_behavior_refs(
+    projection: OrderBlockBehaviorProjection | None,
+) -> tuple[FactRef, ...]:
+    return () if projection is None else projection.refs
 
 
 def _all_fvg_engulfing_lifecycle_refs(
@@ -327,6 +373,10 @@ def build_cross_domain_context(inputs: CrossDomainBuildInputs) -> CrossDomainBui
         _structure_projection_source(inputs.structure_location),
         available_at=inputs.available_at,
     )
+    support_resistance_raw = project_support_resistance(
+        inputs.structure_location,
+        data_quality_by_timeframe=inputs.data_quality_by_timeframe,
+    )
     liquidity_raw = (
         None
         if inputs.liquidity_replay is None
@@ -335,12 +385,20 @@ def build_cross_domain_context(inputs: CrossDomainBuildInputs) -> CrossDomainBui
             data_quality_by_timeframe=inputs.data_quality_by_timeframe,
         )
     )
+    liquidity_landscape_raw = project_liquidity_landscape(
+        inputs.liquidity_replay,
+        data_quality_by_timeframe=inputs.data_quality_by_timeframe,
+    )
     reaction_raw = project_reaction_evidence(
         symbol=inputs.symbol,
         order_block_replay=inputs.order_block_replay,
         fvg_engulfing_replay=inputs.fvg_engulfing_replay,
         data_quality_by_timeframe=inputs.data_quality_by_timeframe,
         requested_timeframes=inputs.requested_timeframes,
+    )
+    order_block_behavior_raw = project_order_block_behavior(
+        inputs.order_block_replay,
+        data_quality_by_timeframe=inputs.data_quality_by_timeframe,
     )
     fvg_engulfing_lifecycle_raw = project_fvg_engulfing_lifecycle(
         inputs.fvg_engulfing_replay,
@@ -383,8 +441,11 @@ def build_cross_domain_context(inputs: CrossDomainBuildInputs) -> CrossDomainBui
     all_refs = tuple(
         (
             *_all_structural_refs(structural_raw),
+            *_all_support_resistance_refs(support_resistance_raw),
             *_all_liquidity_refs(liquidity_raw),
+            *_all_liquidity_landscape_refs(liquidity_landscape_raw),
             *_all_reaction_refs(reaction_raw),
+            *_all_order_block_behavior_refs(order_block_behavior_raw),
             *_all_fvg_engulfing_lifecycle_refs(fvg_engulfing_lifecycle_raw),
             *_all_stabil_refs(stabil_raw),
             *_all_participation_refs(participation_raw),
@@ -398,8 +459,19 @@ def build_cross_domain_context(inputs: CrossDomainBuildInputs) -> CrossDomainBui
     )
 
     structural = _filter_structural(structural_raw, inputs.as_of)
+    support_resistance = support_resistance_raw.available_at(inputs.as_of)
     liquidity = _filter_liquidity(liquidity_raw, inputs.as_of)
+    liquidity_landscape = (
+        None
+        if liquidity_landscape_raw is None
+        else liquidity_landscape_raw.available_at(inputs.as_of)
+    )
     reaction = _filter_reaction(reaction_raw, inputs.as_of)
+    order_block_behavior = (
+        None
+        if order_block_behavior_raw is None
+        else order_block_behavior_raw.available_at(inputs.as_of)
+    )
     fvg_engulfing_lifecycle = (
         None
         if fvg_engulfing_lifecycle_raw is None
@@ -463,6 +535,18 @@ def build_cross_domain_context(inputs: CrossDomainBuildInputs) -> CrossDomainBui
     return CrossDomainBuildResult(
         context=context,
         permission=resolve_permission(context),
+        structural=structural,
+        support_resistance=support_resistance,
+        liquidity=liquidity,
+        liquidity_landscape=liquidity_landscape,
+        reaction=reaction,
+        stabil_support=stabil,
+        participation=participation,
+        pattern=pattern,
+        volatility=volatility,
+        ham=ham,
+        zones=zones,
+        order_block_behavior=order_block_behavior,
         fvg_engulfing_lifecycle=fvg_engulfing_lifecycle,
         participation_behavior=participation_behavior,
         volatility_environment=volatility_environment,
