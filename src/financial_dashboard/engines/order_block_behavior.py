@@ -436,10 +436,14 @@ class OrderBlockBehaviorTracker:
         else:
             state = OrderBlockBehaviorState.FRESH
 
-        # Promote only mature interaction states into the existing single-state
-        # compatibility field. This lets current cross-domain reaction projection
-        # see dwell/acceptance without erasing first-touch/deep/revisit semantics.
-        if not terminal and record.active:
+        # Promote mature interaction into the existing compatibility state only
+        # when doing so does not erase stronger mitigation-depth/revisit facts.
+        # The orthogonal ``interaction`` field always retains the acceptance state.
+        promotable = state not in {
+            OrderBlockBehaviorState.DEEP_MITIGATION,
+            OrderBlockBehaviorState.REPEATED_MITIGATION,
+        }
+        if not terminal and record.active and promotable:
             if episode.interaction is OrderBlockInteractionState.REACTION_CONFIRMED:
                 state = OrderBlockBehaviorState.REACTION_CONFIRMED
             elif episode.interaction is OrderBlockInteractionState.HOLDING_FAVORABLE:
