@@ -19,6 +19,7 @@ from .execution import (
 )
 from .opportunity import OpportunityAssessment, OpportunityCalibration, assess_opportunity
 from .participation import ParticipationAssessment, assess_participation
+from .position import PositionContext, position_exit_candidate
 from .reaction import ReactionAssessment, assess_reaction
 from .structural import (
     DecisionHorizon,
@@ -65,6 +66,7 @@ class HorizonDecisionAssessment:
     execution: ExecutionTriggerAssessment
     eligibility: EligibilityAssessment
     final: FinalDecision
+    position: PositionContext = PositionContext()
 
 
 def _timeframe_policy(horizon: DecisionHorizon) -> tuple[tuple[str, ...], str, str, str]:
@@ -176,16 +178,20 @@ def assess_horizon_decision(
     *,
     config: DecisionEngineConfig | None = None,
     execution_event: ExecutionTriggerEvent | None = None,
+    position: PositionContext | None = None,
 ) -> HorizonDecisionAssessment:
     """Build one fully typed LT or ST v1 decision assessment.
 
     The engine does not search history or infer fresh execution edges from sticky
-    snapshots. A BUY/SELL can occur only when ``execution_event`` is supplied as a
-    causal event for the current ``as_of``. Without it, an otherwise eligible path
-    stops at READY.
+    snapshots. A flat-state BUY/SELL can occur only when ``execution_event`` is a
+    causal event for the current ``as_of``. For an existing position, the same 30m
+    execution channel becomes the mandatory micro-resolution channel for a
+    Structure-owned opposite/transition exit path; 30m never acquires structural
+    directional authority.
     """
 
     cfg = config or DecisionEngineConfig()
+    current_position = position or PositionContext.flat()
     structural_snapshot = build_horizon_structural_snapshot(snapshot.structure)
     structural = (
         structural_snapshot.long_term
@@ -254,8 +260,14 @@ def assess_horizon_decision(
         environment=environment,
         coverage=coverage,
     )
+
+    # For a flat account, execution follows the Structure-owned market side. For an
+    # open position, a canonical opposite side/transition/invalidation switches the
+    # 30m execution channel into exit-monitoring mode. This does not promote 30m to
+    # structural authority and does not imply permission to open the opposite side.
+    execution_side = position_exit_candidate(structural, current_position) or structural.direction
     execution = assess_execution_trigger(
-        structural.direction,
+        execution_side,
         as_of=snapshot.as_of,
         timeframe=cfg.execution_timeframe,
         data_quality=snapshot.quality_for_timeframe(cfg.execution_timeframe),
@@ -275,6 +287,7 @@ def assess_horizon_decision(
             opportunity=opportunity,
             conflict=conflict,
         ),
+        position=current_position,
     )
 
     return HorizonDecisionAssessment(
@@ -295,6 +308,7 @@ def assess_horizon_decision(
         execution=execution,
         eligibility=eligibility,
         final=final,
+        position=current_position,
     )
 
 
