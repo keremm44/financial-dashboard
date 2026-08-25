@@ -1,3 +1,10 @@
+from .composer import (
+    ActionPolicy,
+    ActionSide,
+    DecisionAction,
+    FinalDecision,
+    compose_final_decision,
+)
 from .conflict import (
     ConflictAssessment,
     ConflictFamilyEvidence,
@@ -7,11 +14,19 @@ from .conflict import (
 )
 from .coverage import CoverageAssessment, CoverageFamily, assess_coverage
 from .durability import DurabilityAssessment, DurabilityState, assess_durability
+from .eligibility import EligibilityAssessment, EligibilityState, assess_eligibility
+from .engine import DecisionEngineConfig, HorizonDecisionAssessment, assess_horizon_decision
 from .environment import (
     EnvironmentAlignment,
     EnvironmentAssessment,
     EnvironmentRisk,
     assess_environment,
+)
+from .execution import (
+    ExecutionTriggerAssessment,
+    ExecutionTriggerEvent,
+    ExecutionTriggerState,
+    assess_execution_trigger,
 )
 from .opportunity import (
     OpportunityAssessment,
@@ -37,20 +52,39 @@ from .structural import (
     build_horizon_structural_snapshot,
     classify_horizon_relation,
 )
+from .timing import (
+    SetupTriggerAssessment,
+    SetupTriggerState,
+    TimingAssessment,
+    TimingState,
+    assess_setup_trigger,
+    assess_timing,
+)
 
 __all__ = [
+    "ActionPolicy",
+    "ActionSide",
     "ConflictAssessment",
     "ConflictFamilyEvidence",
     "ConflictSeverity",
     "ConflictState",
     "CoverageAssessment",
     "CoverageFamily",
+    "DecisionAction",
+    "DecisionEngineConfig",
     "DecisionHorizon",
     "DurabilityAssessment",
     "DurabilityState",
+    "EligibilityAssessment",
+    "EligibilityState",
     "EnvironmentAlignment",
     "EnvironmentAssessment",
     "EnvironmentRisk",
+    "ExecutionTriggerAssessment",
+    "ExecutionTriggerEvent",
+    "ExecutionTriggerState",
+    "FinalDecision",
+    "HorizonDecisionAssessment",
     "HorizonRelation",
     "HorizonStructuralSnapshot",
     "OpportunityAssessment",
@@ -60,18 +94,28 @@ __all__ = [
     "ParticipationState",
     "ReactionAssessment",
     "ReactionState",
+    "SetupTriggerAssessment",
+    "SetupTriggerState",
     "StructuralAssessment",
     "StructuralDirection",
     "ThesisState",
+    "TimingAssessment",
+    "TimingState",
     "assess_conflict",
     "assess_coverage",
     "assess_durability",
+    "assess_eligibility",
     "assess_environment",
+    "assess_execution_trigger",
+    "assess_horizon_decision",
     "assess_long_term_structure",
     "assess_opportunity",
     "assess_participation",
     "assess_reaction",
+    "assess_setup_trigger",
     "assess_short_term_structure",
+    "assess_timing",
     "build_horizon_structural_snapshot",
     "classify_horizon_relation",
+    "compose_final_decision",
 ]
