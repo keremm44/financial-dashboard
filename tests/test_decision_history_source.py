@@ -58,7 +58,9 @@ def test_capture_indices_use_causal_availability_not_raw_bar_label():
 
     assert indices["1h"] == (1, 2)
     assert indices["30m"] == (3, 3)
-    assert indices["1d"] == (1, 1)
+    # Daily cache is close-labelled. The Jan 5 daily bar at 18:00 is not known at
+    # the noon/13:00 decision cutoffs, so the last causal daily bar remains Jan 2.
+    assert indices["1d"] == (0, 0)
 
 
 def test_wilder_atr_history_is_prefix_only_and_length_preserving():
