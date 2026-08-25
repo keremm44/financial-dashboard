@@ -23,6 +23,19 @@ The behavior is projected as separate causal facts. It does not replace target e
 
 Order Block keeps the source-faithful canonical engine unchanged. A separate tracker retains descriptive lifecycle facts such as fresh/approaching/mitigated/deeply mitigated/repeatedly mitigated/reaction-holding/consumed or expired-candidate behavior. Terminal history is bounded and does not reactivate removed blocks.
 
+The tracker also owns a separate closed-bar **price/OB interaction episode** so one long stay inside an OB is not mistaken for many independent mitigations. It records:
+
+- first entry and current visit,
+- total bars interacting with the zone and closes held inside it,
+- `ENTERED` versus `DWELLING_INSIDE`,
+- favorable exit from the zone,
+- persistence on the favorable side,
+- ATR-normalized post-exit progress,
+- `HOLDING_FAVORABLE` and `REACTION_CONFIRMED`,
+- a new mitigation visit only after favorable separation followed by an actual re-entry.
+
+Bullish and bearish OBs use symmetric favorable-side rules. Open or incomplete bars cannot advance visits, dwell, persistence, ATR, or reaction confirmation. The existing single behavior-state compatibility field promotes mature dwell/acceptance states so the current reaction projection can observe them without changing the canonical Order Block engine.
+
 ### FVG / Engulfing
 
 No second FVG or Engulfing engine was created. Their already-rich native lifecycle is exposed through a typed projection instead. FVG and Engulfing remain separate domains:
