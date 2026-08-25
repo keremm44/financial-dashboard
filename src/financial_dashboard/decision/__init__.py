@@ -28,6 +28,12 @@ from .execution import (
     ExecutionTriggerState,
     assess_execution_trigger,
 )
+from .historical_stream import (
+    HistoricalDecisionStreamConfig,
+    apply_readiness_position_proxy,
+    assess_snapshot_stream,
+    decision_events_from_snapshot_stream,
+)
 from .opportunity import (
     OpportunityAssessment,
     OpportunityCalibration,
@@ -84,6 +90,7 @@ __all__ = [
     "ExecutionTriggerEvent",
     "ExecutionTriggerState",
     "FinalDecision",
+    "HistoricalDecisionStreamConfig",
     "HorizonDecisionAssessment",
     "HorizonRelation",
     "HorizonStructuralSnapshot",
@@ -101,6 +108,7 @@ __all__ = [
     "ThesisState",
     "TimingAssessment",
     "TimingState",
+    "apply_readiness_position_proxy",
     "assess_conflict",
     "assess_coverage",
     "assess_durability",
@@ -114,8 +122,10 @@ __all__ = [
     "assess_reaction",
     "assess_setup_trigger",
     "assess_short_term_structure",
+    "assess_snapshot_stream",
     "assess_timing",
     "build_horizon_structural_snapshot",
     "classify_horizon_relation",
     "compose_final_decision",
+    "decision_events_from_snapshot_stream",
 ]
