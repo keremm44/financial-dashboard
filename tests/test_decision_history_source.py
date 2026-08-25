@@ -15,7 +15,7 @@ def _snapshot() -> AnalysisInputSnapshot:
     rows = {}
     for timeframe, stamps in {
         "1d": ["2026-01-02 18:00", "2026-01-05 18:00"],
-        "4h": ["2026-01-05 10:00", "2026-01-05 14:00"],
+        "4h": ["2026-01-05 06:00", "2026-01-05 10:00", "2026-01-05 14:00"],
         "2h": ["2026-01-05 10:00", "2026-01-05 12:00", "2026-01-05 14:00"],
         "1h": ["2026-01-05 10:00", "2026-01-05 11:00", "2026-01-05 12:00"],
         "30m": ["2026-01-05 10:00", "2026-01-05 10:30", "2026-01-05 11:00", "2026-01-05 11:30"],
@@ -58,6 +58,7 @@ def test_capture_indices_use_causal_availability_not_raw_bar_label():
 
     assert indices["1h"] == (1, 2)
     assert indices["30m"] == (3, 3)
+    assert indices["4h"] == (0, 0)
     # Daily cache is close-labelled. The Jan 5 daily bar at 18:00 is not known at
     # the noon/13:00 decision cutoffs, so the last causal daily bar remains Jan 2.
     assert indices["1d"] == (0, 0)
