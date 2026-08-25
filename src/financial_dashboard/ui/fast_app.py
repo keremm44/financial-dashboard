@@ -150,10 +150,11 @@ def _render_market(observer, *, targeting=None) -> None:
                 st.dataframe(clusters, width="stretch", hide_index=True)
 
 
-def _render_context(workspace) -> None:
+def _render_context_summary(workspace) -> None:
     if not workspace.cross_domain.is_ready or workspace.cross_domain_result is None:
         st.error(f"Cross-domain context hazırlanamadı: {_domain_error(workspace.cross_domain)}")
         return
+
     result = workspace.cross_domain_result
     values = cross_domain_summary_values(result)
     metric_specs = (
@@ -166,22 +167,97 @@ def _render_context(workspace) -> None:
     )
     for column, (label, value) in zip(st.columns(6), metric_specs, strict=True):
         column.metric(label, value)
+
     permission_cols = st.columns(3)
     permission_cols[0].metric("Permission scope", values["Permission scope"])
     permission_cols[1].metric("Permitted side", values["Permitted side"])
     permission_cols[2].metric("Continuation", values["Continuation"])
 
-    context_view, zone_view, permission_view, knowledge_view = st.tabs(
-        ("Context axes", "Qualified zones", "Permission", "Knowledge boundary")
+
+def _render_math_panel(workspace, observer, statuses) -> None:
+    st.subheader("Matematik / Model girdileri")
+    st.caption(
+        "Bu görünüm gelecekteki BUY/SELL motorunun kullanabileceği mevcut sayısal ve typed girdileri tek yerde toplar. Şu an action üretmez."
     )
-    with context_view:
+
+    if workspace.cross_domain_result is None:
+        st.error(f"Cross-domain context hazırlanamadı: {_domain_error(workspace.cross_domain)}")
+    else:
+        result = workspace.cross_domain_result
+        st.markdown("### 1. Context axes")
         st.dataframe(cross_domain_context_frame(result), width="stretch", hide_index=True)
-    with zone_view:
+
+        st.markdown("### 2. Qualified zones")
         st.dataframe(cross_domain_zones_frame(result), width="stretch", hide_index=True)
-    with permission_view:
+
+        st.markdown("### 3. Permission envelope")
         st.dataframe(cross_domain_permission_frame(result), width="stretch", hide_index=True)
-    with knowledge_view:
-        st.dataframe(cross_domain_knowledge_frame(result), width="stretch", hide_index=True)
+
+    st.markdown("### 4. Targeting")
+    targeting = workspace.targeting_result
+    if targeting is None:
+        st.info("Targeting snapshot yok.")
+    else:
+        st.json(targeting_summary_values(targeting))
+        clusters = target_clusters_frame(targeting)
+        if clusters.empty:
+            st.info("Aktif target cluster yok.")
+        else:
+            st.dataframe(clusters, width="stretch", hide_index=True)
+
+    st.markdown("### 5. Volume / Participation")
+    if workspace.volume_result is None:
+        st.info("Volume sonucu yok.")
+    else:
+        st.dataframe(
+            volume_mtf_matrix_frame(workspace.volume_result, statuses),
+            width="stretch",
+            hide_index=True,
+        )
+
+    st.markdown("### 6. HAM")
+    if workspace.ham_result is None:
+        st.info("HAM sonucu yok.")
+    else:
+        st.dataframe(
+            ham_mtf_evidence_frame(workspace.ham_result, statuses),
+            width="stretch",
+            hide_index=True,
+        )
+
+    st.markdown("### 7. MTF foundation")
+    st.dataframe(mtf_matrix_frame(observer, statuses), width="stretch", hide_index=True)
+
+    st.markdown("### 8. Domain health")
+    st.dataframe(workspace_domain_status_frame(workspace), width="stretch", hide_index=True)
+
+    st.markdown("### 9. Cache / source quality")
+    st.dataframe(cache_status_frame(statuses), width="stretch", hide_index=True)
+
+    st.markdown("### 10. Structure warm-up / replay range")
+    st.dataframe(structure_history_frame(observer), width="stretch", hide_index=True)
+
+    if workspace.cross_domain_result is not None:
+        st.markdown("### 11. Knowledge boundary")
+        st.dataframe(
+            cross_domain_knowledge_frame(workspace.cross_domain_result),
+            width="stretch",
+            hide_index=True,
+        )
+
+
+def _render_technical_panel(workspace, observer) -> None:
+    st.subheader("Teknik detay")
+    st.caption("Domain ayrıntıları ve ham teknik gözlem. BUY/SELL veya matematiksel karar paneli değildir.")
+    _render_market(observer, targeting=workspace.targeting_result)
+
+    if workspace.cross_domain_result is not None:
+        st.markdown("### Cross-domain zones")
+        st.dataframe(
+            cross_domain_zones_frame(workspace.cross_domain_result),
+            width="stretch",
+            hide_index=True,
+        )
 
 
 def main() -> None:
@@ -201,14 +277,14 @@ def main() -> None:
         profile = st.selectbox("Pattern profili", PROFILE_VALUES, index=1)
         view = st.radio(
             "Çalışma görünümü",
-            ("Market (hızlı)", "Tam analiz", "Evidence", "Diagnostics"),
+            ("Market (hızlı)", "Tam analiz"),
             index=0,
-            help="Market hızlı yolu yalnızca foundation observer çalıştırır. Diğer görünümler full workspace'i ihtiyaç halinde yükler.",
+            help="Market hızlı yolu foundation observer çalıştırır. Tam analiz bütün workspace domainlerini ihtiyaç halinde yükler.",
         )
         st.caption("Analiz TF: " + " · ".join(ANALYSIS_TIMEFRAMES))
 
     st.title("Financial Dashboard")
-    st.caption("Hızlı başlangıç: Market foundation önce; ağır domainler ihtiyaç halinde. Action layer yok.")
+    st.caption("Market hızlı gözlem içindir. Tam analiz, model girdilerini ve teknik kanıtları tek workspace içinde toplar. Action layer henüz yok.")
 
     if not symbol:
         st.info("Bu cache dizininde analiz edilebilir sembol bulunamadı.")
@@ -236,9 +312,7 @@ def main() -> None:
             fingerprint,
             st.session_state.cache_epoch,
         )
-        st.caption(
-            f"{observer.symbol} · {', '.join(observer.timeframes)} · FAST FOUNDATION"
-        )
+        st.caption(f"{observer.symbol} · {', '.join(observer.timeframes)} · FAST FOUNDATION")
         _render_market(observer)
         return
 
@@ -255,46 +329,21 @@ def main() -> None:
         f"{workspace.symbol} · {', '.join(workspace.timeframes)} · observer as-of: {observer.observation.as_of}"
     )
 
-    if view == "Tam analiz":
-        _render_context(workspace)
+    panel = st.radio(
+        "Tam analiz paneli",
+        ("İnsan özeti", "Matematik / Model", "Teknik detay"),
+        horizontal=True,
+        help="Tek workspace sonucu; yalnızca sunum biçimi değişir. Matematik / Model bütün model girdilerini baştan sona tek yerde gösterir.",
+    )
+
+    if panel == "İnsan özeti":
+        _render_context_summary(workspace)
         st.divider()
         _render_market(observer, targeting=workspace.targeting_result)
-    elif view == "Evidence":
-        volume_view, ham_view, mtf_view = st.tabs(("Volume", "HAM", "MTF foundation"))
-        with volume_view:
-            if workspace.volume_result is None:
-                st.info("Volume sonucu yok.")
-            else:
-                st.dataframe(
-                    volume_mtf_matrix_frame(workspace.volume_result, statuses),
-                    width="stretch",
-                    hide_index=True,
-                )
-        with ham_view:
-            if workspace.ham_result is None:
-                st.info("HAM sonucu yok.")
-            else:
-                st.dataframe(
-                    ham_mtf_evidence_frame(workspace.ham_result, statuses),
-                    width="stretch",
-                    hide_index=True,
-                )
-        with mtf_view:
-            st.dataframe(mtf_matrix_frame(observer, statuses), width="stretch", hide_index=True)
+    elif panel == "Matematik / Model":
+        _render_math_panel(workspace, observer, statuses)
     else:
-        st.subheader("Domain health")
-        st.dataframe(workspace_domain_status_frame(workspace), width="stretch", hide_index=True)
-        st.subheader("Cache / source quality")
-        st.dataframe(cache_status_frame(statuses), width="stretch", hide_index=True)
-        st.subheader("Structure warm-up / replay range")
-        st.dataframe(structure_history_frame(observer), width="stretch", hide_index=True)
-        if workspace.cross_domain_result is not None:
-            st.subheader("Cross-domain knowledge boundary")
-            st.dataframe(
-                cross_domain_knowledge_frame(workspace.cross_domain_result),
-                width="stretch",
-                hide_index=True,
-            )
+        _render_technical_panel(workspace, observer)
 
 
 main()
