@@ -82,6 +82,141 @@ def _lineage(refs) -> tuple[str, ...]:
     )
 
 
+def _decision_lineage(
+    structural: StructuralAssessment,
+    execution: ExecutionTriggerAssessment,
+    additional_lineage: tuple[str, ...],
+) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            set(additional_lineage)
+            | set(_lineage(structural.source_refs))
+            | set(_lineage(execution.source_refs))
+        )
+    )
+
+
+def compose_final_decision(
+    structural: StructuralAssessment,
+    *,
+    eligibility: EligibilityAssessment,
+    execution: ExecutionTriggerAssessment,
+    policy: ActionPolicy | None = None,
+    additional_lineage: tuple[str, ...] = (),
+) -> FinalDecision:
+    """Compose the frozen flat-state entry path.
+
+    This public function intentionally retains its original narrow contract: it sees
+    only Structure, frozen eligibility, the explicit execution assessment and action
+    capability policy. Position management is layered by ``compose_position_decision``
+    rather than widening this boundary with another decision input.
+    """
+
+    cfg = policy or ActionPolicy()
+    market_side = structural.direction
+    lineage = _decision_lineage(structural, execution, additional_lineage)
+
+    if eligibility.state is EligibilityState.BLOCKED:
+        return FinalDecision(
+            structural.horizon,
+            market_side,
+            ActionSide.NONE,
+            DecisionAction.NO_TRADE,
+            eligibility.state,
+            execution.state,
+            eligibility.reasons,
+            eligibility.blockers,
+            (),
+            lineage,
+        )
+
+    if market_side not in cfg.permitted_sides:
+        return FinalDecision(
+            structural.horizon,
+            market_side,
+            ActionSide.NONE,
+            DecisionAction.NO_TRADE,
+            eligibility.state,
+            execution.state,
+            ("MARKET_SIDE_VALID_BUT_ACTION_CAPABILITY_DISALLOWS_SIDE",),
+            (f"ACTION_SIDE_NOT_PERMITTED:{market_side.value}",),
+            (),
+            lineage,
+        )
+
+    side = _action_side(market_side)
+    if eligibility.state is EligibilityState.WAITING:
+        return FinalDecision(
+            structural.horizon,
+            market_side,
+            side,
+            DecisionAction.WAIT,
+            eligibility.state,
+            execution.state,
+            eligibility.reasons,
+            (),
+            eligibility.waiting_for,
+            lineage,
+        )
+
+    if execution.state is ExecutionTriggerState.UNAVAILABLE:
+        return FinalDecision(
+            structural.horizon,
+            market_side,
+            side,
+            DecisionAction.WAIT,
+            eligibility.state,
+            execution.state,
+            ("MARKET_ELIGIBLE_EXECUTION_DATA_UNAVAILABLE",),
+            (),
+            (f"{execution.timeframe}:EXECUTION_TRIGGER_DATA",),
+            lineage,
+        )
+    if execution.state is ExecutionTriggerState.FAILED:
+        return FinalDecision(
+            structural.horizon,
+            market_side,
+            side,
+            DecisionAction.WAIT,
+            eligibility.state,
+            execution.state,
+            ("MARKET_ELIGIBLE_EXECUTION_EVENT_FAILED",),
+            (),
+            ("NEW_EXECUTION_EVENT",),
+            lineage,
+        )
+    if execution.state is ExecutionTriggerState.ABSENT:
+        return FinalDecision(
+            structural.horizon,
+            market_side,
+            side,
+            DecisionAction.READY,
+            eligibility.state,
+            execution.state,
+            ("MARKET_ELIGIBLE_AWAITING_FRESH_EXECUTION_EVENT",),
+            (),
+            ("FRESH_EXECUTION_EVENT",),
+            lineage,
+        )
+
+    action = DecisionAction.BUY if market_side is StructuralDirection.LONG else DecisionAction.SELL
+    position_after = PositionSide.LONG if action is DecisionAction.BUY else PositionSide.SHORT
+    return FinalDecision(
+        structural.horizon,
+        market_side,
+        side,
+        action,
+        eligibility.state,
+        execution.state,
+        ("MARKET_ELIGIBLE_AND_FRESH_EXECUTION_EVENT_CONFIRMED",),
+        (),
+        (),
+        lineage,
+        PositionSide.FLAT,
+        position_after,
+    )
+
+
 def _position_hold(
     structural: StructuralAssessment,
     *,
@@ -108,22 +243,33 @@ def _position_hold(
     )
 
 
-def _compose_open_position(
+def compose_position_decision(
     structural: StructuralAssessment,
     *,
     eligibility: EligibilityAssessment,
     execution: ExecutionTriggerAssessment,
     position: PositionContext,
-    lineage: tuple[str, ...],
+    policy: ActionPolicy | None = None,
+    additional_lineage: tuple[str, ...] = (),
 ) -> FinalDecision:
-    """Compose HOLD/exit for an already-open position.
+    """Layer HOLD/exit semantics over the frozen market decision.
 
-    Fresh-entry gates such as opportunity compression, short-entry brokerage
-    capability, or a new-position volatility gate do not become forced exit rules.
-    Position management is instead Structure-led and requires the v1 execution
-    channel before an opposite action is emitted.
+    A FLAT position delegates exactly to ``compose_final_decision``. An open position
+    is managed separately: fresh-entry opportunity/policy gates are not converted
+    into forced exits, while an opposite Structure-owned exit path still requires a
+    fresh execution event before exposure is closed.
     """
 
+    if position.side is PositionSide.FLAT:
+        return compose_final_decision(
+            structural,
+            eligibility=eligibility,
+            execution=execution,
+            policy=policy,
+            additional_lineage=additional_lineage,
+        )
+
+    lineage = _decision_lineage(structural, execution, additional_lineage)
     exit_side = position_exit_candidate(structural, position)
     if exit_side is None:
         if structural.direction is StructuralDirection.UNRESOLVED:
@@ -149,11 +295,7 @@ def _compose_open_position(
         raise ValueError("position exit execution side must match Structure-owned exit side")
 
     if execution.state is ExecutionTriggerState.CONFIRMED:
-        action = (
-            DecisionAction.SELL
-            if position.side is PositionSide.LONG
-            else DecisionAction.BUY
-        )
+        action = DecisionAction.SELL if position.side is PositionSide.LONG else DecisionAction.BUY
         return FinalDecision(
             horizon=structural.horizon,
             market_side=structural.direction,
@@ -194,156 +336,11 @@ def _compose_open_position(
     )
 
 
-def compose_final_decision(
-    structural: StructuralAssessment,
-    *,
-    eligibility: EligibilityAssessment,
-    execution: ExecutionTriggerAssessment,
-    policy: ActionPolicy | None = None,
-    additional_lineage: tuple[str, ...] = (),
-    position: PositionContext | None = None,
-) -> FinalDecision:
-    """Compose entry actions or position-management actions after evidence is frozen.
-
-    Flat-state BUY/SELL preserves the original v1 rule: a fresh CONFIRMED execution
-    event is required after market eligibility. With an open position, ``HOLD`` is a
-    real position-management state and an opposite BUY/SELL means closing exposure,
-    not silently opening a new opposite position.
-    """
-
-    cfg = policy or ActionPolicy()
-    current_position = position or PositionContext.flat()
-    market_side = structural.direction
-    lineage = tuple(
-        sorted(
-            set(additional_lineage)
-            | set(_lineage(structural.source_refs))
-            | set(_lineage(execution.source_refs))
-        )
-    )
-
-    if current_position.side is not PositionSide.FLAT:
-        return _compose_open_position(
-            structural,
-            eligibility=eligibility,
-            execution=execution,
-            position=current_position,
-            lineage=lineage,
-        )
-
-    if eligibility.state is EligibilityState.BLOCKED:
-        return FinalDecision(
-            horizon=structural.horizon,
-            market_side=market_side,
-            action_side=ActionSide.NONE,
-            action=DecisionAction.NO_TRADE,
-            eligibility=eligibility.state,
-            execution_trigger=execution.state,
-            reasons=eligibility.reasons,
-            blockers=eligibility.blockers,
-            waiting_for=(),
-            source_lineage=lineage,
-        )
-
-    if market_side not in cfg.permitted_sides:
-        return FinalDecision(
-            horizon=structural.horizon,
-            market_side=market_side,
-            action_side=ActionSide.NONE,
-            action=DecisionAction.NO_TRADE,
-            eligibility=eligibility.state,
-            execution_trigger=execution.state,
-            reasons=("MARKET_SIDE_VALID_BUT_ACTION_CAPABILITY_DISALLOWS_SIDE",),
-            blockers=(f"ACTION_SIDE_NOT_PERMITTED:{market_side.value}",),
-            waiting_for=(),
-            source_lineage=lineage,
-        )
-
-    side = _action_side(market_side)
-    if eligibility.state is EligibilityState.WAITING:
-        return FinalDecision(
-            horizon=structural.horizon,
-            market_side=market_side,
-            action_side=side,
-            action=DecisionAction.WAIT,
-            eligibility=eligibility.state,
-            execution_trigger=execution.state,
-            reasons=eligibility.reasons,
-            blockers=(),
-            waiting_for=eligibility.waiting_for,
-            source_lineage=lineage,
-        )
-
-    if execution.state is ExecutionTriggerState.UNAVAILABLE:
-        return FinalDecision(
-            horizon=structural.horizon,
-            market_side=market_side,
-            action_side=side,
-            action=DecisionAction.WAIT,
-            eligibility=eligibility.state,
-            execution_trigger=execution.state,
-            reasons=("MARKET_ELIGIBLE_EXECUTION_DATA_UNAVAILABLE",),
-            blockers=(),
-            waiting_for=(f"{execution.timeframe}:EXECUTION_TRIGGER_DATA",),
-            source_lineage=lineage,
-        )
-    if execution.state is ExecutionTriggerState.FAILED:
-        return FinalDecision(
-            horizon=structural.horizon,
-            market_side=market_side,
-            action_side=side,
-            action=DecisionAction.WAIT,
-            eligibility=eligibility.state,
-            execution_trigger=execution.state,
-            reasons=("MARKET_ELIGIBLE_EXECUTION_EVENT_FAILED",),
-            blockers=(),
-            waiting_for=("NEW_EXECUTION_EVENT",),
-            source_lineage=lineage,
-        )
-    if execution.state is ExecutionTriggerState.ABSENT:
-        return FinalDecision(
-            horizon=structural.horizon,
-            market_side=market_side,
-            action_side=side,
-            action=DecisionAction.READY,
-            eligibility=eligibility.state,
-            execution_trigger=execution.state,
-            reasons=("MARKET_ELIGIBLE_AWAITING_FRESH_EXECUTION_EVENT",),
-            blockers=(),
-            waiting_for=("FRESH_EXECUTION_EVENT",),
-            source_lineage=lineage,
-        )
-
-    action = (
-        DecisionAction.BUY
-        if market_side is StructuralDirection.LONG
-        else DecisionAction.SELL
-    )
-    position_after = (
-        PositionSide.LONG
-        if action is DecisionAction.BUY
-        else PositionSide.SHORT
-    )
-    return FinalDecision(
-        horizon=structural.horizon,
-        market_side=market_side,
-        action_side=side,
-        action=action,
-        eligibility=eligibility.state,
-        execution_trigger=execution.state,
-        reasons=("MARKET_ELIGIBLE_AND_FRESH_EXECUTION_EVENT_CONFIRMED",),
-        blockers=(),
-        waiting_for=(),
-        source_lineage=lineage,
-        position_before=PositionSide.FLAT,
-        position_after=position_after,
-    )
-
-
 __all__ = [
     "ActionPolicy",
     "ActionSide",
     "DecisionAction",
     "FinalDecision",
     "compose_final_decision",
+    "compose_position_decision",
 ]
