@@ -52,7 +52,12 @@ def assess_environment(
     *,
     timeframe: str,
 ) -> EnvironmentAssessment:
-    """Interpret native volatility regime relative to Structure without changing it."""
+    """Interpret native volatility regime relative to Structure without changing it.
+
+    V1 has only two explicit risk policies here: SHOCK is marked for the later hard
+    gate layer and UNSTABLE_CONFLICT is an elevated soft risk. Other native
+    characters remain visible but are not assigned new severity heuristics yet.
+    """
 
     normalized = timeframe.strip().lower()
     if volatility is None:
@@ -104,12 +109,12 @@ def assess_environment(
     elif row.expansion_character is ExpansionCharacter.UNSTABLE_CONFLICT:
         risk = EnvironmentRisk.ELEVATED
         reasons = ("VOLATILITY_UNSTABLE_CONFLICT",)
-    elif row.expansion_character in {ExpansionCharacter.FALSE_EXCURSION, ExpansionCharacter.MEAN_REVERSION}:
-        risk = EnvironmentRisk.ELEVATED
-        reasons = (f"VOLATILITY_{row.expansion_character.value}",)
     else:
         risk = EnvironmentRisk.NORMAL
-        reasons = (f"VOLATILITY_REGIME:{row.range_regime.value}",)
+        reasons = (
+            f"VOLATILITY_REGIME:{row.range_regime.value}",
+            f"VOLATILITY_CHARACTER:{row.expansion_character.value}",
+        )
 
     if alignment is EnvironmentAlignment.OPPOSING:
         reasons = (*reasons, "VOLATILITY_EXPANSION_OPPOSES_STRUCTURE")
