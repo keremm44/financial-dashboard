@@ -20,18 +20,7 @@ from .structural import DecisionHorizon, StructuralDirection
 
 @dataclass(frozen=True, slots=True)
 class HistoricalDecisionStreamConfig:
-    """Configuration for the cheap decision-only historical pass.
-
-    Native/domain engines are deliberately out of scope here. The caller must supply
-    a causal, strictly increasing stream of already-built ``DecisionInputSnapshot``
-    objects from a single-pass upstream replay. This prevents the decision audit from
-    accidentally rebuilding the full market workspace once per historical bar.
-
-    ``position_aware`` is opt-in so the original raw decision timeline remains a
-    stable correctness oracle. When enabled, actual BUY/SELL events advance a causal
-    position state and future decisions receive that state. The readiness proxy is a
-    separate audit-only approximation and therefore cannot be enabled simultaneously.
-    """
+    """Configuration for the cheap decision-only historical pass."""
 
     horizon: DecisionHorizon = DecisionHorizon.SHORT_TERM
     opportunity_calibration: OpportunityCalibration | None = None
@@ -85,13 +74,16 @@ def _event_from_assessment(
     final = assessment.final
     action = action_override or _audit_action(final.action)
     reasons = final.reasons if proxy_reason is None else (*final.reasons, proxy_reason)
+    position = getattr(assessment, "position", PositionContext.flat())
+    position_before = getattr(final, "position_before", PositionSide.FLAT)
+    position_after = getattr(final, "position_after", PositionSide.FLAT)
     snapshot = {
         "historical_stream": True,
         "readiness_position_proxy": proxy_reason is not None,
         "horizon": assessment.horizon.value,
-        "position": _jsonable(assessment.position),
-        "position_before": final.position_before.value,
-        "position_after": final.position_after.value,
+        "position": _jsonable(position),
+        "position_before": position_before.value,
+        "position_after": position_after.value,
         "structural": _jsonable(assessment.structural),
         "relation": assessment.structural_snapshot.relation.value,
         "durability": _jsonable(assessment.durability),
@@ -154,12 +146,7 @@ def assess_snapshot_stream(
     config: HistoricalDecisionStreamConfig | None = None,
     execution_events: Mapping[Any, ExecutionTriggerEvent] | None = None,
 ) -> tuple[tuple[HorizonDecisionAssessment, float], ...]:
-    """Evaluate the decision layer over one causal snapshot stream.
-
-    This function is intentionally O(number of decision snapshots) over the decision
-    layer only. It never loads cache files, clips OHLCV, imports the workspace runner,
-    or reruns any native market engine.
-    """
+    """Evaluate the decision layer over one causal snapshot stream in O(N)."""
 
     cfg = config or HistoricalDecisionStreamConfig()
     engine_config = DecisionEngineConfig(
@@ -177,13 +164,24 @@ def assess_snapshot_stream(
         for ref in snapshot.source_refs:
             if not ref.is_available_at(snapshot.as_of):
                 raise ValueError("historical decision snapshot contains future-unavailable evidence")
-        assessment = assess_horizon_decision(
-            snapshot,
-            cfg.horizon,
-            config=engine_config,
-            execution_event=event_map.get(snapshot.as_of),
-            position=current_position if cfg.position_aware else None,
-        )
+
+        if cfg.position_aware:
+            assessment = assess_horizon_decision(
+                snapshot,
+                cfg.horizon,
+                config=engine_config,
+                execution_event=event_map.get(snapshot.as_of),
+                position=current_position,
+            )
+        else:
+            # Preserve the original call surface for the raw causal decision stream.
+            assessment = assess_horizon_decision(
+                snapshot,
+                cfg.horizon,
+                config=engine_config,
+                execution_event=event_map.get(snapshot.as_of),
+            )
+
         price = float(snapshot.current_price)
         rows.append((assessment, price))
         if cfg.position_aware:
