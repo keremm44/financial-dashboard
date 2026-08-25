@@ -15,7 +15,10 @@ class OrderBlockBehaviorState(StrEnum):
     PARTIALLY_MITIGATED = "PARTIALLY_MITIGATED"
     DEEP_MITIGATION = "DEEP_MITIGATION"
     REPEATED_MITIGATION = "REPEATED_MITIGATION"
+    DWELLING_INSIDE = "DWELLING_INSIDE"
     REACTION_HOLDING = "REACTION_HOLDING"
+    HOLDING_FAVORABLE = "HOLDING_FAVORABLE"
+    REACTION_CONFIRMED = "REACTION_CONFIRMED"
     CONSUMED = "CONSUMED"
     EXPIRED_CANDIDATE = "EXPIRED_CANDIDATE"
 
@@ -279,6 +282,15 @@ class OrderBlockBehaviorTracker:
             episode.max_favorable_move_atr = 0.0
             episode.reaction_confirmed = False
 
+        # If price closed favorably but returned before a clean separation bar, it
+        # is still the same visit/interaction episode, not a new mitigation.
+        if intersects and not episode.visit_open and not episode.reentry_armed:
+            episode.visit_open = True
+            episode.favorable_exit_index = None
+            episode.bars_held_favorable = 0
+            episode.max_favorable_move_atr = 0.0
+            episode.reaction_confirmed = False
+
         if episode.visit_open and intersects:
             episode.current_visit_bars += 1
             episode.total_inside_bars += 1
@@ -321,10 +333,6 @@ class OrderBlockBehaviorTracker:
                 episode.interaction = OrderBlockInteractionState.DWELLING_INSIDE
             else:
                 episode.interaction = OrderBlockInteractionState.ENTERED
-            return
-
-        if episode.reaction_confirmed and favorable_close:
-            episode.interaction = OrderBlockInteractionState.REACTION_CONFIRMED
             return
 
         if episode.visit_count == 0:
@@ -427,6 +435,17 @@ class OrderBlockBehaviorTracker:
             state = OrderBlockBehaviorState.APPROACHING
         else:
             state = OrderBlockBehaviorState.FRESH
+
+        # Promote only mature interaction states into the existing single-state
+        # compatibility field. This lets current cross-domain reaction projection
+        # see dwell/acceptance without erasing first-touch/deep/revisit semantics.
+        if not terminal and record.active:
+            if episode.interaction is OrderBlockInteractionState.REACTION_CONFIRMED:
+                state = OrderBlockBehaviorState.REACTION_CONFIRMED
+            elif episode.interaction is OrderBlockInteractionState.HOLDING_FAVORABLE:
+                state = OrderBlockBehaviorState.HOLDING_FAVORABLE
+            elif episode.interaction is OrderBlockInteractionState.DWELLING_INSIDE:
+                state = OrderBlockBehaviorState.DWELLING_INSIDE
 
         return OrderBlockBehaviorSnapshot(
             identity=identity,
