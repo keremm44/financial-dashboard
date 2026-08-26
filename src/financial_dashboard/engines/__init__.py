@@ -34,6 +34,22 @@ from .mtf_story_state_machine import MTFStoryStateMachine
 from .mtf_story_trigger import MTFStoryTriggerError, classify_trigger
 from .order_block import OrderBlockDataQuality, OrderBlockEngine, OrderBlockExport, OrderBlockSideExport
 from .order_block_engine import OrderBlockConfig, OrderBlockRecord
+from .pattern_compression_core import PatternCandidate
+
+
+def _pattern_candidate_deepcopy(candidate: PatternCandidate, memo: dict[int, object]) -> PatternCandidate:
+    """Clone scalar-only PatternCandidate state without recursive deepcopy traversal."""
+    clone = PatternCandidate()
+    memo[id(candidate)] = clone
+    for slot in PatternCandidate.__slots__:
+        setattr(clone, slot, getattr(candidate, slot))
+    return clone
+
+
+# PatternCandidate contains only scalar/immutable values. Preserve deepcopy isolation
+# semantics while avoiding recursive deepcopy dispatch on every active-bar refresh.
+PatternCandidate.__deepcopy__ = _pattern_candidate_deepcopy
+
 from .pattern_compression_engine import PatternCompressionEngine
 from .raw_indicator_dashboard import (
     EffectiveTrendSettings,
