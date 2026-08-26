@@ -6,8 +6,10 @@ from pathlib import Path
 from typing import Any
 
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
-from financial_dashboard.decision.history_incremental import IncrementalHistoricalDecisionInputReplayRunner
-from financial_dashboard.decision.history_single_pass import SinglePassHistoricalDecisionInputReplayRunner
+from financial_dashboard.decision.history_replay import (
+    HistoricalDecisionInputReplayRunner,
+    LegacyHistoricalDecisionInputReplayRunner,
+)
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
 
 
@@ -28,7 +30,7 @@ def _plain(value: Any) -> Any:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Compare old single-pass decision snapshots with the incremental timeline path."
+        description="Compare the legacy capture replay with the canonical append-only causal timeline."
     )
     parser.add_argument("cache_root", type=Path)
     parser.add_argument("symbol")
@@ -45,24 +47,24 @@ def main() -> None:
         pattern_profile=args.pattern_profile,
     )
     store = ParquetOHLCVStore(args.cache_root)
-    old = SinglePassHistoricalDecisionInputReplayRunner(store).replay(args.symbol, config=config)
-    new = IncrementalHistoricalDecisionInputReplayRunner(store).replay(args.symbol, config=config)
+    legacy = LegacyHistoricalDecisionInputReplayRunner(store).replay(args.symbol, config=config)
+    canonical = HistoricalDecisionInputReplayRunner(store).replay(args.symbol, config=config)
 
-    if old.cutoffs != new.cutoffs:
+    if legacy.cutoffs != canonical.cutoffs:
         raise SystemExit("CUTOFF_MISMATCH")
-    if len(old.snapshots) != len(new.snapshots):
+    if len(legacy.snapshots) != len(canonical.snapshots):
         raise SystemExit("SNAPSHOT_COUNT_MISMATCH")
 
     mismatches: list[int] = []
-    for index, (left, right) in enumerate(zip(old.snapshots, new.snapshots, strict=True)):
+    for index, (left, right) in enumerate(zip(legacy.snapshots, canonical.snapshots, strict=True)):
         if _plain(left) != _plain(right):
             mismatches.append(index)
 
-    print(f"SNAPSHOTS\t{len(old.snapshots)}")
-    print(f"OLD_TOTAL_SECONDS\t{old.timings.total_seconds:.2f}")
-    print(f"NEW_TOTAL_SECONDS\t{new.timings.total_seconds:.2f}")
-    print(f"OLD_ASSEMBLY_SECONDS\t{old.timings.snapshot_assembly_seconds:.2f}")
-    print(f"NEW_ASSEMBLY_SECONDS\t{new.timings.snapshot_assembly_seconds:.2f}")
+    print(f"SNAPSHOTS\t{len(legacy.snapshots)}")
+    print(f"LEGACY_TOTAL_SECONDS\t{legacy.timings.total_seconds:.2f}")
+    print(f"CANONICAL_TOTAL_SECONDS\t{canonical.timings.total_seconds:.2f}")
+    print(f"LEGACY_ASSEMBLY_SECONDS\t{legacy.timings.snapshot_assembly_seconds:.2f}")
+    print(f"CANONICAL_ASSEMBLY_SECONDS\t{canonical.timings.snapshot_assembly_seconds:.2f}")
     print(f"MISMATCHES\t{len(mismatches)}")
     if mismatches:
         print("MISMATCH_POSITIONS\t" + ",".join(str(index) for index in mismatches[:20]))
