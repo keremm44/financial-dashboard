@@ -31,6 +31,7 @@ from .execution import (
 from .historical_stream import (
     HistoricalDecisionStreamConfig,
     apply_readiness_position_proxy,
+    apply_trade_lifecycle,
     assess_snapshot_stream,
     decision_events_from_snapshot_stream,
 )
@@ -38,6 +39,13 @@ from .history_single_pass import (
     HistoricalReplayTimings,
     SinglePassHistoricalDecisionInputReplay,
     SinglePassHistoricalDecisionInputReplayRunner,
+)
+from .lifecycle import (
+    ExitStage,
+    PositionState,
+    TradeLifecycleState,
+    TradeLifecycleTransition,
+    transition_trade_lifecycle,
 )
 from .opportunity import (
     OpportunityAssessment,
@@ -94,6 +102,7 @@ __all__ = [
     "ExecutionTriggerAssessment",
     "ExecutionTriggerEvent",
     "ExecutionTriggerState",
+    "ExitStage",
     "FinalDecision",
     "HistoricalDecisionStreamConfig",
     "HistoricalReplayTimings",
@@ -105,6 +114,7 @@ __all__ = [
     "OpportunityState",
     "ParticipationAssessment",
     "ParticipationState",
+    "PositionState",
     "ReactionAssessment",
     "ReactionState",
     "SetupTriggerAssessment",
@@ -116,7 +126,10 @@ __all__ = [
     "ThesisState",
     "TimingAssessment",
     "TimingState",
+    "TradeLifecycleState",
+    "TradeLifecycleTransition",
     "apply_readiness_position_proxy",
+    "apply_trade_lifecycle",
     "assess_conflict",
     "assess_coverage",
     "assess_durability",
@@ -136,4 +149,5 @@ __all__ = [
     "classify_horizon_relation",
     "compose_final_decision",
     "decision_events_from_snapshot_stream",
+    "transition_trade_lifecycle",
 ]
