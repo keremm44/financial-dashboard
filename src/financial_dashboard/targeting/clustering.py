@@ -335,16 +335,7 @@ def build_targeting_snapshot(
     reference_atr: float,
     evidence: Iterable[TargetEvidence],
     config: TargetClusterConfig | None = None,
-    evidence_pre_deduplicated: bool = False,
 ) -> TargetingSnapshot:
-    """Build one causal targeting snapshot.
-
-    ``evidence_pre_deduplicated`` is an execution optimization only. Callers may set
-    it to ``True`` only when the provided evidence has already passed through the
-    canonical origin-event de-duplication rule for the same reference ATR/config.
-    The causal availability filter still runs in either mode.
-    """
-
     cfg = config or TargetClusterConfig()
     cutoff = pd.Timestamp(as_of)
     causal_evidence = tuple(
@@ -352,14 +343,10 @@ def build_targeting_snapshot(
         for item in evidence
         if pd.Timestamp(item.available_at) <= cutoff
     )
-    deduped = (
-        causal_evidence
-        if evidence_pre_deduplicated
-        else deduplicate_origin_events(
-            causal_evidence,
-            reference_atr=reference_atr,
-            config=cfg,
-        )
+    deduped = deduplicate_origin_events(
+        causal_evidence,
+        reference_atr=reference_atr,
+        config=cfg,
     )
     clusters = cluster_target_evidence(
         deduped,
