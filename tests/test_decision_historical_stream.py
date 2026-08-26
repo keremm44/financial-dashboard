@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from financial_dashboard.context.envelope import ContextDataQuality
+from financial_dashboard.context.permissions import GateState, PermissionEnvelope, PermissionScope, PermittedSide
 from financial_dashboard.decision.composer import DecisionAction
 from financial_dashboard.decision.execution import ExecutionTriggerEvent, ExecutionTriggerState
 from financial_dashboard.decision.historical_stream import (
@@ -20,6 +21,7 @@ from financial_dashboard.decision.structural import (
     StructuralDirection,
     ThesisState,
 )
+from financial_dashboard.decision.timing import TimingState
 from financial_dashboard.decision_audit import DecisionAction as AuditDecisionAction
 
 
@@ -43,6 +45,7 @@ def _assessment(
     relation=HorizonRelation.ALIGNED,
     transition_target=None,
     execution_state=ExecutionTriggerState.ABSENT,
+    timing_state=TimingState.READY,
     waiting_for=(),
     blockers=(),
 ):
@@ -61,6 +64,11 @@ def _assessment(
         source_refs=(),
     )
     st = SimpleNamespace(source_refs=())
+    permission = PermissionEnvelope(
+        scope=PermissionScope.CONTINUATION_ONLY,
+        permitted_side=PermittedSide.LONG,
+        gate_state=GateState.OPEN,
+    )
     return SimpleNamespace(
         horizon=DecisionHorizon.SHORT_TERM,
         as_of=pd.Timestamp(as_of),
@@ -71,6 +79,7 @@ def _assessment(
             short_term=st,
             relation=relation,
         ),
+        permission=permission,
         durability=placeholder,
         reaction=placeholder,
         participation=placeholder,
@@ -78,7 +87,7 @@ def _assessment(
         opportunity=placeholder,
         coverage=placeholder,
         conflict=placeholder,
-        timing=placeholder,
+        timing=SimpleNamespace(state=timing_state),
         eligibility=placeholder,
         execution=SimpleNamespace(state=execution_state),
     )
@@ -169,17 +178,23 @@ def test_trade_lifecycle_uses_dedicated_exit_path_not_legacy_sell_candidate():
         AuditDecisionAction.SELL,
         AuditDecisionAction.WAIT,
     ]
+    assert events[0].snapshot["lifecycle_phase"] == "ENTRY_EXECUTED"
+    assert events[0].snapshot["permission"]["gate_state"] == "OPEN"
     assert events[1].snapshot["trade_lifecycle"]["requested_action"] == "BUY"
     assert events[2].snapshot["trade_lifecycle"]["requested_action"] == "SELL"
     assert events[2].snapshot["trade_lifecycle"]["action"] == "HOLD"
+    assert events[2].snapshot["lifecycle_phase"] == "COUNTER_REACTION"
     assert events[2].snapshot["long_exit"]["position_health"] == "PROTECTED"
     assert events[2].snapshot["long_exit"]["stage"] == "MONITOR"
     assert events[3].snapshot["long_exit"]["stage"] == "EXIT_READY"
+    assert events[3].snapshot["lifecycle_phase"] == "EXIT_READY"
     assert events[3].snapshot["long_exit"]["execution"]["state"] == "ABSENT"
     assert events[4].snapshot["long_exit"]["execution"]["state"] == "CONFIRMED"
     assert events[4].snapshot["trade_lifecycle"]["position_state"] == "FLAT"
+    assert events[4].snapshot["lifecycle_phase"] == "EXIT_EXECUTED"
     assert events[4].side.value == "LONG"
     assert events[5].snapshot["trade_lifecycle"]["transition_reason"] == "LIFECYCLE_FLAT_SELL_SUPPRESSED"
+    assert events[5].snapshot["decision"]["waiting_for"] == ["LIFECYCLE_LONG_ENTRY_PATH"]
 
 
 def test_lifecycle_readiness_proxy_exercises_real_ownership_and_exit_stages():
