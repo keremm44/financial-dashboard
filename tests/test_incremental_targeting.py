@@ -4,10 +4,12 @@ import pandas as pd
 
 from financial_dashboard.decision.incremental_targeting import (
     build_targeting_from_deduped_evidence,
+    cluster_target_evidence_bounded,
     deduplicate_origin_events_indexed,
 )
 from financial_dashboard.targeting.clustering import (
     build_targeting_snapshot,
+    cluster_target_evidence,
     deduplicate_origin_events,
 )
 from financial_dashboard.targeting.models import (
@@ -93,6 +95,19 @@ def test_indexed_dedup_preserves_greedy_order_when_confirmations_are_not_origin_
     assert deduplicate_origin_events_indexed(rows, reference_atr=1.0) == deduplicate_origin_events(
         rows,
         reference_atr=1.0,
+    )
+
+
+def test_bounded_cluster_matches_canonical_first_compatible_group_rule() -> None:
+    rows = deduplicate_origin_events_indexed(_rows(), reference_atr=2.0)
+    assert cluster_target_evidence_bounded(
+        rows,
+        current_price=105.0,
+        reference_atr=2.0,
+    ) == cluster_target_evidence(
+        rows,
+        current_price=105.0,
+        reference_atr=2.0,
     )
 
 
