@@ -66,27 +66,71 @@ def codebase_semantic_fingerprint() -> str:
 
 @lru_cache(maxsize=32)
 def code_paths_semantic_fingerprint(relative_paths: tuple[str, ...]) -> str:
-    """Hash only the source paths that own one persisted semantic layer.
-
-    Persistent domains may survive unrelated decision/UI edits without becoming stale.
-    Callers must enumerate every source subtree that can change the persisted payload's
-    semantics; changes inside those paths automatically invalidate that namespace.
-    """
+    """Hash only the source paths that own one persisted semantic layer."""
 
     package_root = Path(__file__).resolve().parents[1]
     paths = tuple(package_root / relative for relative in relative_paths)
     return _hash_source_paths(paths, root=package_root)
 
 
+_NATIVE_IMPLEMENTATION_PATHS = (
+    "engines",
+    "mtf_replay.py",
+    "structure_location_replay.py",
+    "target_evidence_replay.py",
+    "decision/causal_reducer.py",
+    "decision/history_native_timeline.py",
+    "decision/history_source.py",
+    "decision/native_domain_runtime.py",
+    "decision/state_timeline.py",
+)
+_SUPPORTING_IMPLEMENTATION_PATHS = (
+    "engines",
+    "ham_mtf_replay.py",
+    "volume_mtf_replay.py",
+    "volatility_mtf_replay.py",
+    "decision/history_source.py",
+    "decision/indexed_views.py",
+    "decision/supporting_replay_runtime.py",
+)
+_DECISION_INPUT_IMPLEMENTATION_PATHS = tuple(
+    dict.fromkeys(
+        (*_NATIVE_IMPLEMENTATION_PATHS, *_SUPPORTING_IMPLEMENTATION_PATHS,
+         "context",
+         "targeting",
+         "decision_input.py",
+         "decision/history_incremental.py",
+         "decision/persistent_history_runner.py",
+         "decision/incremental_cross_domain.py",
+         "decision/incremental_targeting.py",
+         "decision/participation.py",
+         "decision/reaction.py")
+    )
+)
+
+
+@lru_cache(maxsize=8)
+def namespace_semantic_fingerprint(namespace: str) -> str:
+    """Return the narrowest safe code fingerprint for a persisted namespace.
+
+    Native/supporting engine state must survive unrelated BUY/SELL, lifecycle, audit and
+    UI edits. DecisionInput read models include their domain dependencies plus composition
+    code, but still exclude downstream action/lifecycle code. Unknown namespaces retain
+    the conservative whole-package fallback.
+    """
+
+    if namespace == "native_timeline":
+        return code_paths_semantic_fingerprint(_NATIVE_IMPLEMENTATION_PATHS)
+    if namespace == "supporting_runtime":
+        return code_paths_semantic_fingerprint(_SUPPORTING_IMPLEMENTATION_PATHS)
+    if namespace == "decision_input_timeline":
+        return code_paths_semantic_fingerprint(_DECISION_INPUT_IMPLEMENTATION_PATHS)
+    return codebase_semantic_fingerprint()
+
+
 @dataclass(frozen=True)
 class PersistentCacheIdentity:
-    """Exact semantic identity for one trusted local persistent object.
-
-    These identity objects intentionally do not use dataclass slots. Python versions
-    differ in how an inherited/defaulted field is materialized during slots generation;
-    the tiny metadata objects are not on the hot path, so regular frozen dataclasses are
-    safer and have no meaningful runtime cost.
-    """
+    """Exact semantic identity for one trusted local persistent object."""
 
     namespace: str
     symbol: str
@@ -97,7 +141,9 @@ class PersistentCacheIdentity:
 
     @property
     def digest(self) -> str:
-        implementation = self.implementation_fingerprint or codebase_semantic_fingerprint()
+        implementation = self.implementation_fingerprint or namespace_semantic_fingerprint(
+            self.namespace
+        )
         return _stable_digest(
             (
                 str(PERSISTENT_STATE_SCHEMA_VERSION),
@@ -123,7 +169,9 @@ class PersistentCheckpointIdentity:
 
     @property
     def digest(self) -> str:
-        implementation = self.implementation_fingerprint or codebase_semantic_fingerprint()
+        implementation = self.implementation_fingerprint or namespace_semantic_fingerprint(
+            self.namespace
+        )
         return _stable_digest(
             (
                 str(PERSISTENT_STATE_SCHEMA_VERSION),
@@ -344,5 +392,6 @@ __all__ = [
     "code_paths_semantic_fingerprint",
     "codebase_semantic_fingerprint",
     "fingerprint_frame_prefix",
+    "namespace_semantic_fingerprint",
     "validate_append_only_prefix",
 ]
