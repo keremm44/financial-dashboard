@@ -29,16 +29,16 @@ class RuntimeCase:
     seconds: float
     domain: str
     timeframe: str
+    bars: int = 0
     detail: str = ""
 
 
-def _closed_records(store, symbol: str, timeframe: str):
-    frame = store.load(symbol, timeframe)
-    if "is_closed" in frame.columns:
-        frame = frame.loc[frame["is_closed"].fillna(False).astype(bool)]
-    if "is_complete" in frame.columns:
-        frame = frame.loc[frame["is_complete"].fillna(False).astype(bool)]
-    return frame, frame.to_dict("records")
+def _canonical_inputs(store, symbol: str, timeframe: str):
+    from financial_dashboard.data.analysis_inputs import load_analysis_inputs
+
+    inputs = load_analysis_inputs(store, symbol=symbol, timeframes=(timeframe,))
+    frame = inputs.for_timeframe(timeframe).input_batch.frame
+    return inputs, frame, frame.to_dict("records")
 
 
 def _worker(cache: str, symbol: str, domain: str, timeframe: str, queue) -> None:
@@ -46,54 +46,73 @@ def _worker(cache: str, symbol: str, domain: str, timeframe: str, queue) -> None
         from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 
         store = ParquetOHLCVStore(cache)
-        started = time.perf_counter()
+        inputs, frame, records = _canonical_inputs(store, symbol, timeframe)
+        bars = len(frame)
 
         if domain == "structure":
             from financial_dashboard.engines.market_structure_engine import MarketStructureEngine
 
-            _, records = _closed_records(store, symbol, timeframe)
+            started = time.perf_counter()
             engine = MarketStructureEngine()
             for row in records:
                 engine.update(row)
             _ = engine.export_contract
+            seconds = time.perf_counter() - started
 
         elif domain == "support_resistance":
             from financial_dashboard.engines.support_resistance_runtime_engine import (
                 RuntimeSupportResistanceRangeEngine,
             )
 
-            _, records = _closed_records(store, symbol, timeframe)
+            started = time.perf_counter()
             engine = RuntimeSupportResistanceRangeEngine()
             for row in records:
                 engine.update(row)
             _ = engine.snapshot()
+            seconds = time.perf_counter() - started
 
         elif domain == "pattern":
             from financial_dashboard.engines.pattern_compression_runtime_engine import (
                 RuntimePatternCompressionEngine,
             )
 
-            _, records = _closed_records(store, symbol, timeframe)
+            started = time.perf_counter()
             engine = RuntimePatternCompressionEngine()
             for row in records:
                 engine.update(row)
             engine.snapshot()
+            seconds = time.perf_counter() - started
 
         elif domain == "ham":
             from financial_dashboard.ham_mtf_replay import HamMTFEvidenceReplayRunner
 
+            started = time.perf_counter()
             HamMTFEvidenceReplayRunner(store).replay(
                 symbol,
                 timeframes=(timeframe,),
+                input_snapshot=inputs,
             )
+            seconds = time.perf_counter() - started
 
         elif domain == "volume":
+            from financial_dashboard.structure_location_replay import CachedStructureLocationMTFRunner
             from financial_dashboard.volume_mtf_replay import VolumeMTFEvidenceReplayRunner
 
+            # Canonical decision assembly already owns Structure. Build it outside
+            # the Volume timer so the Volume row does not count a second Structure replay.
+            structure_replay = CachedStructureLocationMTFRunner(store).run(
+                symbol=symbol,
+                timeframes=(timeframe,),
+                input_snapshot=inputs,
+            )
+            started = time.perf_counter()
             VolumeMTFEvidenceReplayRunner(store).replay(
                 symbol,
                 timeframes=(timeframe,),
+                structure_replay=structure_replay,
+                input_snapshot=inputs,
             )
+            seconds = time.perf_counter() - started
 
         elif domain == "volatility":
             from financial_dashboard.volatility_mtf_replay import (
@@ -102,66 +121,85 @@ def _worker(cache: str, symbol: str, domain: str, timeframe: str, queue) -> None
             )
 
             if timeframe not in VOLATILITY_TIMEFRAMES:
-                queue.put(("SKIP", 0.0, "unsupported timeframe"))
+                queue.put(("SKIP", 0.0, bars, "unsupported timeframe"))
                 return
+            started = time.perf_counter()
             VolatilityMTFReplayRunner(store).replay(
                 symbol,
                 timeframes=(timeframe,),
+                input_snapshot=inputs,
             )
+            seconds = time.perf_counter() - started
 
         elif domain == "liquidity":
-            from financial_dashboard.target_evidence_replay import LiquidityMTFReplayRunner
+            from financial_dashboard.engines.liquidity_engine import LiquidityEngine
 
-            LiquidityMTFReplayRunner(store).replay(
-                symbol,
-                timeframes=(timeframe,),
-            )
+            started = time.perf_counter()
+            engine = LiquidityEngine()
+            for row in records:
+                engine.update(row)
+            _ = engine.behavior_snapshot
+            seconds = time.perf_counter() - started
 
         elif domain == "order_block":
-            from financial_dashboard.target_evidence_replay import OrderBlockMTFReplayRunner
+            from financial_dashboard.engines.order_block import OrderBlockEngine
+            from financial_dashboard.engines.order_block_behavior import OrderBlockBehaviorTracker
 
-            OrderBlockMTFReplayRunner(store).replay(
-                symbol,
-                timeframes=(timeframe,),
-            )
+            started = time.perf_counter()
+            engine = OrderBlockEngine()
+            behavior = OrderBlockBehaviorTracker()
+            for index, row in enumerate(records):
+                engine.update(row)
+                behavior.update(
+                    engine.records,
+                    bar_index=index,
+                    high=float(row["high"]),
+                    low=float(row["low"]),
+                    close=float(row["close"]),
+                )
+            seconds = time.perf_counter() - started
 
         elif domain == "fvg_engulfing":
-            from financial_dashboard.engines.fvg_engulfing_models import SUPPORTED_TIMEFRAMES
-            from financial_dashboard.target_evidence_replay import FvgEngulfingMTFReplayRunner
+            from financial_dashboard.engines.fvg_engulfing import FvgEngulfingEngine
+            from financial_dashboard.engines.fvg_engulfing_models import (
+                FvgEngulfingConfig,
+                SUPPORTED_TIMEFRAMES,
+            )
 
             if timeframe not in SUPPORTED_TIMEFRAMES:
-                queue.put(("SKIP", 0.0, "unsupported timeframe"))
+                queue.put(("SKIP", 0.0, bars, "unsupported timeframe"))
                 return
-            FvgEngulfingMTFReplayRunner(store).replay(
-                symbol,
-                timeframes=(timeframe,),
-            )
+            started = time.perf_counter()
+            engine = FvgEngulfingEngine(FvgEngulfingConfig(timeframe=timeframe))
+            for row in records:
+                engine.update(row)
+            seconds = time.perf_counter() - started
 
         elif domain == "stabil":
             if timeframe != "1d":
-                queue.put(("SKIP", 0.0, "1d only"))
+                queue.put(("SKIP", 0.0, bars, "1d only"))
                 return
 
-            from financial_dashboard.data.analysis_inputs import load_analysis_inputs
             from financial_dashboard.decision.history_source import _stabil_points
 
-            inputs = load_analysis_inputs(store, symbol=symbol, timeframes=("1d",))
-            frame = inputs.for_timeframe("1d").input_batch.frame
             if frame.empty:
-                queue.put(("SKIP", 0.0, "no 1d bars"))
+                queue.put(("SKIP", 0.0, bars, "no 1d bars"))
                 return
+            started = time.perf_counter()
             _stabil_points(inputs, indices_1d=(len(frame) - 1,))
+            seconds = time.perf_counter() - started
 
         else:
-            queue.put(("ERROR", 0.0, f"unknown domain: {domain}"))
+            queue.put(("ERROR", 0.0, bars, f"unknown domain: {domain}"))
             return
 
-        queue.put(("OK", time.perf_counter() - started, ""))
+        queue.put(("OK", seconds, bars, ""))
     except Exception as exc:
         queue.put(
             (
                 "ERROR",
                 0.0,
+                0,
                 f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}",
             )
         )
@@ -199,30 +237,35 @@ def _run_case(
         return RuntimeCase("TIMEOUT", timeout_seconds, domain, timeframe)
 
     try:
-        status, seconds, detail = queue.get_nowait()
+        status, seconds, bars, detail = queue.get_nowait()
     except Exception:
         detail = f"process exited with code {process.exitcode} without result"
         print(f"ERROR   {domain:22s} {timeframe:4s} {detail}", flush=True)
-        return RuntimeCase("ERROR", 0.0, domain, timeframe, detail)
+        return RuntimeCase("ERROR", 0.0, domain, timeframe, 0, detail)
     finally:
         queue.close()
         queue.join_thread()
 
     if status == "OK":
-        print(f"DONE    {domain:22s} {timeframe:4s} {seconds:8.3f}s", flush=True)
+        per_bar_ms = 0.0 if bars <= 0 else (seconds * 1000.0 / bars)
+        print(
+            f"DONE    {domain:22s} {timeframe:4s} {seconds:8.3f}s  "
+            f"BARS={bars:5d}  MS/BAR={per_bar_ms:8.3f}",
+            flush=True,
+        )
     elif status == "SKIP":
-        print(f"SKIP    {domain:22s} {timeframe:4s} {detail}", flush=True)
+        print(f"SKIP    {domain:22s} {timeframe:4s} BARS={bars:5d}  {detail}", flush=True)
     else:
         print(f"ERROR   {domain:22s} {timeframe:4s} {detail}", flush=True)
 
-    return RuntimeCase(status, seconds, domain, timeframe, detail)
+    return RuntimeCase(status, seconds, domain, timeframe, bars, detail)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Run isolated real-runtime replays for every canonical decision domain/timeframe "
-            "with a per-case timeout. Each case runs in a fresh Windows-safe process."
+            "Run isolated canonical-runtime replays for every decision domain/timeframe. "
+            "Volume timing excludes the Structure replay that canonical assembly already owns."
         )
     )
     parser.add_argument("cache", type=Path)
@@ -266,11 +309,19 @@ def main() -> None:
     wall_seconds = time.perf_counter() - wall_started
 
     print("\n=== SUMMARY ===")
-    print(f"{'DOMAIN':22s} {'TF':4s} {'SECONDS':>9s}  STATUS")
-    print("-" * 52)
+    print(f"{'DOMAIN':22s} {'TF':4s} {'BARS':>6s} {'SECONDS':>9s} {'MS/BAR':>9s}  STATUS")
+    print("-" * 72)
     for result in results:
         value = f"{result.seconds:.3f}" if result.status == "OK" else "-"
-        print(f"{result.domain:22s} {result.timeframe:4s} {value:>9s}  {result.status}")
+        per_bar = (
+            f"{result.seconds * 1000.0 / result.bars:.3f}"
+            if result.status == "OK" and result.bars > 0
+            else "-"
+        )
+        print(
+            f"{result.domain:22s} {result.timeframe:4s} {result.bars:6d} "
+            f"{value:>9s} {per_bar:>9s}  {result.status}"
+        )
 
     successful = sorted(
         (item for item in results if item.status == "OK"),
