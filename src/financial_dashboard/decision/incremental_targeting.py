@@ -8,10 +8,19 @@ import pandas as pd
 
 from financial_dashboard.targeting.clustering import (
     TargetClusterConfig,
+    _highest_confluence,
     _interval_gap,
+    _nearest,
+    _nearest_liquidity,
     _origin_group,
+    cluster_target_evidence,
 )
-from financial_dashboard.targeting.models import TargetEvidence
+from financial_dashboard.targeting.models import (
+    LiquidityScope,
+    TargetEvidence,
+    TargetSide,
+    TargetingSnapshot,
+)
 
 
 def deduplicate_origin_events_indexed(
@@ -113,4 +122,73 @@ def deduplicate_origin_events_indexed(
     )
 
 
-__all__ = ["deduplicate_origin_events_indexed"]
+def build_targeting_from_deduped_evidence(
+    *,
+    symbol: str,
+    as_of,
+    current_price: float,
+    reference_timeframe: str,
+    reference_atr: float,
+    evidence: Iterable[TargetEvidence],
+    config: TargetClusterConfig | None = None,
+) -> TargetingSnapshot:
+    """Build canonical targeting after origin dedup has already been performed.
+
+    ``build_targeting_snapshot`` intentionally deduplicates its input for general
+    callers. Historical decision assembly already performs the exact same operation
+    before semantic targeting, so calling it again creates a second O(E^2) pass.
+    This helper preserves the remaining canonical cluster/nearest logic verbatim and
+    is used only where the caller owns the dedup invariant.
+    """
+
+    cfg = config or TargetClusterConfig()
+    cutoff = pd.Timestamp(as_of)
+    causal = tuple(item for item in evidence if pd.Timestamp(item.available_at) <= cutoff)
+    clusters = cluster_target_evidence(
+        causal,
+        current_price=current_price,
+        reference_atr=reference_atr,
+        config=cfg,
+    )
+    return TargetingSnapshot(
+        symbol=symbol,
+        as_of=as_of,
+        current_price=float(current_price),
+        reference_timeframe=reference_timeframe,
+        reference_atr=float(reference_atr),
+        clusters=clusters,
+        nearest_upside_target=_nearest(clusters, TargetSide.ABOVE),
+        nearest_downside_target=_nearest(clusters, TargetSide.BELOW),
+        highest_confluence_upside=_highest_confluence(clusters, TargetSide.ABOVE),
+        highest_confluence_downside=_highest_confluence(clusters, TargetSide.BELOW),
+        nearest_internal_upside_liquidity=_nearest_liquidity(
+            causal,
+            current_price=current_price,
+            side=TargetSide.ABOVE,
+            scope=LiquidityScope.INTERNAL,
+        ),
+        nearest_internal_downside_liquidity=_nearest_liquidity(
+            causal,
+            current_price=current_price,
+            side=TargetSide.BELOW,
+            scope=LiquidityScope.INTERNAL,
+        ),
+        nearest_external_upside_liquidity=_nearest_liquidity(
+            causal,
+            current_price=current_price,
+            side=TargetSide.ABOVE,
+            scope=LiquidityScope.EXTERNAL,
+        ),
+        nearest_external_downside_liquidity=_nearest_liquidity(
+            causal,
+            current_price=current_price,
+            side=TargetSide.BELOW,
+            scope=LiquidityScope.EXTERNAL,
+        ),
+    )
+
+
+__all__ = [
+    "build_targeting_from_deduped_evidence",
+    "deduplicate_origin_events_indexed",
+]
