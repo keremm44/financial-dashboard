@@ -11,9 +11,10 @@ from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.decision_input import DecisionInputSnapshot, build_decision_input_snapshot
 from financial_dashboard.ham_mtf_replay import HamMTFEvidenceReplayRunner
+from financial_dashboard.structure_location_replay import CausalBarClock
 from financial_dashboard.targeting.adapters import support_resistance_evidence
 from financial_dashboard.targeting.arrival import build_semantic_targeting_snapshot
-from financial_dashboard.targeting.clustering import build_targeting_snapshot, deduplicate_origin_events
+from financial_dashboard.targeting.clustering import build_targeting_snapshot
 from financial_dashboard.targeting.enrichment import enrich_liquidity_scope
 from financial_dashboard.volume_mtf_replay import VolumeMTFEvidenceReplayRunner
 from financial_dashboard.volatility_mtf_replay import VOLATILITY_TIMEFRAMES, VolatilityMTFReplayRunner
@@ -28,6 +29,7 @@ from .history_source import (
     _volume_view,
     _volatility_view,
 )
+from .incremental_targeting import deduplicate_origin_events_indexed
 
 
 class IncrementalHistoricalDecisionInputReplayRunner:
@@ -36,13 +38,14 @@ class IncrementalHistoricalDecisionInputReplayRunner:
     Native Structure/S-R/Pattern/Liquidity/OB/FVG engines are advanced by the same
     incremental runtime intended for live catch-up. HAM, Volume and Volatility still
     perform their canonical one-time full passes in this migration step. Derived
-    targeting/cross-domain composition is intentionally kept semantically identical
-    to the old path until golden equivalence is established; it is the next reducer
-    layer to make incremental.
+    targeting/cross-domain composition remains semantically identical to the old
+    path, while origin dedup uses a bounded index proven against the canonical
+    grouping rules.
     """
 
     def __init__(self, store: ParquetOHLCVStore) -> None:
         self.store = store
+        self.clock = CausalBarClock()
 
     def replay(
         self,
@@ -169,7 +172,7 @@ class IncrementalHistoricalDecisionInputReplayRunner:
                         symbol=clean_symbol,
                         timeframe=timeframe,
                         snapshot=domain.structure.replay_for(timeframe).support_resistance,
-                        clock=HistoricalNativeTimelineReplayRunner(self.store).clock,
+                        clock=self.clock,
                     )
                 )
             if domain.order_block is not None:
@@ -177,7 +180,10 @@ class IncrementalHistoricalDecisionInputReplayRunner:
             if domain.fvg is not None:
                 evidence.extend(domain.fvg.evidence)
 
-            deduped = deduplicate_origin_events(evidence, reference_atr=reference_atr)
+            deduped = deduplicate_origin_events_indexed(
+                evidence,
+                reference_atr=reference_atr,
+            )
             targeting = build_targeting_snapshot(
                 symbol=clean_symbol,
                 as_of=cutoff,
@@ -200,7 +206,7 @@ class IncrementalHistoricalDecisionInputReplayRunner:
                     anchor_timeframe="4h" if "4h" in inputs.timeframes else "2h",
                     current_price=reference_price,
                     structure_location=domain.structure,
-                    available_at=HistoricalNativeTimelineReplayRunner(self.store).clock.available_at,
+                    available_at=self.clock.available_at,
                     data_quality_by_timeframe=quality_by_timeframe,
                     reference_atr_by_timeframe=reference_atr_by_timeframe,
                     pattern_replay=domain.pattern,
