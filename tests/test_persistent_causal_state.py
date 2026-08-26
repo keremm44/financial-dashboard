@@ -22,11 +22,18 @@ from financial_dashboard.decision.persistent_state import (
     validate_append_only_prefix,
 )
 from financial_dashboard.decision.state_timeline import TimelineFingerprint
+from financial_dashboard.decision.supporting_replay_runtime import IncrementalSupportingReplayRuntime
 from financial_dashboard.structure_location_replay import CausalBarClock
 
 
-def _frame(count: int, *, start: str = "2026-01-02 10:00:00+03:00") -> pd.DataFrame:
-    timestamps = pd.date_range(start, periods=count, freq="1h")
+def _frame(
+    count: int,
+    *,
+    start: str = "2026-01-02 10:00:00+03:00",
+    timeframe: str = "1h",
+    freq: str = "1h",
+) -> pd.DataFrame:
+    timestamps = pd.date_range(start, periods=count, freq=freq)
     rows = []
     for index, timestamp in enumerate(timestamps):
         base = 100.0 + index * 0.25
@@ -43,22 +50,27 @@ def _frame(count: int, *, start: str = "2026-01-02 10:00:00+03:00") -> pd.DataFr
     return canonicalize_ohlcv(
         pd.DataFrame(rows),
         symbol="ASELS",
-        timeframe="1h",
+        timeframe=timeframe,
         source="test",
     )
 
 
-def _inputs(count: int) -> AnalysisInputSnapshot:
-    raw = _frame(count)
+def _inputs(
+    count: int,
+    *,
+    timeframe: str = "1h",
+    freq: str = "1h",
+) -> AnalysisInputSnapshot:
+    raw = _frame(count, timeframe=timeframe, freq=freq)
     snapshot = TimeframeInputSnapshot(
-        timeframe="1h",
+        timeframe=timeframe,
         raw_frame=raw,
         input_batch=prepare_engine_input(raw),
     )
     return AnalysisInputSnapshot(
         symbol="ASELS",
-        timeframes=("1h",),
-        by_timeframe=MappingProxyType({"1h": snapshot}),
+        timeframes=(timeframe,),
+        by_timeframe=MappingProxyType({timeframe: snapshot}),
         fingerprint=(),
     )
 
@@ -188,6 +200,20 @@ def test_reducer_resume_cursor_matches_uninterrupted_sequence():
     assert resumed.cursor.last_event_key == uninterrupted.cursor.last_event_key
 
 
+def _native_full_state(inputs: AnalysisInputSnapshot):
+    clock = CausalBarClock()
+    runtime = IncrementalNativeDomainRuntime(inputs, symbol="ASELS", clock=clock)
+    for event in causal_bar_events(inputs, clock=clock):
+        runtime.ingest(event)
+    watermarks = {
+        timeframe: len(inputs.for_timeframe(timeframe).input_batch.frame) - 1
+        for timeframe in inputs.timeframes
+    }
+    final_timeframe = inputs.timeframes[-1]
+    final_timestamp = inputs.for_timeframe(final_timeframe).input_batch.frame.iloc[-1]["timestamp"]
+    return runtime.freeze(as_of=final_timestamp, watermarks=watermarks)
+
+
 def test_native_engine_checkpoint_restore_matches_full_replay():
     clock = CausalBarClock()
     full_inputs = _inputs(40)
@@ -232,3 +258,35 @@ def test_native_engine_checkpoint_restore_matches_full_replay():
     assert resumed_state.liquidity == full_state.liquidity
     assert resumed_state.order_block == full_state.order_block
     assert resumed_state.fvg == full_state.fvg
+
+
+def test_supporting_checkpoint_restore_matches_full_replay():
+    full_inputs = _inputs(45, timeframe="1d", freq="1D")
+    prefix_inputs = _inputs(30, timeframe="1d", freq="1D")
+    structure = _native_full_state(full_inputs).structure
+
+    full_runtime = IncrementalSupportingReplayRuntime(full_inputs, symbol="ASELS")
+    full_runtime.advance()
+    full = full_runtime.freeze(structure_replay=structure)
+
+    prefix_runtime = IncrementalSupportingReplayRuntime(prefix_inputs, symbol="ASELS")
+    prefix_runtime.advance()
+    checkpoint = prefix_runtime.export_checkpoint()
+
+    resumed_runtime = IncrementalSupportingReplayRuntime(full_inputs, symbol="ASELS")
+    resumed_runtime.restore_checkpoint(checkpoint)
+    resumed_runtime.advance()
+    resumed = resumed_runtime.freeze(structure_replay=structure)
+
+    assert resumed_runtime.watermarks == full_runtime.watermarks
+    assert resumed.ham.replay_for("1d").history == full.ham.replay_for("1d").history
+    resumed_volume = resumed.volume.replay_for("1d")
+    full_volume = full.volume.replay_for("1d")
+    assert resumed_volume.history == full_volume.history
+    assert resumed_volume.event_links == full_volume.event_links
+    assert (
+        resumed_volume.participation_without_structure
+        == full_volume.participation_without_structure
+    )
+    assert resumed.volume.round2 == full.volume.round2
+    assert resumed.volatility.for_timeframe("1d").snapshots == full.volatility.for_timeframe("1d").snapshots
