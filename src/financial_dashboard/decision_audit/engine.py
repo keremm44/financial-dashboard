@@ -498,6 +498,7 @@ def _lifecycle_audit(
         snapshot_action = metadata.get("action")
         exit_stage = metadata.get("exit_stage")
         trade_id = metadata.get("trade_id")
+        readiness_proxy = bool(event.snapshot.get("lifecycle_readiness_proxy"))
 
         if snapshot_action != event.action.value:
             violations.append(f"LIFECYCLE_ACTION_MISMATCH:{ordinal}")
@@ -520,7 +521,11 @@ def _lifecycle_audit(
             if not (previous_position == "FLAT" and current_position == "OPEN"):
                 violations.append(f"LIFECYCLE_BUY_TRANSITION_INVALID:{ordinal}")
             execution = _mapping(event.snapshot.get("execution"))
-            if execution is not None and execution.get("state") != "CONFIRMED":
+            if (
+                not readiness_proxy
+                and execution is not None
+                and execution.get("state") != "CONFIRMED"
+            ):
                 violations.append(f"LIFECYCLE_BUY_WITHOUT_CONFIRMED_EXECUTION:{ordinal}")
         elif event.action is DecisionAction.SELL:
             completed_cycles += 1
@@ -530,7 +535,10 @@ def _lifecycle_audit(
             exit_execution = None if long_exit is None else _mapping(long_exit.get("execution"))
             if long_exit is None or long_exit.get("stage") != "EXIT_READY":
                 violations.append(f"LIFECYCLE_SELL_WITHOUT_EXIT_READY:{ordinal}")
-            if exit_execution is None or exit_execution.get("state") != "CONFIRMED":
+            if (
+                not readiness_proxy
+                and (exit_execution is None or exit_execution.get("state") != "CONFIRMED")
+            ):
                 violations.append(f"LIFECYCLE_SELL_WITHOUT_CONFIRMED_EXIT_EVENT:{ordinal}")
         elif event.action is DecisionAction.HOLD:
             hold_bars += 1
@@ -679,6 +687,10 @@ def audit_decisions(
     fact to grade timing, MAE/MFE, giveback and missed opportunities. Lifecycle
     metadata is validated rather than reconstructed when present. An entry still open
     at sample end is reported as right-censored, never as a failed/unmatched BUY.
+
+    Audit-only readiness-proxy events remain explicitly marked in the snapshot and
+    are validated against their proxy contract rather than falsely requiring a real
+    fresh execution event that the proxy deliberately substitutes.
     """
 
     cfg = config or DecisionAuditConfig()
