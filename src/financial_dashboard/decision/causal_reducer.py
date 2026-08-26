@@ -43,6 +43,16 @@ class DomainRuntime(Protocol[DomainStateT]):
 DecisionComposer = Callable[[DomainStateT, Any], DecisionStateT]
 
 
+def _ordered_events(events: Iterable[CausalBarEvent]) -> tuple[CausalBarEvent, ...]:
+    rows = tuple(events)
+    if all(
+        left.sort_key < right.sort_key
+        for left, right in zip(rows, rows[1:])
+    ):
+        return rows
+    return tuple(sorted(rows, key=lambda item: item.sort_key))
+
+
 class CausalTimelineReducer(Generic[DomainStateT, DecisionStateT]):
     """Advance domain state once per bar and freeze decision inputs at cutoffs.
 
@@ -92,7 +102,7 @@ class CausalTimelineReducer(Generic[DomainStateT, DecisionStateT]):
         events: Iterable[CausalBarEvent],
         cutoffs: Iterable[Any],
     ) -> CausalStateStore[DomainStateT, DecisionStateT]:
-        ordered_events = tuple(sorted(events, key=lambda item: item.sort_key))
+        ordered_events = _ordered_events(events)
         ordered_cutoffs = tuple(pd.Timestamp(value) for value in cutoffs)
         if any(left >= right for left, right in zip(ordered_cutoffs, ordered_cutoffs[1:])):
             raise ValueError("decision cutoffs must be strictly increasing")
