@@ -35,6 +35,10 @@ from .historical_stream import (
     assess_snapshot_stream,
     decision_events_from_snapshot_stream,
 )
+from .history_replay import (
+    HistoricalDecisionInputReplayRunner,
+    LegacyHistoricalDecisionInputReplayRunner,
+)
 from .history_single_pass import (
     HistoricalReplayTimings,
     SinglePassHistoricalDecisionInputReplay,
@@ -113,11 +117,13 @@ __all__ = [
     "ExitExecutionState",
     "ExitStage",
     "FinalDecision",
+    "HistoricalDecisionInputReplayRunner",
     "HistoricalDecisionStreamConfig",
     "HistoricalReplayTimings",
     "HorizonDecisionAssessment",
     "HorizonRelation",
     "HorizonStructuralSnapshot",
+    "LegacyHistoricalDecisionInputReplayRunner",
     "LongExitAssessment",
     "LongExitExecutionAssessment",
     "OpportunityAssessment",
