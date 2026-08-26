@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from enum import Enum
 from typing import Any, Iterable, Mapping
 
@@ -34,15 +34,27 @@ class HistoricalDecisionStreamConfig:
     objects from a single-pass upstream replay.
 
     The normal lifecycle is long-only: bearish market assessments remain observable
-    but cannot execute a short entry or close a long by themselves. ``exit_execution_events``
-    supplies a separate fresh 30m exit channel for an EXIT_READY open long.
+    but cannot execute a short entry or close a long by themselves.
+
+    ``lifecycle_readiness_proxy`` is explicitly audit-only. It uses LONG READY as a
+    synthetic entry execution and EXIT_READY as a synthetic exit execution while
+    still folding the real FLAT/OPEN lifecycle and dedicated long-exit assessment.
+    It exists only to measure structural lifecycle readiness before a production
+    execution-event adapter is available; it is never a production signal source.
     """
 
     horizon: DecisionHorizon = DecisionHorizon.SHORT_TERM
     opportunity_calibration: OpportunityCalibration | None = None
     readiness_position_proxy: bool = False
+    lifecycle_readiness_proxy: bool = False
     enforce_trade_lifecycle: bool = True
     action_policy: ActionPolicy = ActionPolicy()
+
+    def __post_init__(self) -> None:
+        if self.readiness_position_proxy and self.lifecycle_readiness_proxy:
+            raise ValueError("legacy readiness proxy and lifecycle readiness proxy are mutually exclusive")
+        if self.lifecycle_readiness_proxy and not self.enforce_trade_lifecycle:
+            raise ValueError("lifecycle readiness proxy requires enforce_trade_lifecycle=True")
 
 
 def _jsonable(value: Any) -> Any:
@@ -84,6 +96,8 @@ def _event_from_assessment(
     lifecycle: TradeLifecycleTransition | None = None,
     long_exit: LongExitAssessment | None = None,
     exit_execution: LongExitExecutionAssessment | None = None,
+    lifecycle_readiness_proxy: bool = False,
+    lifecycle_proxy_reason: str | None = None,
 ) -> DecisionEvent:
     final = assessment.final
     action = action_override or _audit_action(final.action)
@@ -91,6 +105,8 @@ def _event_from_assessment(
     extra_reasons: list[str] = []
     if proxy_reason is not None:
         extra_reasons.append(proxy_reason)
+    if lifecycle_proxy_reason is not None:
+        extra_reasons.append(lifecycle_proxy_reason)
     if long_exit is not None:
         extra_reasons.extend(long_exit.reasons)
     if exit_execution is not None:
@@ -133,6 +149,7 @@ def _event_from_assessment(
     snapshot = {
         "historical_stream": True,
         "readiness_position_proxy": proxy_reason is not None,
+        "lifecycle_readiness_proxy": lifecycle_readiness_proxy,
         "trade_lifecycle": lifecycle_snapshot,
         "long_exit": None
         if long_exit is None
@@ -230,8 +247,14 @@ def apply_trade_lifecycle(
     assessments: Iterable[tuple[HorizonDecisionAssessment, float]],
     *,
     exit_execution_events: Mapping[Any, ExecutionTriggerEvent] | None = None,
+    readiness_proxy: bool = False,
 ) -> tuple[DecisionEvent, ...]:
-    """Fold causal decisions through ownership plus the dedicated long-exit path."""
+    """Fold causal decisions through ownership plus the dedicated long-exit path.
+
+    ``readiness_proxy`` is audit-only. It substitutes execution confirmation at the
+    already-computed READY / EXIT_READY boundaries without changing any eligibility,
+    Structure, timing, opportunity, conflict or exit-stage assessment.
+    """
 
     state = TradeLifecycleState()
     exit_event_map = exit_execution_events or {}
@@ -240,33 +263,42 @@ def apply_trade_lifecycle(
     for assessment, price in assessments:
         long_exit: LongExitAssessment | None = None
         exit_execution: LongExitExecutionAssessment | None = None
+        lifecycle_proxy_reason: str | None = None
 
         if state.position is PositionState.OPEN:
             long_exit = assess_long_position_exit(assessment.structural_snapshot)
-            exit_event = exit_event_map.get(assessment.as_of)
-            channel_available = (
-                exit_event is not None
-                or assessment.execution.state is not ExecutionTriggerState.UNAVAILABLE
-            )
+            channel_available = assessment.execution.state is not ExecutionTriggerState.UNAVAILABLE
             exit_execution = assess_long_exit_execution(
                 long_exit,
                 as_of=assessment.as_of,
-                event=exit_event,
+                event=exit_event_map.get(assessment.as_of),
                 channel_available=channel_available,
             )
+            proxy_exit = readiness_proxy and long_exit.stage.value == "EXIT_READY"
+            if proxy_exit:
+                lifecycle_proxy_reason = "AUDIT_PROXY_LONG_EXIT_FROM_EXIT_READY"
             lifecycle = transition_trade_lifecycle(
                 state,
                 assessment.final,
                 as_of=assessment.as_of,
                 exit_stage=long_exit.stage,
                 exit_execution_confirmed=(
-                    exit_execution.state is ExitExecutionState.CONFIRMED
+                    proxy_exit or exit_execution.state is ExitExecutionState.CONFIRMED
                 ),
             )
         else:
+            final = assessment.final
+            proxy_entry = (
+                readiness_proxy
+                and final.action is DecisionAction.READY
+                and final.market_side is StructuralDirection.LONG
+            )
+            if proxy_entry:
+                final = replace(final, action=DecisionAction.BUY)
+                lifecycle_proxy_reason = "AUDIT_PROXY_LONG_ENTRY_FROM_READY"
             lifecycle = transition_trade_lifecycle(
                 state,
-                assessment.final,
+                final,
                 as_of=assessment.as_of,
             )
 
@@ -279,6 +311,8 @@ def apply_trade_lifecycle(
                 lifecycle=lifecycle,
                 long_exit=long_exit,
                 exit_execution=exit_execution,
+                lifecycle_readiness_proxy=readiness_proxy,
+                lifecycle_proxy_reason=lifecycle_proxy_reason,
             )
         )
     return tuple(events)
@@ -334,6 +368,7 @@ def decision_events_from_snapshot_stream(
         return apply_trade_lifecycle(
             assessments,
             exit_execution_events=exit_execution_events,
+            readiness_proxy=cfg.lifecycle_readiness_proxy,
         )
     return tuple(
         _event_from_assessment(assessment, price=price)
