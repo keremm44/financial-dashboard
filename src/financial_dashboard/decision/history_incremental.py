@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES
-from financial_dashboard.context.builder import CrossDomainBuildInputs, build_cross_domain_context
+from financial_dashboard.context.builder import CrossDomainBuildInputs
 from financial_dashboard.data.analysis_inputs import load_analysis_inputs
 from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
@@ -27,6 +27,7 @@ from .history_source import (
     _stabil_points,
     _volatility_view,
 )
+from .incremental_cross_domain import IncrementalCrossDomainProjector
 from .incremental_targeting import (
     build_targeting_from_deduped_evidence,
     deduplicate_origin_events_indexed,
@@ -35,19 +36,19 @@ from .indexed_views import IndexedVolumeView
 
 
 class IncrementalHistoricalDecisionInputReplayRunner:
-    """Decision-input producer backed by the shared native-domain timeline.
+    """Canonical decision-input producer backed by the shared causal timeline.
 
-    Native Structure/S-R/Pattern/Liquidity/OB/FVG engines are advanced by the same
-    incremental runtime intended for live catch-up. HAM, Volume and Volatility still
-    perform their canonical one-time full passes in this migration step. Derived
-    targeting/cross-domain composition remains semantically identical to the old
-    path while avoiding duplicate origin dedup, repeated S/R adaptation and linear
-    Volume event-link scans.
+    Native Structure/S-R/Pattern/Liquidity/OB/FVG engines advance once per closed
+    bar. Derived evidence and cross-domain projection rows are also reused by exact
+    causal timeframe watermark, so a new 1h decision point does not rebuild unchanged
+    1d/4h/2h read models. Final as-of filtering/context composition remains causal and
+    deterministic on every decision point.
     """
 
     def __init__(self, store: ParquetOHLCVStore) -> None:
         self.store = store
         self.clock = CausalBarClock()
+        self.last_assembly_breakdown: dict[str, float] = {}
 
     def replay(
         self,
@@ -57,6 +58,7 @@ class IncrementalHistoricalDecisionInputReplayRunner:
     ) -> SinglePassHistoricalDecisionInputReplay:
         cfg = config or HistoricalDecisionInputConfig()
         clean_symbol = normalize_symbol(symbol)
+        self.last_assembly_breakdown = {}
 
         native = HistoricalNativeTimelineReplayRunner(self.store).replay(
             clean_symbol,
@@ -130,19 +132,32 @@ class IncrementalHistoricalDecisionInputReplayRunner:
         }
         decision_tf = cfg.decision_timeframe.strip().lower()
 
-        started = perf_counter()
         snapshots: list[DecisionInputSnapshot] = []
         support_evidence_cache: dict[tuple[str, int], tuple[Any, ...]] = {}
+        liquidity_evidence_cache: dict[tuple[str, int], tuple[Any, ...]] = {}
+        projector = IncrementalCrossDomainProjector()
+        breakdown = {
+            "views": 0.0,
+            "evidence": 0.0,
+            "dedup": 0.0,
+            "targeting": 0.0,
+            "semantic_targeting": 0.0,
+            "cross_domain": 0.0,
+            "decision_input": 0.0,
+        }
+
+        assembly_started = perf_counter()
         for domain_point in native.state_store.domains:
             cutoff = domain_point.as_of
             domain = domain_point.state
             indices = {tf: int(domain_point.watermarks[tf]) for tf in inputs.timeframes}
+
+            stage = perf_counter()
             participation = volume_view.at(indices, cutoff)
             ham = _ham_view(ham_full, indices)
             volatility_indices = {tf: indices[tf] for tf in volatility_full.timeframes}
             volatility = _volatility_view(volatility_full, volatility_indices)
             stabil = stabil_by_index[indices["1d"]]
-
             reference_price = float(
                 inputs.for_timeframe(decision_tf).input_batch.frame.iloc[indices[decision_tf]]["close"]
             )
@@ -150,44 +165,55 @@ class IncrementalHistoricalDecisionInputReplayRunner:
                 tf: atr_histories[tf][indices[tf]] for tf in inputs.timeframes
             }
             reference_atr = reference_atr_by_timeframe[decision_tf]
+            breakdown["views"] += perf_counter() - stage
 
+            stage = perf_counter()
             evidence: list[Any] = []
-            structure_by_timeframe = {
-                tf: domain.structure.replay_for(tf).market_structure for tf in inputs.timeframes
-            }
-            if domain.liquidity is not None:
-                liq_atr = {
-                    tf: domain.liquidity.for_timeframe(tf).atr
-                    for tf in domain.liquidity.timeframes
-                }
-                evidence.extend(
-                    enrich_liquidity_scope(
-                        domain.liquidity.evidence,
-                        structure_by_timeframe=structure_by_timeframe,
-                        atr_by_timeframe=liq_atr,
-                    )
-                )
             for timeframe in inputs.timeframes:
-                cache_key = (timeframe, indices[timeframe])
+                index = indices[timeframe]
+                structure_row = domain.structure.replay_for(timeframe)
+
+                if domain.liquidity is not None and timeframe in domain.liquidity.timeframes:
+                    cache_key = (timeframe, index)
+                    liquidity_rows = liquidity_evidence_cache.get(cache_key)
+                    if liquidity_rows is None:
+                        snapshot = domain.liquidity.snapshots[timeframe]
+                        liquidity_rows = enrich_liquidity_scope(
+                            snapshot.evidence,
+                            structure_by_timeframe={
+                                timeframe: structure_row.market_structure,
+                            },
+                            atr_by_timeframe={timeframe: snapshot.atr},
+                        )
+                        liquidity_evidence_cache[cache_key] = liquidity_rows
+                    evidence.extend(liquidity_rows)
+
+                cache_key = (timeframe, index)
                 support_rows = support_evidence_cache.get(cache_key)
                 if support_rows is None:
                     support_rows = support_resistance_evidence(
                         symbol=clean_symbol,
                         timeframe=timeframe,
-                        snapshot=domain.structure.replay_for(timeframe).support_resistance,
+                        snapshot=structure_row.support_resistance,
                         clock=self.clock,
                     )
                     support_evidence_cache[cache_key] = support_rows
                 evidence.extend(support_rows)
-            if domain.order_block is not None:
-                evidence.extend(domain.order_block.evidence)
-            if domain.fvg is not None:
-                evidence.extend(domain.fvg.evidence)
 
+                if domain.order_block is not None and timeframe in domain.order_block.timeframes:
+                    evidence.extend(domain.order_block.snapshots[timeframe].evidence)
+                if domain.fvg is not None and timeframe in domain.fvg.timeframes:
+                    evidence.extend(domain.fvg.snapshots[timeframe].evidence)
+            breakdown["evidence"] += perf_counter() - stage
+
+            stage = perf_counter()
             deduped = deduplicate_origin_events_indexed(
                 evidence,
                 reference_atr=reference_atr,
             )
+            breakdown["dedup"] += perf_counter() - stage
+
+            stage = perf_counter()
             targeting = build_targeting_from_deduped_evidence(
                 symbol=clean_symbol,
                 as_of=cutoff,
@@ -196,6 +222,9 @@ class IncrementalHistoricalDecisionInputReplayRunner:
                 reference_atr=reference_atr,
                 evidence=deduped,
             )
+            breakdown["targeting"] += perf_counter() - stage
+
+            stage = perf_counter()
             semantic_targeting = build_semantic_targeting_snapshot(
                 symbol=clean_symbol,
                 as_of=cutoff,
@@ -203,28 +232,33 @@ class IncrementalHistoricalDecisionInputReplayRunner:
                 reference_atr=reference_atr,
                 evidence=deduped,
             )
-            cross_domain = build_cross_domain_context(
-                CrossDomainBuildInputs(
-                    symbol=clean_symbol,
-                    as_of=cutoff,
-                    anchor_timeframe="4h" if "4h" in inputs.timeframes else "2h",
-                    current_price=reference_price,
-                    structure_location=domain.structure,
-                    available_at=self.clock.available_at,
-                    data_quality_by_timeframe=quality_by_timeframe,
-                    reference_atr_by_timeframe=reference_atr_by_timeframe,
-                    pattern_replay=domain.pattern,
-                    liquidity_replay=domain.liquidity,
-                    order_block_replay=domain.order_block,
-                    fvg_engulfing_replay=domain.fvg,
-                    stabil_support_replay=stabil,
-                    participation_replay=participation,
-                    volatility_replay=volatility,
-                    ham_replay=ham,
-                    requested_timeframes=tuple(inputs.timeframes),
-                    trigger_timeframes=tuple(tf for tf in ("1h", "30m") if tf in inputs.timeframes),
-                )
+            breakdown["semantic_targeting"] += perf_counter() - stage
+
+            build_inputs = CrossDomainBuildInputs(
+                symbol=clean_symbol,
+                as_of=cutoff,
+                anchor_timeframe="4h" if "4h" in inputs.timeframes else "2h",
+                current_price=reference_price,
+                structure_location=domain.structure,
+                available_at=self.clock.available_at,
+                data_quality_by_timeframe=quality_by_timeframe,
+                reference_atr_by_timeframe=reference_atr_by_timeframe,
+                pattern_replay=domain.pattern,
+                liquidity_replay=domain.liquidity,
+                order_block_replay=domain.order_block,
+                fvg_engulfing_replay=domain.fvg,
+                stabil_support_replay=stabil,
+                participation_replay=participation,
+                volatility_replay=volatility,
+                ham_replay=ham,
+                requested_timeframes=tuple(inputs.timeframes),
+                trigger_timeframes=tuple(tf for tf in ("1h", "30m") if tf in inputs.timeframes),
             )
+            stage = perf_counter()
+            cross_domain = projector.build(build_inputs, watermarks=indices)
+            breakdown["cross_domain"] += perf_counter() - stage
+
+            stage = perf_counter()
             workspace_view = SimpleNamespace(
                 cross_domain_result=cross_domain,
                 timeframes=tuple(inputs.timeframes),
@@ -232,7 +266,10 @@ class IncrementalHistoricalDecisionInputReplayRunner:
                 semantic_targeting_result=semantic_targeting,
             )
             snapshots.append(build_decision_input_snapshot(workspace_view))
-        assembly_seconds = perf_counter() - started
+            breakdown["decision_input"] += perf_counter() - stage
+
+        assembly_seconds = perf_counter() - assembly_started
+        self.last_assembly_breakdown = breakdown
 
         timings = HistoricalReplayTimings(
             load_inputs_seconds=native.timings.load_inputs_seconds + secondary_load_seconds,
