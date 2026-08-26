@@ -11,11 +11,14 @@ def test_single_pass_history_does_not_call_legacy_per_domain_capture_builders():
     assert "def _single_native_capture_pass(" in source
 
 
-def test_backtest_routes_through_single_pass_history_runner():
+def test_backtest_routes_through_canonical_history_runner_by_default():
     source = Path("scripts/decision_backtest.py").read_text(encoding="utf-8")
 
-    assert "SinglePassHistoricalDecisionInputReplayRunner" in source
-    assert "= HistoricalDecisionInputReplayRunner(" not in source
+    assert "HistoricalDecisionInputReplayRunner" in source
+    assert "LegacyHistoricalDecisionInputReplayRunner" in source
+    assert "if args.legacy_single_pass" in source
+    assert "else HistoricalDecisionInputReplayRunner(store)" in source
+    assert "CANONICAL_CAUSAL_TIMELINE" in source
     assert "NATIVE_REPLAY_SECONDS" in source
     assert "SNAPSHOT_ASSEMBLY_SECONDS" in source
 
