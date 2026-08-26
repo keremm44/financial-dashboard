@@ -23,12 +23,17 @@ def prepare_engine_input(frame: pd.DataFrame) -> EngineInputBatch:
     DATA_INVALID blocks the engine. DATA_LIMITED may still be usable after filtering;
     for example zero volume is acceptable for a price-only engine such as Market
     Structure, while incomplete/open candles are excluded from confirmed replay.
+
+    The caller-owned input is never mutated. Filtering, sorting and index reset all
+    produce a new frame, so an eager full-frame ``copy()`` here only duplicated the
+    same OHLCV payload before those transformations and added avoidable runtime/memory
+    cost on every timeframe replay.
     """
     report = assess_ohlcv_quality(frame)
     if report.status is DataQualityStatus.INVALID:
         raise EngineInputError("; ".join(report.errors) or "Invalid market data")
 
-    safe = frame.copy()
+    safe = frame
     if "is_closed" in safe.columns:
         safe = safe[safe["is_closed"].fillna(False).astype(bool)]
     if "is_complete" in safe.columns:
