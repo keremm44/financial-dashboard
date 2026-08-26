@@ -4,9 +4,11 @@ from time import perf_counter
 from types import SimpleNamespace
 from typing import Any
 
+import pandas as pd
+
 from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES
 from financial_dashboard.context.builder import CrossDomainBuildInputs
-from financial_dashboard.data.analysis_inputs import load_analysis_inputs
+from financial_dashboard.data.analysis_inputs import cache_fingerprint, load_analysis_inputs
 from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.decision_input import DecisionInputSnapshot, build_decision_input_snapshot
@@ -33,22 +35,73 @@ from .incremental_targeting import (
     deduplicate_origin_events_indexed,
 )
 from .indexed_views import IndexedVolumeView
+from .persistent_state import PersistentCacheIdentity, PersistentObjectStore
+
+
+_DECISION_PERSISTENCE_SEMANTIC_VERSION = "decision-input-persistent-v1"
+
+
+def _config_fingerprint(config: HistoricalDecisionInputConfig) -> str:
+    return repr(
+        (
+            config.decision_timeframe.strip().lower(),
+            config.pattern_profile,
+            config.max_bars,
+            None if config.start_at is None else str(pd.Timestamp(config.start_at)),
+            None if config.end_at is None else str(pd.Timestamp(config.end_at)),
+        )
+    )
+
+
+def _zero_timings() -> HistoricalReplayTimings:
+    return HistoricalReplayTimings(
+        load_inputs_seconds=0.0,
+        native_capture_pass_seconds=0.0,
+        ham_seconds=0.0,
+        volume_seconds=0.0,
+        volatility_seconds=0.0,
+        stabil_seconds=0.0,
+        snapshot_assembly_seconds=0.0,
+    )
 
 
 class IncrementalHistoricalDecisionInputReplayRunner:
-    """Canonical decision-input producer backed by the shared causal timeline.
+    """Canonical decision-input producer backed by persistent causal state.
 
-    Native Structure/S-R/Pattern/Liquidity/OB/FVG engines advance once per closed
-    bar. Derived evidence and cross-domain projection rows are also reused by exact
-    causal timeframe watermark, so a new 1h decision point does not rebuild unchanged
-    1d/4h/2h read models. Final as-of filtering/context composition remains causal and
-    deterministic on every decision point.
+    The first run performs the established causal replay and stores the frozen
+    DecisionInputSnapshot timeline. An exact later run with unchanged OHLCV files and
+    identical semantic/config identity loads that timeline directly: native engines,
+    Volume/HAM/Volatility, targeting and cross-domain assembly are not recomputed.
+
+    Native Structure/S-R/Pattern/Liquidity/OB/FVG also maintain a separate append-only
+    engine checkpoint through HistoricalNativeTimelineReplayRunner, so a running or
+    catch-up path can consume only bars after its validated watermark.
     """
 
     def __init__(self, store: ParquetOHLCVStore) -> None:
         self.store = store
         self.clock = CausalBarClock()
         self.last_assembly_breakdown: dict[str, float] = {}
+        self.last_persistent_cache_status = "UNSET"
+        self.last_native_checkpoint_status = "UNSET"
+
+    def _cache_identity(
+        self,
+        *,
+        symbol: str,
+        config: HistoricalDecisionInputConfig,
+    ) -> PersistentCacheIdentity:
+        return PersistentCacheIdentity(
+            namespace="decision_input_timeline",
+            symbol=symbol,
+            semantic_fingerprint=_DECISION_PERSISTENCE_SEMANTIC_VERSION,
+            config_fingerprint=_config_fingerprint(config),
+            source_fingerprint=cache_fingerprint(
+                self.store,
+                symbol=symbol,
+                timeframes=ANALYSIS_TIMEFRAMES,
+            ),
+        )
 
     def replay(
         self,
@@ -59,11 +112,37 @@ class IncrementalHistoricalDecisionInputReplayRunner:
         cfg = config or HistoricalDecisionInputConfig()
         clean_symbol = normalize_symbol(symbol)
         self.last_assembly_breakdown = {}
+        self.last_persistent_cache_status = "MISS"
+        self.last_native_checkpoint_status = "UNSET"
 
-        native = HistoricalNativeTimelineReplayRunner(self.store).replay(
+        persistent = PersistentObjectStore(self.store.root)
+        identity = self._cache_identity(symbol=clean_symbol, config=cfg)
+        cached = persistent.load(identity)
+        if isinstance(cached, SinglePassHistoricalDecisionInputReplay):
+            self.last_persistent_cache_status = "HIT_EXACT"
+            self.last_assembly_breakdown = {
+                "views": 0.0,
+                "evidence": 0.0,
+                "dedup": 0.0,
+                "targeting": 0.0,
+                "semantic_targeting": 0.0,
+                "cross_domain": 0.0,
+                "decision_input": 0.0,
+            }
+            return SinglePassHistoricalDecisionInputReplay(
+                symbol=cached.symbol,
+                decision_timeframe=cached.decision_timeframe,
+                cutoffs=cached.cutoffs,
+                snapshots=cached.snapshots,
+                timings=_zero_timings(),
+            )
+
+        native_runner = HistoricalNativeTimelineReplayRunner(self.store)
+        native = native_runner.replay(
             clean_symbol,
             config=cfg,
         )
+        self.last_native_checkpoint_status = native_runner.last_checkpoint_status
         if not native.cutoffs:
             timings = HistoricalReplayTimings(
                 load_inputs_seconds=native.timings.load_inputs_seconds,
@@ -74,13 +153,19 @@ class IncrementalHistoricalDecisionInputReplayRunner:
                 stabil_seconds=0.0,
                 snapshot_assembly_seconds=0.0,
             )
-            return SinglePassHistoricalDecisionInputReplay(
+            result = SinglePassHistoricalDecisionInputReplay(
                 symbol=clean_symbol,
                 decision_timeframe=cfg.decision_timeframe.strip().lower(),
                 cutoffs=(),
                 snapshots=(),
                 timings=timings,
             )
+            try:
+                persistent.save(identity, result)
+                self.last_persistent_cache_status = "SAVED"
+            except Exception:
+                self.last_persistent_cache_status = "SAVE_FAILED"
+            return result
         if native.full_state is None:
             raise RuntimeError("incremental native replay has cutoffs but no full state")
 
@@ -282,13 +367,19 @@ class IncrementalHistoricalDecisionInputReplayRunner:
             stabil_seconds=stabil_seconds,
             snapshot_assembly_seconds=assembly_seconds,
         )
-        return SinglePassHistoricalDecisionInputReplay(
+        result = SinglePassHistoricalDecisionInputReplay(
             symbol=clean_symbol,
             decision_timeframe=decision_tf,
             cutoffs=native.cutoffs,
             snapshots=tuple(snapshots),
             timings=timings,
         )
+        try:
+            persistent.save(identity, result)
+            self.last_persistent_cache_status = "SAVED"
+        except Exception:
+            self.last_persistent_cache_status = "SAVE_FAILED"
+        return result
 
 
 __all__ = ["IncrementalHistoricalDecisionInputReplayRunner"]
