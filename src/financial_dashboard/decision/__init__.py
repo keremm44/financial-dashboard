@@ -79,6 +79,14 @@ from .timing import (
     assess_setup_trigger,
     assess_timing,
 )
+from .trade_exit import (
+    ExitExecutionState,
+    LongExitAssessment,
+    LongExitExecutionAssessment,
+    PositionHealth,
+    assess_long_exit_execution,
+    assess_long_position_exit,
+)
 
 __all__ = [
     "ActionPolicy",
@@ -102,6 +110,7 @@ __all__ = [
     "ExecutionTriggerAssessment",
     "ExecutionTriggerEvent",
     "ExecutionTriggerState",
+    "ExitExecutionState",
     "ExitStage",
     "FinalDecision",
     "HistoricalDecisionStreamConfig",
@@ -109,11 +118,14 @@ __all__ = [
     "HorizonDecisionAssessment",
     "HorizonRelation",
     "HorizonStructuralSnapshot",
+    "LongExitAssessment",
+    "LongExitExecutionAssessment",
     "OpportunityAssessment",
     "OpportunityCalibration",
     "OpportunityState",
     "ParticipationAssessment",
     "ParticipationState",
+    "PositionHealth",
     "PositionState",
     "ReactionAssessment",
     "ReactionState",
@@ -137,6 +149,8 @@ __all__ = [
     "assess_environment",
     "assess_execution_trigger",
     "assess_horizon_decision",
+    "assess_long_exit_execution",
+    "assess_long_position_exit",
     "assess_long_term_structure",
     "assess_opportunity",
     "assess_participation",
