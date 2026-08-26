@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
+from json import dumps
 from pathlib import Path
 from time import perf_counter
+from typing import Any
 
 import pandas as pd
 
@@ -94,6 +97,22 @@ def _causal_warmup_start(
     return max(warmup_start, requested)
 
 
+def _json_default(value: Any) -> str:
+    if hasattr(value, "isoformat"):
+        return str(value.isoformat())
+    enum_value = getattr(value, "value", None)
+    return str(enum_value if enum_value is not None else value)
+
+
+def _timeline_json(decisions) -> str:
+    return dumps(
+        [asdict(event) for event in decisions],
+        ensure_ascii=False,
+        indent=2,
+        default=_json_default,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -144,6 +163,15 @@ def main() -> None:
     parser.add_argument("--capture-entry-window-bars", type=int, default=5)
     parser.add_argument("--worst-trades", type=int, default=5)
     parser.add_argument("--json-out", type=Path, default=None)
+    parser.add_argument(
+        "--timeline-json-out",
+        type=Path,
+        default=None,
+        help=(
+            "Write every causal decision bar with lifecycle phase, permission, typed domain "
+            "states, reasons, blockers and waiting/next-condition diagnostics."
+        ),
+    )
     args = parser.parse_args()
 
     horizon = DecisionHorizon.LONG_TERM if args.horizon == "lt" else DecisionHorizon.SHORT_TERM
@@ -232,6 +260,10 @@ def main() -> None:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(render_json(report), encoding="utf-8")
         print(f"JSON_REPORT\t{args.json_out}")
+    if args.timeline_json_out is not None:
+        args.timeline_json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.timeline_json_out.write_text(_timeline_json(decisions), encoding="utf-8")
+        print(f"TIMELINE_JSON\t{args.timeline_json_out}")
     print("DECISION_BACKTEST_OK")
 
 
