@@ -4,6 +4,8 @@ from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Any, Mapping
 
+import pandas as pd
+
 from financial_dashboard.data.analysis_inputs import AnalysisInputSnapshot
 from financial_dashboard.engines.fvg_engulfing import FvgEngulfingEngine
 from financial_dashboard.engines.fvg_engulfing_models import FvgEngulfingConfig, SUPPORTED_TIMEFRAMES
@@ -32,7 +34,7 @@ from financial_dashboard.targeting.adapters import (
 from financial_dashboard.targeting.models import TargetEvidenceSnapshot
 
 from .causal_reducer import CausalBarEvent
-from .history_source import _pattern_snapshot, _prefix_batch, _wilder_atr_history
+from .history_source import _pattern_snapshot, _wilder_atr_history
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,14 +82,33 @@ class _FrozenTimeframeState:
     engulfing_lifecycle: tuple[Any, ...] = ()
 
 
+def _true_ranges(frame: pd.DataFrame) -> list[float]:
+    values: list[float] = []
+    previous_close: float | None = None
+    for row in frame.itertuples(index=False):
+        high = float(row.high)
+        low = float(row.low)
+        close = float(row.close)
+        tr = high - low
+        if previous_close is not None:
+            tr = max(tr, abs(high - previous_close), abs(low - previous_close))
+        values.append(float(tr))
+        previous_close = close
+    return values
+
+
 class IncrementalNativeDomainRuntime:
     """Advance native domains exactly once per closed bar.
 
-    This runtime owns the hot engine objects. ``freeze`` only materializes immutable
-    read-models from their current causal state. A frozen timeframe state is cached
-    by its watermark index, so an unchanged 1d/4h/2h state is never rebuilt merely
-    because a lower timeframe reached another decision cutoff. The same runtime can
-    be driven by a historical event sweep or by live/catch-up bars.
+    The hot engine objects are shared by cold historical replay and live catch-up.
+    Existing cache bars reference the immutable prepared input frames. Bars arriving
+    after that initial snapshot are appended to a small live extension and ATR state
+    is extended with the same Wilder recurrence, so a running process never has to
+    replay the old history merely to accept a new closed candle.
+
+    ``freeze`` materializes immutable read-models and caches each timeframe by its
+    exact watermark index. An unchanged 1d/4h/2h state is therefore not rebuilt just
+    because a lower timeframe reached another decision cutoff.
     """
 
     def __init__(
@@ -104,21 +125,29 @@ class IncrementalNativeDomainRuntime:
         pattern_config = None if pattern_profile is None else PatternCompressionConfig(profile=pattern_profile)
         liquidity_config = LiquidityConfig()
         order_block_config = OrderBlockConfig()
+        self._liquidity_atr_length = int(liquidity_config.atr_length)
         self._atrs = {
-            timeframe: _wilder_atr_history(inputs.for_timeframe(timeframe).input_batch.frame)
+            timeframe: list(_wilder_atr_history(inputs.for_timeframe(timeframe).input_batch.frame))
             for timeframe in inputs.timeframes
         }
         self._liquidity_atrs = {
             timeframe: (
                 self._atrs[timeframe]
-                if liquidity_config.atr_length == 14
-                else _wilder_atr_history(
-                    inputs.for_timeframe(timeframe).input_batch.frame,
-                    liquidity_config.atr_length,
+                if self._liquidity_atr_length == 14
+                else list(
+                    _wilder_atr_history(
+                        inputs.for_timeframe(timeframe).input_batch.frame,
+                        self._liquidity_atr_length,
+                    )
                 )
             )
             for timeframe in inputs.timeframes
         }
+        self._true_ranges = {
+            timeframe: _true_ranges(inputs.for_timeframe(timeframe).input_batch.frame)
+            for timeframe in inputs.timeframes
+        }
+        self._extended_frames: dict[str, pd.DataFrame] = {}
         self._runtimes = {
             timeframe: _TimeframeRuntime(
                 timeframe=timeframe,
@@ -142,9 +171,80 @@ class IncrementalNativeDomainRuntime:
         }
         self._frozen_by_watermark: dict[tuple[str, int], _FrozenTimeframeState] = {}
 
+    def _current_frame(self, timeframe: str) -> pd.DataFrame:
+        return self._extended_frames.get(
+            timeframe,
+            self.inputs.for_timeframe(timeframe).input_batch.frame,
+        )
+
+    @staticmethod
+    def _next_wilder_atr(
+        *,
+        tr_values: list[float],
+        previous_values: list[float],
+        length: int,
+    ) -> float:
+        count = len(tr_values)
+        tr = float(tr_values[-1])
+        if count < length:
+            return max(tr, 1e-12)
+        if count == length:
+            return max(sum(tr_values[-length:]) / length, 1e-12)
+        previous_atr = float(previous_values[-1])
+        return max((previous_atr * (length - 1) + tr) / length, 1e-12)
+
+    def _append_live_row(self, timeframe: str, index: int, row: Mapping[str, Any]) -> None:
+        base = self.inputs.for_timeframe(timeframe).input_batch.frame
+        current = self._current_frame(timeframe)
+        if index < len(current):
+            return
+        if index != len(current):
+            raise ValueError(
+                f"cannot append non-contiguous live {timeframe} row: expected {len(current)}, got {index}"
+            )
+
+        previous_close = None if current.empty else float(current.iloc[-1]["close"])
+        high = float(row["high"])
+        low = float(row["low"])
+        tr = high - low
+        if previous_close is not None:
+            tr = max(tr, abs(high - previous_close), abs(low - previous_close))
+        self._true_ranges[timeframe].append(float(tr))
+
+        atr_values = self._atrs[timeframe]
+        atr_values.append(
+            self._next_wilder_atr(
+                tr_values=self._true_ranges[timeframe],
+                previous_values=atr_values,
+                length=14,
+            )
+        )
+        if self._liquidity_atr_length != 14:
+            liquidity_values = self._liquidity_atrs[timeframe]
+            liquidity_values.append(
+                self._next_wilder_atr(
+                    tr_values=self._true_ranges[timeframe],
+                    previous_values=liquidity_values,
+                    length=self._liquidity_atr_length,
+                )
+            )
+
+        incoming = pd.DataFrame([dict(row)])
+        columns = tuple(base.columns)
+        for column in columns:
+            if column not in incoming.columns:
+                incoming[column] = None
+        incoming = incoming.loc[:, columns]
+        self._extended_frames[timeframe] = pd.concat(
+            [current, incoming],
+            ignore_index=True,
+        )
+
     def ingest(self, event: CausalBarEvent) -> None:
         runtime = self._runtimes[event.timeframe]
         row = dict(event.bar)
+        self._append_live_row(event.timeframe, event.bar_index, row)
+
         runtime.market.update(row)
         runtime.support.update(row)
         runtime.pattern.update(row)
@@ -198,16 +298,22 @@ class IncrementalNativeDomainRuntime:
                         self.clock.available_at(confirmed_at, event.timeframe),
                     )
 
+    def _batch_at(self, timeframe: str, index: int):
+        base_batch = self.inputs.for_timeframe(timeframe).input_batch
+        frame = self._current_frame(timeframe)
+        if index >= len(frame):
+            raise IndexError(f"{timeframe} watermark {index} exceeds runtime frame length {len(frame)}")
+        return replace(base_batch, frame=frame.iloc[: index + 1])
+
     def _freeze_timeframe(self, timeframe: str, index: int) -> _FrozenTimeframeState:
         cache_key = (timeframe, index)
         cached = self._frozen_by_watermark.get(cache_key)
         if cached is not None:
             return cached
 
-        batch = self.inputs.for_timeframe(timeframe).input_batch
-        prefix_batch = _prefix_batch(batch, index)
+        prefix_batch = self._batch_at(timeframe, index)
         runtime = self._runtimes[timeframe]
-        row = batch.frame.iloc[index]
+        row = prefix_batch.frame.iloc[-1]
 
         market = market_structure_timeframe_snapshot(
             symbol=self.symbol,
