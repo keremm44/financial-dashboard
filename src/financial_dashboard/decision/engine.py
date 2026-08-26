@@ -6,7 +6,7 @@ from financial_dashboard.context.envelope import ContextDataQuality, FactRef
 from financial_dashboard.context.permissions import PermissionEnvelope
 from financial_dashboard.decision_input import DecisionInputSnapshot
 
-from .composer import ActionPolicy, FinalDecision, compose_position_decision
+from .composer import ActionPolicy, FinalDecision, compose_final_decision
 from .conflict import ConflictAssessment, assess_conflict
 from .coverage import CoverageAssessment, CoverageFamily, assess_coverage
 from .durability import DurabilityAssessment, assess_durability
@@ -19,7 +19,6 @@ from .execution import (
 )
 from .opportunity import OpportunityAssessment, OpportunityCalibration, assess_opportunity
 from .participation import ParticipationAssessment, assess_participation
-from .position import PositionContext, position_exit_candidate
 from .reaction import ReactionAssessment, assess_reaction
 from .structural import (
     DecisionHorizon,
@@ -66,12 +65,14 @@ class HorizonDecisionAssessment:
     execution: ExecutionTriggerAssessment
     eligibility: EligibilityAssessment
     final: FinalDecision
-    position: PositionContext = PositionContext()
 
 
 def _timeframe_policy(horizon: DecisionHorizon) -> tuple[tuple[str, ...], str, str, str]:
     if horizon is DecisionHorizon.LONG_TERM:
+        # LT Structure remains 1D-owned. 4H describes supporting participation/regime,
+        # while 1H is the immediate LT setup-timing context. 30m remains execution.
         return _LT_REACTION_TIMEFRAMES, "4h", "4h", "1h"
+    # ST Structure remains 1H-owned. 30m is setup timing / trigger context.
     return _ST_REACTION_TIMEFRAMES, "1h", "1h", "30m"
 
 
@@ -130,9 +131,10 @@ def _coverage(
             else ContextDataQuality.UNAVAILABLE
         ),
     }
+    expected = tuple(CoverageFamily)
     return assess_coverage(
         qualities,
-        expected_families=tuple(CoverageFamily),
+        expected_families=expected,
         critical_families=(CoverageFamily.STRUCTURE,),
     )
 
@@ -174,17 +176,16 @@ def assess_horizon_decision(
     *,
     config: DecisionEngineConfig | None = None,
     execution_event: ExecutionTriggerEvent | None = None,
-    position: PositionContext | None = None,
 ) -> HorizonDecisionAssessment:
     """Build one fully typed LT or ST v1 decision assessment.
 
-    Flat entry and open-position management share the same frozen market assessment,
-    but position state is applied only at the action layer. The 30m execution channel
-    is mandatory for an active exit path and never acquires structural authority.
+    The engine does not search history or infer fresh execution edges from sticky
+    snapshots. A BUY/SELL can occur only when ``execution_event`` is supplied as a
+    causal event for the current ``as_of``. Without it, an otherwise eligible path
+    stops at READY.
     """
 
     cfg = config or DecisionEngineConfig()
-    current_position = position or PositionContext.flat()
     structural_snapshot = build_horizon_structural_snapshot(snapshot.structure)
     structural = (
         structural_snapshot.long_term
@@ -253,20 +254,17 @@ def assess_horizon_decision(
         environment=environment,
         coverage=coverage,
     )
-
-    execution_side = position_exit_candidate(structural, current_position) or structural.direction
     execution = assess_execution_trigger(
-        execution_side,
+        structural.direction,
         as_of=snapshot.as_of,
         timeframe=cfg.execution_timeframe,
         data_quality=snapshot.quality_for_timeframe(cfg.execution_timeframe),
         event=execution_event,
     )
-    final = compose_position_decision(
+    final = compose_final_decision(
         structural,
         eligibility=eligibility,
         execution=execution,
-        position=current_position,
         policy=cfg.action_policy,
         additional_lineage=_additional_lineage(
             durability=durability,
@@ -297,7 +295,6 @@ def assess_horizon_decision(
         execution=execution,
         eligibility=eligibility,
         final=final,
-        position=current_position,
     )
 
 
