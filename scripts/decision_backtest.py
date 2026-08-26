@@ -61,12 +61,7 @@ def _causal_warmup_start(
     requested_start: str | None,
     decision_timeframe: str = "1h",
 ) -> pd.Timestamp:
-    """Return the first decision-bar timestamp with all MTF inputs causally available.
-
-    Early 1h bars can exist before the first closed/available 4h or 1d bar. Those bars
-    are warmup, not invalid market history. They must be skipped rather than passed to
-    ``_capture_indices`` where no causal index can exist yet.
-    """
+    """Return the first decision-bar timestamp with all MTF inputs causally available."""
 
     clock = CausalBarClock()
     first_available: list[pd.Timestamp] = []
@@ -103,7 +98,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Replay each native market engine forward once, freeze causal 1h decision "
-            "states, evaluate BUY/SELL on those frozen states, then run hindsight audit."
+            "states, evaluate the long-only trade lifecycle, then run hindsight audit."
         )
     )
     parser.add_argument("cache_root", type=Path)
@@ -118,12 +113,22 @@ def main() -> None:
         help="Smoke/debug only: keep the last N 1h decision points; native history is still replayed once.",
     )
     parser.add_argument("--pattern-profile", default=None)
-    parser.add_argument(
+    proxy_group = parser.add_mutually_exclusive_group()
+    proxy_group.add_argument(
         "--readiness-position-proxy",
         action="store_true",
         help=(
-            "Audit-only long position proxy: flat+LONG READY => BUY, "
-            "open-long+SHORT READY => SELL. Not a production execution trigger."
+            "Legacy audit-only proxy: flat+LONG READY => BUY and open-long+SHORT READY => SELL. "
+            "Bypasses the dedicated long-exit lifecycle; retained only for historical comparison."
+        ),
+    )
+    proxy_group.add_argument(
+        "--lifecycle-readiness-proxy",
+        action="store_true",
+        help=(
+            "Audit-only structural lifecycle baseline: LONG READY substitutes entry execution, "
+            "and dedicated EXIT_READY substitutes exit execution. The real FLAT/OPEN lifecycle "
+            "and long-exit assessment still run; no production execution trigger is invented."
         ),
     )
     parser.add_argument("--opportunity-none-max-atr", type=float, default=None)
@@ -171,6 +176,7 @@ def main() -> None:
             horizon=horizon,
             opportunity_calibration=calibration,
             readiness_position_proxy=bool(args.readiness_position_proxy),
+            lifecycle_readiness_proxy=bool(args.lifecycle_readiness_proxy),
         ),
     )
     decision_seconds = perf_counter() - started
@@ -211,10 +217,13 @@ def main() -> None:
     print(f"DOMAIN_REPLAY_AND_SNAPSHOT_SECONDS\t{input_seconds:.2f}")
     print(f"DECISION_LAYER_SECONDS\t{decision_seconds:.2f}")
     print(f"HINDSIGHT_AUDIT_SECONDS\t{audit_seconds:.2f}")
-    print(
-        "REPLAY_MODE\t"
-        + ("READINESS_POSITION_PROXY" if args.readiness_position_proxy else "RAW_DECISION_TIMELINE")
-    )
+    if args.readiness_position_proxy:
+        replay_mode = "LEGACY_READINESS_POSITION_PROXY"
+    elif args.lifecycle_readiness_proxy:
+        replay_mode = "LIFECYCLE_READINESS_PROXY"
+    else:
+        replay_mode = "CAUSAL_TRADE_LIFECYCLE"
+    print(f"REPLAY_MODE\t{replay_mode}")
     if calibration is None:
         print("OPPORTUNITY_CALIBRATION\tUNSET")
     print(render_text(report, worst_trade_limit=max(1, args.worst_trades)))
