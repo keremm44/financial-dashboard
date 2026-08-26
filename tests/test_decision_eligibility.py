@@ -90,6 +90,20 @@ def test_permission_block_is_hard_gate():
     assert "TEST_BLOCK" in result.blockers
 
 
+def test_permission_side_mismatch_waits_instead_of_hard_blocking():
+    result = _assess(permission=_permission(gate=GateState.CONDITIONAL, side=PermittedSide.SHORT))
+    assert result.state is EligibilityState.WAITING
+    assert result.blockers == ()
+    assert "PERMISSION_SCOPE_SIDE_TO_RECONCILE" in result.waiting_for
+
+
+def test_permission_open_with_unresolved_side_waits_instead_of_hard_blocking():
+    result = _assess(permission=_permission(gate=GateState.OPEN, side=PermittedSide.NONE))
+    assert result.state is EligibilityState.WAITING
+    assert result.blockers == ()
+    assert "PERMISSION_SIDE_TO_RESOLVE" in result.waiting_for
+
+
 def test_shock_is_hard_gate():
     result = _assess(environment=_environment(EnvironmentRisk.HARD_BLOCK))
     assert result.state is EligibilityState.BLOCKED
