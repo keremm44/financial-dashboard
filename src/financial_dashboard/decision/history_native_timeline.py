@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import pickle
 from time import perf_counter
 from typing import Any
@@ -32,7 +32,7 @@ from .persistent_state import (
 from .state_timeline import CausalStateStore, TimelineFingerprint, build_state_store
 
 
-_NATIVE_PERSISTENCE_SEMANTIC_VERSION = "native-causal-runtime-checkpoint-v1"
+_NATIVE_PERSISTENCE_SEMANTIC_VERSION = "native-causal-runtime-checkpoint-v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,10 +53,12 @@ class HistoricalNativeTimelineReplay:
     state_store: CausalStateStore[NativeDomainState, NativeDomainState]
     full_state: NativeDomainState | None
     timings: HistoricalNativeTimelineTimings
+    all_cutoffs: tuple[Any, ...] | None = None
+    state_store_start_position: int = 0
 
     @property
     def cutoffs(self) -> tuple[Any, ...]:
-        return self.state_store.cutoffs
+        return self.state_store.cutoffs if self.all_cutoffs is None else self.all_cutoffs
 
     @property
     def domain_states(self) -> tuple[NativeDomainState, ...]:
@@ -65,8 +67,12 @@ class HistoricalNativeTimelineReplay:
 
 @dataclass(frozen=True, slots=True)
 class _NativeTimelineCheckpointPayload:
+    """Small restart payload: continuation state, not the historical read-model timeline."""
+
     runtime: NativeRuntimeCheckpoint
-    replay: HistoricalNativeTimelineReplay
+    cutoffs: tuple[Any, ...]
+    full_state: NativeDomainState | None
+    fingerprint: TimelineFingerprint
 
 
 def _config_fingerprint(config: HistoricalDecisionInputConfig) -> str:
@@ -90,33 +96,19 @@ def _cutoffs_are_prefix(previous: tuple[Any, ...], current: tuple[Any, ...]) -> 
     )
 
 
-def _append_state_stores(
-    base: CausalStateStore[NativeDomainState, NativeDomainState],
-    appended: CausalStateStore[NativeDomainState, NativeDomainState],
-) -> CausalStateStore[NativeDomainState, NativeDomainState]:
-    if base.fingerprint != appended.fingerprint:
-        raise ValueError("cannot append native state stores with different fingerprints")
-    offset = len(base.domains)
-    decisions = tuple(base.decisions) + tuple(
-        replace(point, domain_position=offset + position)
-        for position, point in enumerate(appended.decisions)
-    )
-    return build_state_store(
-        fingerprint=base.fingerprint,
-        domain_points=(*base.domains, *appended.domains),
-        decision_points=decisions,
-    )
-
-
 class HistoricalNativeTimelineReplayRunner:
     """Persistent append-only producer for the shared native-domain runtime.
 
-    A cold run still establishes the canonical history. At the end of that run the
-    stateful native engines plus reducer watermarks are checkpointed. On a later run,
-    the checkpoint is accepted only when every previously consumed OHLCV row is
-    content-identical. Appended bars are then fed through the same reducer without
-    replaying the old prefix. If the prefix/config/checkpoint is incompatible, the
-    runner fails closed to the established cold-replay path.
+    Cold replay computes the historical native-domain timeline once. Persistence then
+    stores only the stateful engine continuation checkpoint plus causal watermarks and
+    the latest frozen native state. The full historical state store is deliberately not
+    duplicated inside the checkpoint: old BUY/SELL inputs live in their own frozen
+    decision timeline, while newly appended candles produce only newly appended native
+    domain points.
+
+    A checkpoint is accepted only when every consumed OHLCV row remains identical and
+    the requested decision cutoffs extend the checkpoint cutoffs. Any mismatch fails
+    closed to the canonical cold replay path.
     """
 
     def __init__(self, store: ParquetOHLCVStore) -> None:
@@ -155,7 +147,9 @@ class HistoricalNativeTimelineReplayRunner:
                 cursor=cursor,
                 payload=_NativeTimelineCheckpointPayload(
                     runtime=runtime.export_checkpoint(),
-                    replay=replay,
+                    cutoffs=tuple(replay.cutoffs),
+                    full_state=replay.full_state,
+                    fingerprint=replay.state_store.fingerprint,
                 ),
             )
             cache.save_checkpoint(record)
@@ -234,11 +228,11 @@ class HistoricalNativeTimelineReplayRunner:
             payload = checkpoint.payload
             if (
                 isinstance(payload, _NativeTimelineCheckpointPayload)
-                and payload.replay.state_store.fingerprint == fingerprint
+                and payload.fingerprint == fingerprint
                 and validate_append_only_prefix(inputs, checkpoint.prefixes)
-                and _cutoffs_are_prefix(payload.replay.cutoffs, cutoffs)
+                and _cutoffs_are_prefix(payload.cutoffs, cutoffs)
             ):
-                previous = payload.replay
+                previous_cutoffs = tuple(payload.cutoffs)
                 started = perf_counter()
                 new_events = causal_bar_events_after(
                     inputs,
@@ -246,20 +240,26 @@ class HistoricalNativeTimelineReplayRunner:
                     clock=self.clock,
                 )
                 event_build_seconds = perf_counter() - started
-                new_cutoffs = cutoffs[len(previous.cutoffs) :]
+                new_cutoffs = cutoffs[len(previous_cutoffs) :]
 
                 if not new_events and not new_cutoffs:
                     self.last_checkpoint_status = "HIT_EXACT"
                     return HistoricalNativeTimelineReplay(
-                        symbol=previous.symbol,
-                        decision_timeframe=previous.decision_timeframe,
-                        state_store=previous.state_store,
-                        full_state=previous.full_state,
+                        symbol=clean_symbol,
+                        decision_timeframe=decision_tf,
+                        state_store=CausalStateStore(
+                            fingerprint=fingerprint,
+                            domains=(),
+                            decisions=(),
+                        ),
+                        full_state=payload.full_state,
                         timings=HistoricalNativeTimelineTimings(
                             load_inputs_seconds=load_seconds,
                             event_build_seconds=event_build_seconds,
                             native_reduce_seconds=0.0,
                         ),
+                        all_cutoffs=cutoffs,
+                        state_store_start_position=len(cutoffs),
                     )
 
                 runtime = IncrementalNativeDomainRuntime(
@@ -290,7 +290,7 @@ class HistoricalNativeTimelineReplayRunner:
                     started = perf_counter()
                     raw_store = reducer.run(events=new_events, cutoffs=reducer_cutoffs)
                     native_reduce_seconds = perf_counter() - started
-                    full_state = raw_store.domains[-1].state if raw_store.domains else previous.full_state
+                    full_state = raw_store.domains[-1].state if raw_store.domains else payload.full_state
                     retained_count = len(new_cutoffs)
                     appended_store = (
                         build_state_store(
@@ -301,17 +301,18 @@ class HistoricalNativeTimelineReplayRunner:
                         if appended_full_cutoff
                         else raw_store
                     )
-                    state_store = _append_state_stores(previous.state_store, appended_store)
                     resumed = HistoricalNativeTimelineReplay(
                         symbol=clean_symbol,
                         decision_timeframe=decision_tf,
-                        state_store=state_store,
+                        state_store=appended_store,
                         full_state=full_state,
                         timings=HistoricalNativeTimelineTimings(
                             load_inputs_seconds=load_seconds,
                             event_build_seconds=event_build_seconds,
                             native_reduce_seconds=native_reduce_seconds,
                         ),
+                        all_cutoffs=cutoffs,
+                        state_store_start_position=len(previous_cutoffs),
                     )
                     self.last_checkpoint_status = "HIT_APPEND"
                     self._save_checkpoint(
@@ -380,6 +381,8 @@ class HistoricalNativeTimelineReplayRunner:
                 event_build_seconds=event_build_seconds,
                 native_reduce_seconds=native_reduce_seconds,
             ),
+            all_cutoffs=cutoffs,
+            state_store_start_position=0,
         )
         self._save_checkpoint(
             cache=cache,
