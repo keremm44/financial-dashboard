@@ -243,11 +243,15 @@ def apply_trade_lifecycle(
 
         if state.position is PositionState.OPEN:
             long_exit = assess_long_position_exit(assessment.structural_snapshot)
-            channel_available = assessment.execution.state is not ExecutionTriggerState.UNAVAILABLE
+            exit_event = exit_event_map.get(assessment.as_of)
+            channel_available = (
+                exit_event is not None
+                or assessment.execution.state is not ExecutionTriggerState.UNAVAILABLE
+            )
             exit_execution = assess_long_exit_execution(
                 long_exit,
                 as_of=assessment.as_of,
-                event=exit_event_map.get(assessment.as_of),
+                event=exit_event,
                 channel_available=channel_available,
             )
             lifecycle = transition_trade_lifecycle(
