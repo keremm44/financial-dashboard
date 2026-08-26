@@ -43,10 +43,14 @@ def _assessment(
     relation=HorizonRelation.ALIGNED,
     transition_target=None,
     execution_state=ExecutionTriggerState.ABSENT,
+    waiting_for=(),
+    blockers=(),
 ):
     final = _FinalStub(
         action=action,
         market_side=side,
+        waiting_for=tuple(waiting_for),
+        blockers=tuple(blockers),
     )
     placeholder = SimpleNamespace()
     lt = SimpleNamespace(
@@ -185,6 +189,7 @@ def test_lifecycle_readiness_proxy_exercises_real_ownership_and_exit_stages():
                 side=StructuralDirection.LONG,
                 action=DecisionAction.READY,
                 as_of="2026-01-05 10:00",
+                waiting_for=("FRESH_EXECUTION_EVENT",),
             ),
             100.0,
         ),
@@ -205,6 +210,7 @@ def test_lifecycle_readiness_proxy_exercises_real_ownership_and_exit_stages():
                 lt_direction=StructuralDirection.SHORT,
                 lt_thesis=ThesisState.INTACT,
                 relation=HorizonRelation.COUNTER_REACTION,
+                blockers=("ACTION_SIDE_NOT_PERMITTED:SHORT",),
             ),
             98.0,
         ),
@@ -219,10 +225,13 @@ def test_lifecycle_readiness_proxy_exercises_real_ownership_and_exit_stages():
     ]
     assert events[0].snapshot["lifecycle_readiness_proxy"] is True
     assert events[0].snapshot["trade_lifecycle"]["position_state"] == "OPEN"
+    assert events[0].waiting_for == ()
     assert "AUDIT_PROXY_LONG_ENTRY_FROM_READY" in events[0].reasons
     assert events[1].snapshot["long_exit"]["position_health"] == "PROTECTED"
     assert events[2].snapshot["long_exit"]["stage"] == "EXIT_READY"
     assert events[2].snapshot["trade_lifecycle"]["position_state"] == "FLAT"
+    assert events[2].waiting_for == ()
+    assert events[2].blockers == ()
     assert "AUDIT_PROXY_LONG_EXIT_FROM_EXIT_READY" in events[2].reasons
 
 
