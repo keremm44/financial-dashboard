@@ -14,7 +14,6 @@ from financial_dashboard.ham_mtf_replay import HamMTFEvidenceReplayRunner
 from financial_dashboard.structure_location_replay import CausalBarClock
 from financial_dashboard.targeting.adapters import support_resistance_evidence
 from financial_dashboard.targeting.arrival import build_semantic_targeting_snapshot
-from financial_dashboard.targeting.clustering import build_targeting_snapshot
 from financial_dashboard.targeting.enrichment import enrich_liquidity_scope
 from financial_dashboard.volume_mtf_replay import VolumeMTFEvidenceReplayRunner
 from financial_dashboard.volatility_mtf_replay import VOLATILITY_TIMEFRAMES, VolatilityMTFReplayRunner
@@ -26,10 +25,13 @@ from .history_source import (
     _ham_view,
     _reference_atr_histories,
     _stabil_points,
-    _volume_view,
     _volatility_view,
 )
-from .incremental_targeting import deduplicate_origin_events_indexed
+from .incremental_targeting import (
+    build_targeting_from_deduped_evidence,
+    deduplicate_origin_events_indexed,
+)
+from .indexed_views import IndexedVolumeView
 
 
 class IncrementalHistoricalDecisionInputReplayRunner:
@@ -39,7 +41,8 @@ class IncrementalHistoricalDecisionInputReplayRunner:
     incremental runtime intended for live catch-up. HAM, Volume and Volatility still
     perform their canonical one-time full passes in this migration step. Derived
     targeting/cross-domain composition remains semantically identical to the old
-    path, while stable per-timeframe evidence is reused by native watermark.
+    path while avoiding duplicate origin dedup, repeated S/R adaptation and linear
+    Volume event-link scans.
     """
 
     def __init__(self, store: ParquetOHLCVStore) -> None:
@@ -103,6 +106,7 @@ class IncrementalHistoricalDecisionInputReplayRunner:
             input_snapshot=inputs,
         )
         volume_seconds = perf_counter() - started
+        volume_view = IndexedVolumeView(volume_full)
 
         started = perf_counter()
         volatility_timeframes = tuple(tf for tf in VOLATILITY_TIMEFRAMES if tf in inputs.timeframes)
@@ -133,7 +137,7 @@ class IncrementalHistoricalDecisionInputReplayRunner:
             cutoff = domain_point.as_of
             domain = domain_point.state
             indices = {tf: int(domain_point.watermarks[tf]) for tf in inputs.timeframes}
-            participation = _volume_view(volume_full, indices, cutoff)
+            participation = volume_view.at(indices, cutoff)
             ham = _ham_view(ham_full, indices)
             volatility_indices = {tf: indices[tf] for tf in volatility_full.timeframes}
             volatility = _volatility_view(volatility_full, volatility_indices)
@@ -184,7 +188,7 @@ class IncrementalHistoricalDecisionInputReplayRunner:
                 evidence,
                 reference_atr=reference_atr,
             )
-            targeting = build_targeting_snapshot(
+            targeting = build_targeting_from_deduped_evidence(
                 symbol=clean_symbol,
                 as_of=cutoff,
                 current_price=reference_price,
