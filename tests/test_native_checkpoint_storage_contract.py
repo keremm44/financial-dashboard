@@ -3,6 +3,7 @@ from pathlib import Path
 from financial_dashboard.decision.persistent_state import (
     PersistentCacheIdentity,
     PersistentCheckpointIdentity,
+    namespace_semantic_fingerprint,
 )
 
 
@@ -88,3 +89,15 @@ def test_persistent_identity_accepts_scoped_implementation_fingerprint():
     assert checkpoint.implementation_fingerprint == "impl-v1"
     assert exact.digest
     assert checkpoint.digest
+
+
+def test_known_persistence_namespaces_have_resolvable_scoped_fingerprints():
+    native = namespace_semantic_fingerprint("native_timeline")
+    supporting = namespace_semantic_fingerprint("supporting_runtime")
+    decision = namespace_semantic_fingerprint("decision_input_timeline")
+
+    assert len(native) == 64
+    assert len(supporting) == 64
+    assert len(decision) == 64
+    assert native != decision
+    assert supporting != decision
