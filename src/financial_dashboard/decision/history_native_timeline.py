@@ -19,7 +19,7 @@ from .native_domain_runtime import (
     NativeDomainState,
     causal_bar_events,
 )
-from .state_timeline import CausalStateStore, TimelineFingerprint
+from .state_timeline import CausalStateStore, TimelineFingerprint, build_state_store
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +38,7 @@ class HistoricalNativeTimelineReplay:
     symbol: str
     decision_timeframe: str
     state_store: CausalStateStore[NativeDomainState, NativeDomainState]
+    full_state: NativeDomainState | None
     timings: HistoricalNativeTimelineTimings
 
     @property
@@ -50,7 +51,14 @@ class HistoricalNativeTimelineReplay:
 
 
 class HistoricalNativeTimelineReplayRunner:
-    """Cold historical producer for the shared incremental native-domain runtime."""
+    """Cold historical producer for the shared incremental native-domain runtime.
+
+    Decision cutoffs are frozen while the reducer advances, but native engines are
+    always drained through the complete closed-bar history. This preserves the old
+    single-pass contract even when ``max_bars`` selects only a few decision points
+    and also exposes ``full_state`` for downstream domains such as Volume that need
+    the completed Structure replay for their one-time historical pass.
+    """
 
     def __init__(self, store: ParquetOHLCVStore) -> None:
         self.store = store
@@ -82,17 +90,19 @@ class HistoricalNativeTimelineReplayRunner:
             decision_frame = decision_frame.loc[decision_frame["timestamp"] <= pd.Timestamp(cfg.end_at)]
         if cfg.max_bars is not None:
             decision_frame = decision_frame.tail(cfg.max_bars)
+
+        fingerprint = TimelineFingerprint(
+            symbol=clean_symbol,
+            engine_config="incremental-native-domain-v1",
+            clock_version="CausalBarClock-v1",
+            pattern_profile=cfg.pattern_profile,
+        )
         if decision_frame.empty:
-            fingerprint = TimelineFingerprint(
-                symbol=clean_symbol,
-                engine_config="incremental-native-domain-v1",
-                clock_version="CausalBarClock-v1",
-                pattern_profile=cfg.pattern_profile,
-            )
             return HistoricalNativeTimelineReplay(
                 symbol=clean_symbol,
                 decision_timeframe=decision_tf,
                 state_store=CausalStateStore(fingerprint=fingerprint, domains=(), decisions=()),
+                full_state=None,
                 timings=HistoricalNativeTimelineTimings(load_seconds, 0.0, 0.0),
             )
 
@@ -107,17 +117,19 @@ class HistoricalNativeTimelineReplayRunner:
         started = perf_counter()
         events = causal_bar_events(inputs, clock=self.clock)
         event_build_seconds = perf_counter() - started
+        if not events:
+            return HistoricalNativeTimelineReplay(
+                symbol=clean_symbol,
+                decision_timeframe=decision_tf,
+                state_store=CausalStateStore(fingerprint=fingerprint, domains=(), decisions=()),
+                full_state=None,
+                timings=HistoricalNativeTimelineTimings(load_seconds, event_build_seconds, 0.0),
+            )
 
         runtime = IncrementalNativeDomainRuntime(
             inputs,
             symbol=clean_symbol,
             clock=self.clock,
-            pattern_profile=cfg.pattern_profile,
-        )
-        fingerprint = TimelineFingerprint(
-            symbol=clean_symbol,
-            engine_config="incremental-native-domain-v1",
-            clock_version="CausalBarClock-v1",
             pattern_profile=cfg.pattern_profile,
         )
         reducer = CausalTimelineReducer(
@@ -126,14 +138,31 @@ class HistoricalNativeTimelineReplayRunner:
             fingerprint=fingerprint,
         )
 
+        last_event_cutoff = pd.Timestamp(events[-1].available_at)
+        reducer_cutoffs = cutoffs
+        appended_full_cutoff = last_event_cutoff > cutoffs[-1]
+        if appended_full_cutoff:
+            reducer_cutoffs = (*cutoffs, last_event_cutoff)
+
         started = perf_counter()
-        state_store = reducer.run(events=events, cutoffs=cutoffs)
+        raw_store = reducer.run(events=events, cutoffs=reducer_cutoffs)
         native_reduce_seconds = perf_counter() - started
+        full_state = raw_store.domains[-1].state
+
+        if appended_full_cutoff:
+            state_store = build_state_store(
+                fingerprint=fingerprint,
+                domain_points=raw_store.domains[: len(cutoffs)],
+                decision_points=raw_store.decisions[: len(cutoffs)],
+            )
+        else:
+            state_store = raw_store
 
         return HistoricalNativeTimelineReplay(
             symbol=clean_symbol,
             decision_timeframe=decision_tf,
             state_store=state_store,
+            full_state=full_state,
             timings=HistoricalNativeTimelineTimings(
                 load_inputs_seconds=load_seconds,
                 event_build_seconds=event_build_seconds,
