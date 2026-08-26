@@ -39,8 +39,7 @@ class IncrementalHistoricalDecisionInputReplayRunner:
     incremental runtime intended for live catch-up. HAM, Volume and Volatility still
     perform their canonical one-time full passes in this migration step. Derived
     targeting/cross-domain composition remains semantically identical to the old
-    path, while origin dedup uses a bounded index proven against the canonical
-    grouping rules.
+    path, while stable per-timeframe evidence is reused by native watermark.
     """
 
     def __init__(self, store: ParquetOHLCVStore) -> None:
@@ -80,9 +79,6 @@ class IncrementalHistoricalDecisionInputReplayRunner:
         if native.full_state is None:
             raise RuntimeError("incremental native replay has cutoffs but no full state")
 
-        # Process-local Parquet/input caching makes this a cheap identity-preserving
-        # read. Keeping it outside NativeDomainState avoids storing full DataFrames in
-        # every timeline point.
         started = perf_counter()
         inputs = load_analysis_inputs(
             self.store,
@@ -132,6 +128,7 @@ class IncrementalHistoricalDecisionInputReplayRunner:
 
         started = perf_counter()
         snapshots: list[DecisionInputSnapshot] = []
+        support_evidence_cache: dict[tuple[str, int], tuple[Any, ...]] = {}
         for domain_point in native.state_store.domains:
             cutoff = domain_point.as_of
             domain = domain_point.state
@@ -167,14 +164,17 @@ class IncrementalHistoricalDecisionInputReplayRunner:
                     )
                 )
             for timeframe in inputs.timeframes:
-                evidence.extend(
-                    support_resistance_evidence(
+                cache_key = (timeframe, indices[timeframe])
+                support_rows = support_evidence_cache.get(cache_key)
+                if support_rows is None:
+                    support_rows = support_resistance_evidence(
                         symbol=clean_symbol,
                         timeframe=timeframe,
                         snapshot=domain.structure.replay_for(timeframe).support_resistance,
                         clock=self.clock,
                     )
-                )
+                    support_evidence_cache[cache_key] = support_rows
+                evidence.extend(support_rows)
             if domain.order_block is not None:
                 evidence.extend(domain.order_block.evidence)
             if domain.fvg is not None:
