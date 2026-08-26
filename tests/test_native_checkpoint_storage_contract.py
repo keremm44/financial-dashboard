@@ -39,6 +39,20 @@ def test_decision_append_checkpoint_keeps_only_a_reference_to_frozen_timeline():
     assert "decision-input-append-reference-v2" in source
 
 
+def test_large_exact_decision_cache_is_atomic_but_not_fsynced_twice():
+    source = Path("src/financial_dashboard/decision/persistent_history_runner.py").read_text(
+        encoding="utf-8"
+    )
+
+    helper_start = source.index("def _save_rebuildable_exact_cache")
+    helper_end = source.index("\n\nclass PersistentHistoricalDecisionInputReplayRunner", helper_start)
+    helper = source[helper_start:helper_end]
+
+    assert "temporary.replace(path)" in helper
+    assert "handle.flush()" in helper
+    assert "os.fsync" not in helper
+
+
 def test_canonical_history_runner_uses_compact_persistent_runner():
     source = Path("src/financial_dashboard/decision/history_replay.py").read_text(
         encoding="utf-8"
