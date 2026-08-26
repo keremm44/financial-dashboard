@@ -50,13 +50,17 @@ class _Runtime:
         }
 
 
-def test_causal_reducer_ingests_each_bar_once_and_freezes_at_cutoffs() -> None:
-    runtime = _Runtime()
-    reducer = CausalTimelineReducer(
+def _reducer(runtime: _Runtime) -> CausalTimelineReducer:
+    return CausalTimelineReducer(
         runtime=runtime,
         compose_decision=lambda state, cutoff: (state["rows"], pd.Timestamp(cutoff)),
         fingerprint=_fingerprint(),
     )
+
+
+def test_causal_reducer_ingests_each_bar_once_and_freezes_at_cutoffs() -> None:
+    runtime = _Runtime()
+    reducer = _reducer(runtime)
     events = (
         _event("30m", 0, "2026-01-01 10:00", 1.0),
         _event("30m", 1, "2026-01-01 10:30", 2.0),
@@ -102,6 +106,37 @@ def test_same_reducer_continues_with_new_live_bars_without_replaying_history() -
     assert cold.domains[0].watermarks == {"30m": 1}
     assert live.domains[0].watermarks == {"30m": 2}
     assert runtime.rows == [("30m", 0), ("30m", 1), ("30m", 2)]
+
+
+def test_future_extension_does_not_change_prior_frozen_state_or_decision() -> None:
+    prefix_events = (
+        _event("30m", 0, "2026-01-01 10:00", 1.0),
+        _event("30m", 1, "2026-01-01 10:30", 2.0),
+        _event("1h", 0, "2026-01-01 11:00", 3.0),
+    )
+    prefix_cutoff = pd.Timestamp("2026-01-01 11:00", tz="Europe/Istanbul")
+
+    prefix_store = _reducer(_Runtime()).run(
+        events=prefix_events,
+        cutoffs=(prefix_cutoff,),
+    )
+    extended_store = _reducer(_Runtime()).run(
+        events=(
+            *prefix_events,
+            _event("30m", 2, "2026-01-01 11:30", 4.0),
+            _event("1h", 1, "2026-01-01 12:00", 5.0),
+        ),
+        cutoffs=(
+            prefix_cutoff,
+            pd.Timestamp("2026-01-01 12:00", tz="Europe/Istanbul"),
+        ),
+    )
+
+    assert extended_store.domains[0].as_of == prefix_store.domains[0].as_of
+    assert extended_store.domains[0].state == prefix_store.domains[0].state
+    assert extended_store.domains[0].watermarks == prefix_store.domains[0].watermarks
+    assert extended_store.decisions[0].as_of == prefix_store.decisions[0].as_of
+    assert extended_store.decisions[0].state == prefix_store.decisions[0].state
 
 
 def test_causal_reducer_rejects_watermark_gap() -> None:
