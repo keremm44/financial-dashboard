@@ -8,9 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-DEFAULT_TIMEFRAMES = ("1d", "4h", "2h", "1h")
+DEFAULT_TIMEFRAMES = ("1d", "4h", "2h", "1h", "30m")
 DEFAULT_DOMAINS = (
-    "structure_location",
+    "structure",
+    "support_resistance",
     "pattern",
     "ham",
     "volume",
@@ -18,6 +19,7 @@ DEFAULT_DOMAINS = (
     "liquidity",
     "order_block",
     "fvg_engulfing",
+    "stabil",
 )
 
 
@@ -30,6 +32,15 @@ class RuntimeCase:
     detail: str = ""
 
 
+def _closed_records(store, symbol: str, timeframe: str):
+    frame = store.load(symbol, timeframe)
+    if "is_closed" in frame.columns:
+        frame = frame.loc[frame["is_closed"].fillna(False).astype(bool)]
+    if "is_complete" in frame.columns:
+        frame = frame.loc[frame["is_complete"].fillna(False).astype(bool)]
+    return frame, frame.to_dict("records")
+
+
 def _worker(cache: str, symbol: str, domain: str, timeframe: str, queue) -> None:
     try:
         from financial_dashboard.data.parquet_store import ParquetOHLCVStore
@@ -37,24 +48,34 @@ def _worker(cache: str, symbol: str, domain: str, timeframe: str, queue) -> None
         store = ParquetOHLCVStore(cache)
         started = time.perf_counter()
 
-        if domain == "structure_location":
-            from financial_dashboard.structure_location_replay import (
-                CachedStructureLocationMTFRunner,
+        if domain == "structure":
+            from financial_dashboard.engines.market_structure_engine import MarketStructureEngine
+
+            _, records = _closed_records(store, symbol, timeframe)
+            engine = MarketStructureEngine()
+            for row in records:
+                engine.update(row)
+            _ = engine.export_contract
+
+        elif domain == "support_resistance":
+            from financial_dashboard.engines.support_resistance_runtime_engine import (
+                RuntimeSupportResistanceRangeEngine,
             )
 
-            CachedStructureLocationMTFRunner(store).run(
-                symbol=symbol,
-                timeframes=(timeframe,),
-            )
+            _, records = _closed_records(store, symbol, timeframe)
+            engine = RuntimeSupportResistanceRangeEngine()
+            for row in records:
+                engine.update(row)
+            _ = engine.snapshot()
 
         elif domain == "pattern":
             from financial_dashboard.engines.pattern_compression_runtime_engine import (
                 RuntimePatternCompressionEngine,
             )
 
-            frame = store.load(symbol, timeframe)
+            _, records = _closed_records(store, symbol, timeframe)
             engine = RuntimePatternCompressionEngine()
-            for _, row in frame.iterrows():
+            for row in records:
                 engine.update(row)
             engine.snapshot()
 
@@ -81,7 +102,7 @@ def _worker(cache: str, symbol: str, domain: str, timeframe: str, queue) -> None
             )
 
             if timeframe not in VOLATILITY_TIMEFRAMES:
-                queue.put(("SKIP", 0.0, "unsupported"))
+                queue.put(("SKIP", 0.0, "unsupported timeframe"))
                 return
             VolatilityMTFReplayRunner(store).replay(
                 symbol,
@@ -105,12 +126,31 @@ def _worker(cache: str, symbol: str, domain: str, timeframe: str, queue) -> None
             )
 
         elif domain == "fvg_engulfing":
+            from financial_dashboard.engines.fvg_engulfing_models import SUPPORTED_TIMEFRAMES
             from financial_dashboard.target_evidence_replay import FvgEngulfingMTFReplayRunner
 
+            if timeframe not in SUPPORTED_TIMEFRAMES:
+                queue.put(("SKIP", 0.0, "unsupported timeframe"))
+                return
             FvgEngulfingMTFReplayRunner(store).replay(
                 symbol,
                 timeframes=(timeframe,),
             )
+
+        elif domain == "stabil":
+            if timeframe != "1d":
+                queue.put(("SKIP", 0.0, "1d only"))
+                return
+
+            from financial_dashboard.data.analysis_inputs import load_analysis_inputs
+            from financial_dashboard.decision.history_source import _stabil_points
+
+            inputs = load_analysis_inputs(store, symbol=symbol, timeframes=("1d",))
+            frame = inputs.for_timeframe("1d").input_batch.frame
+            if frame.empty:
+                queue.put(("SKIP", 0.0, "no 1d bars"))
+                return
+            _stabil_points(inputs, indices_1d=(len(frame) - 1,))
 
         else:
             queue.put(("ERROR", 0.0, f"unknown domain: {domain}"))
@@ -181,14 +221,13 @@ def _run_case(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Run isolated real-runtime domain replays with a per-case timeout. "
-            "This is a standalone file so Windows multiprocessing spawn works; "
-            "do not pipe this script through stdin."
+            "Run isolated real-runtime replays for every canonical decision domain/timeframe "
+            "with a per-case timeout. Each case runs in a fresh Windows-safe process."
         )
     )
     parser.add_argument("cache", type=Path)
     parser.add_argument("symbol")
-    parser.add_argument("--timeout", type=float, default=20.0)
+    parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--timeframes", nargs="+", default=list(DEFAULT_TIMEFRAMES))
     parser.add_argument("--domains", nargs="+", default=list(DEFAULT_DOMAINS))
     args = parser.parse_args()
@@ -209,6 +248,7 @@ def main() -> None:
     print(f"domains : {', '.join(domains)}")
 
     results: list[RuntimeCase] = []
+    wall_started = time.perf_counter()
     for timeframe in timeframes:
         print(f"\n--- {timeframe} ---")
         for domain in domains:
@@ -222,6 +262,8 @@ def main() -> None:
                     timeout_seconds=args.timeout,
                 )
             )
+
+    wall_seconds = time.perf_counter() - wall_started
 
     print("\n=== SUMMARY ===")
     print(f"{'DOMAIN':22s} {'TF':4s} {'SECONDS':>9s}  STATUS")
@@ -239,8 +281,20 @@ def main() -> None:
     for result in successful:
         print(f"{result.domain:22s} {result.timeframe:4s} {result.seconds:8.3f}s")
 
+    domain_totals: dict[str, float] = {}
+    for result in results:
+        if result.status == "OK":
+            domain_totals[result.domain] = domain_totals.get(result.domain, 0.0) + result.seconds
+
+    print("\n=== DOMAIN TOTALS ===")
+    for domain, seconds in sorted(domain_totals.items(), key=lambda item: item[1], reverse=True):
+        print(f"{domain:22s} {seconds:8.3f}s")
+
+    ok_sum = sum(item.seconds for item in results if item.status == "OK")
     failures = [item for item in results if item.status in {"ERROR", "TIMEOUT"}]
-    print(f"\nRUNTIME_MATRIX_FAILURES\t{len(failures)}")
+    print(f"\nTOTAL_OK_SECONDS\t{ok_sum:.3f}")
+    print(f"TOTAL_WALL_SECONDS\t{wall_seconds:.3f}")
+    print(f"RUNTIME_MATRIX_FAILURES\t{len(failures)}")
     print("RUNTIME_MATRIX_OK" if not failures else "RUNTIME_MATRIX_COMPLETED_WITH_FAILURES")
 
 
