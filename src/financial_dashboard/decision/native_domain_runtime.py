@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import pickle
 from types import SimpleNamespace
 from typing import Any, Mapping
 
@@ -62,6 +63,21 @@ class _TimeframeRuntime:
     order_block_confirmations: dict[str, tuple[object, object]]
     fvg_confirmations: dict[str, tuple[object, object]]
     latest_ob_behavior: tuple[Any, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class NativeRuntimeCheckpoint:
+    """Continuation state for stateful native engines only.
+
+    Read-model caches and historical DataFrame prefixes are deliberately excluded.
+    On restore, current raw inputs provide the immutable price history while these
+    engine objects provide the exact continuation state reached at the persisted
+    reducer watermarks.
+    """
+
+    symbol: str
+    timeframes: tuple[str, ...]
+    runtimes: tuple[tuple[str, _TimeframeRuntime], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +186,45 @@ class IncrementalNativeDomainRuntime:
             for timeframe in inputs.timeframes
         }
         self._frozen_by_watermark: dict[tuple[str, int], _FrozenTimeframeState] = {}
+
+    def export_checkpoint(self) -> NativeRuntimeCheckpoint:
+        """Return a detached, pickle-verified snapshot of all stateful native engines."""
+
+        detached = pickle.loads(
+            pickle.dumps(
+                tuple((timeframe, runtime) for timeframe, runtime in self._runtimes.items()),
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
+        )
+        return NativeRuntimeCheckpoint(
+            symbol=self.symbol,
+            timeframes=tuple(self.inputs.timeframes),
+            runtimes=detached,
+        )
+
+    def restore_checkpoint(self, checkpoint: NativeRuntimeCheckpoint) -> None:
+        """Restore engine continuation state onto current append-compatible inputs."""
+
+        if checkpoint.symbol != self.symbol:
+            raise ValueError(
+                f"native checkpoint symbol mismatch: {checkpoint.symbol!r} != {self.symbol!r}"
+            )
+        expected = tuple(self.inputs.timeframes)
+        if checkpoint.timeframes != expected:
+            raise ValueError(
+                f"native checkpoint timeframe mismatch: {checkpoint.timeframes!r} != {expected!r}"
+            )
+        restored = dict(checkpoint.runtimes)
+        if set(restored) != set(expected):
+            raise ValueError("native checkpoint runtime set does not match requested timeframes")
+
+        # Detach again so callers may safely reuse the checkpoint object in parity
+        # tests without sharing mutable engine instances with the running reducer.
+        self._runtimes = pickle.loads(
+            pickle.dumps(restored, protocol=pickle.HIGHEST_PROTOCOL)
+        )
+        self._extended_frames.clear()
+        self._frozen_by_watermark.clear()
 
     def _current_frame(self, timeframe: str) -> pd.DataFrame:
         return self._extended_frames.get(
@@ -524,8 +579,41 @@ def causal_bar_events(
     return tuple(sorted(events, key=lambda item: item.sort_key))
 
 
+def causal_bar_events_after(
+    inputs: AnalysisInputSnapshot,
+    *,
+    watermarks: Mapping[str, int],
+    clock: CausalBarClock | None = None,
+) -> tuple[CausalBarEvent, ...]:
+    """Build only bars not already consumed by a restored reducer cursor."""
+
+    active_clock = clock or CausalBarClock()
+    events: list[CausalBarEvent] = []
+    for timeframe in inputs.timeframes:
+        if timeframe not in watermarks:
+            raise ValueError(f"missing resume watermark for {timeframe}")
+        frame = inputs.for_timeframe(timeframe).input_batch.frame
+        start = int(watermarks[timeframe]) + 1
+        if start < 0 or start > len(frame):
+            raise ValueError(
+                f"invalid resume watermark for {timeframe}: {watermarks[timeframe]}"
+            )
+        for offset, row in enumerate(frame.iloc[start:].to_dict("records"), start=start):
+            events.append(
+                CausalBarEvent(
+                    available_at=active_clock.available_at(row["timestamp"], timeframe),
+                    timeframe=timeframe,
+                    bar_index=offset,
+                    bar=row,
+                )
+            )
+    return tuple(sorted(events, key=lambda item: item.sort_key))
+
+
 __all__ = [
     "IncrementalNativeDomainRuntime",
     "NativeDomainState",
+    "NativeRuntimeCheckpoint",
     "causal_bar_events",
+    "causal_bar_events_after",
 ]
