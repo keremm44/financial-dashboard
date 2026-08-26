@@ -5,6 +5,7 @@ from enum import StrEnum
 
 from .axes import (
     ConflictState,
+    ContextAxes,
     ContextDirection,
     ContinuationContext,
     ReactionContext,
@@ -61,26 +62,29 @@ def _side(direction: ContextDirection) -> PermittedSide:
     return PermittedSide.NONE
 
 
-def _source_refs(snapshot: CrossDomainContextSnapshot) -> tuple[str, ...]:
+def _source_refs_from_axes(axes: ContextAxes) -> tuple[str, ...]:
     refs = {
         ref
-        for reason in snapshot.axes.reasons
+        for reason in axes.reasons
         for ref in reason.source_refs
         if ref
     }
     return tuple(sorted(refs))
 
 
-def resolve_permission(snapshot: CrossDomainContextSnapshot) -> PermissionEnvelope:
-    """Resolve scoped permission with explicit gates and no numeric voting.
+def resolve_permission_axes(
+    axes: ContextAxes,
+    *,
+    source_refs: tuple[str, ...] | None = None,
+) -> PermissionEnvelope:
+    """Resolve scoped permission from one already-frozen context-axis view.
 
-    Ordering is intentional: canonical structural blockers first, then structural
-    transition, counter-reaction, and continuation scopes. Supporting domains can
-    block/wait but cannot manufacture structural authority.
+    This helper lets the decision layer derive horizon-aware permission cheaply from
+    the same immutable projections without rebuilding native engines or counting the
+    context summary as fresh evidence.
     """
 
-    axes = snapshot.axes
-    refs = _source_refs(snapshot)
+    refs = source_refs if source_refs is not None else _source_refs_from_axes(axes)
 
     if axes.structural_thesis in {StructuralThesis.UNAVAILABLE, StructuralThesis.UNRESOLVED}:
         return PermissionEnvelope(
@@ -91,12 +95,24 @@ def resolve_permission(snapshot: CrossDomainContextSnapshot) -> PermissionEnvelo
             source_refs=refs,
         )
 
-    if axes.conflict in {ConflictState.HIGH, ConflictState.UNRESOLVED}:
+    # Accepted architecture: HIGH is a hard conflict gate; UNRESOLVED is not
+    # automatically equivalent to HIGH. Preserve uncertainty as WAIT instead of
+    # manufacturing a hard NO_TRADE.
+    if axes.conflict is ConflictState.HIGH:
         return PermissionEnvelope(
             scope=PermissionScope.NONE,
             permitted_side=PermittedSide.NONE,
             gate_state=GateState.BLOCKED,
-            blocking_reasons=(f"CONTEXT_CONFLICT_{axes.conflict.value}",),
+            blocking_reasons=("CONTEXT_CONFLICT_HIGH",),
+            source_refs=refs,
+        )
+    if axes.conflict is ConflictState.UNRESOLVED:
+        return PermissionEnvelope(
+            scope=PermissionScope.NONE,
+            permitted_side=_side(axes.structural_direction),
+            gate_state=GateState.WAITING,
+            allowed_reasons=("CONTEXT_CONFLICT_UNRESOLVED",),
+            waiting_for=("CONTEXT_CONFLICT_TO_RESOLVE",),
             source_refs=refs,
         )
 
@@ -202,10 +218,17 @@ def resolve_permission(snapshot: CrossDomainContextSnapshot) -> PermissionEnvelo
     )
 
 
+def resolve_permission(snapshot: CrossDomainContextSnapshot) -> PermissionEnvelope:
+    """Resolve scoped permission with explicit gates and no numeric voting."""
+
+    return resolve_permission_axes(snapshot.axes, source_refs=_source_refs_from_axes(snapshot.axes))
+
+
 __all__ = [
     "GateState",
     "PermissionEnvelope",
     "PermissionScope",
     "PermittedSide",
     "resolve_permission",
+    "resolve_permission_axes",
 ]
