@@ -14,7 +14,7 @@ import pandas as pd
 from financial_dashboard.data.analysis_inputs import AnalysisInputSnapshot
 
 
-PERSISTENT_STATE_SCHEMA_VERSION = 2
+PERSISTENT_STATE_SCHEMA_VERSION = 3
 
 
 def _safe_part(value: str) -> str:
@@ -31,29 +31,51 @@ def _stable_digest(parts: Iterable[str]) -> str:
     return digest.hexdigest()
 
 
-@lru_cache(maxsize=1)
-def codebase_semantic_fingerprint() -> str:
-    """Hash the installed financial_dashboard Python source tree.
-
-    Persistent state must never silently survive a code change that can alter domain
-    or decision-input semantics. The hash is conservative on purpose: any Python
-    source change below the package invalidates application-owned cached state. The
-    result is memoized for the process and costs only a small file-read pass at first
-    cache access.
-    """
-
-    package_root = Path(__file__).resolve().parents[1]
+def _hash_source_paths(paths: Iterable[Path], *, root: Path) -> str:
     digest = sha256()
-    for path in sorted(package_root.rglob("*.py"), key=lambda item: item.as_posix()):
-        if "__pycache__" in path.parts:
-            continue
-        relative = path.relative_to(package_root).as_posix()
+    expanded: set[Path] = set()
+    for path in paths:
+        if path.is_dir():
+            expanded.update(
+                candidate
+                for candidate in path.rglob("*.py")
+                if "__pycache__" not in candidate.parts
+            )
+        elif path.is_file() and path.suffix == ".py":
+            expanded.add(path)
+        else:
+            raise ValueError(f"semantic fingerprint path does not exist: {path}")
+
+    for path in sorted(expanded, key=lambda item: item.relative_to(root).as_posix()):
+        relative = path.relative_to(root).as_posix()
         payload = path.read_bytes()
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative.encode("utf-8"))
         digest.update(len(payload).to_bytes(8, "big"))
         digest.update(payload)
     return digest.hexdigest()
+
+
+@lru_cache(maxsize=1)
+def codebase_semantic_fingerprint() -> str:
+    """Hash the installed financial_dashboard Python source tree."""
+
+    package_root = Path(__file__).resolve().parents[1]
+    return _hash_source_paths((package_root,), root=package_root)
+
+
+@lru_cache(maxsize=32)
+def code_paths_semantic_fingerprint(relative_paths: tuple[str, ...]) -> str:
+    """Hash only the source paths that own one persisted semantic layer.
+
+    Persistent domains may survive unrelated decision/UI edits without becoming stale.
+    Callers must enumerate every source subtree that can change the persisted payload's
+    semantics; changes inside those paths automatically invalidate that namespace.
+    """
+
+    package_root = Path(__file__).resolve().parents[1]
+    paths = tuple(package_root / relative for relative in relative_paths)
+    return _hash_source_paths(paths, root=package_root)
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,13 +87,15 @@ class PersistentCacheIdentity:
     semantic_fingerprint: str
     config_fingerprint: str
     source_fingerprint: tuple[tuple[str, int, int], ...]
+    implementation_fingerprint: str | None = None
 
     @property
     def digest(self) -> str:
+        implementation = self.implementation_fingerprint or codebase_semantic_fingerprint()
         return _stable_digest(
             (
                 str(PERSISTENT_STATE_SCHEMA_VERSION),
-                codebase_semantic_fingerprint(),
+                implementation,
                 self.namespace,
                 self.symbol,
                 self.semantic_fingerprint,
@@ -89,13 +113,15 @@ class PersistentCheckpointIdentity:
     symbol: str
     semantic_fingerprint: str
     config_fingerprint: str
+    implementation_fingerprint: str | None = None
 
     @property
     def digest(self) -> str:
+        implementation = self.implementation_fingerprint or codebase_semantic_fingerprint()
         return _stable_digest(
             (
                 str(PERSISTENT_STATE_SCHEMA_VERSION),
-                codebase_semantic_fingerprint(),
+                implementation,
                 self.namespace,
                 self.symbol,
                 self.semantic_fingerprint,
@@ -182,12 +208,7 @@ def validate_append_only_prefix(
     inputs: AnalysisInputSnapshot,
     expected: Iterable[PrefixFrameFingerprint],
 ) -> bool:
-    """Return True only when every previously consumed row is content-equivalent.
-
-    Additional rows after the checkpoint are allowed. Any edit/reorder/removal in the
-    consumed prefix invalidates the checkpoint instead of silently continuing from a
-    semantically different history.
-    """
+    """Return True only when every previously consumed row is content-equivalent."""
 
     expected_by_timeframe = {item.timeframe: item for item in expected}
     if set(expected_by_timeframe) != set(inputs.timeframes):
@@ -209,12 +230,7 @@ def validate_append_only_prefix(
 
 
 class PersistentObjectStore:
-    """Atomic trusted-local pickle store with fail-closed identity validation.
-
-    Files live below the existing OHLCV cache root. They are application-owned local
-    state, never user-supplied pickle payloads. Corrupt/incompatible entries are cache
-    misses and may be replaced safely by a cold replay.
-    """
+    """Atomic trusted-local pickle store with fail-closed identity validation."""
 
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root) / ".decision_state"
@@ -319,6 +335,7 @@ __all__ = [
     "PersistentObjectStore",
     "PrefixFrameFingerprint",
     "build_prefix_fingerprints",
+    "code_paths_semantic_fingerprint",
     "codebase_semantic_fingerprint",
     "fingerprint_frame_prefix",
     "validate_append_only_prefix",
