@@ -4,7 +4,6 @@ from .composer import (
     DecisionAction,
     FinalDecision,
     compose_final_decision,
-    compose_position_decision,
 )
 from .conflict import (
     ConflictAssessment,
@@ -50,12 +49,6 @@ from .participation import (
     ParticipationAssessment,
     ParticipationState,
     assess_participation,
-)
-from .position import (
-    PositionContext,
-    PositionSide,
-    opposing_structural_side,
-    position_exit_candidate,
 )
 from .reaction import ReactionAssessment, ReactionState, assess_reaction
 from .structural import (
@@ -112,8 +105,6 @@ __all__ = [
     "OpportunityState",
     "ParticipationAssessment",
     "ParticipationState",
-    "PositionContext",
-    "PositionSide",
     "ReactionAssessment",
     "ReactionState",
     "SetupTriggerAssessment",
@@ -144,8 +135,5 @@ __all__ = [
     "build_horizon_structural_snapshot",
     "classify_horizon_relation",
     "compose_final_decision",
-    "compose_position_decision",
     "decision_events_from_snapshot_stream",
-    "opposing_structural_side",
-    "position_exit_candidate",
 ]
