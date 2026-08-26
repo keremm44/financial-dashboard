@@ -13,6 +13,7 @@ from financial_dashboard.decision_input import DecisionInputSnapshot
 from .composer import ActionPolicy, DecisionAction
 from .engine import DecisionEngineConfig, HorizonDecisionAssessment, assess_horizon_decision
 from .execution import ExecutionTriggerEvent
+from .lifecycle import TradeLifecycleState, TradeLifecycleTransition, transition_trade_lifecycle
 from .opportunity import OpportunityCalibration
 from .structural import DecisionHorizon, StructuralDirection
 
@@ -25,11 +26,17 @@ class HistoricalDecisionStreamConfig:
     a causal, strictly increasing stream of already-built ``DecisionInputSnapshot``
     objects from a single-pass upstream replay. This prevents the decision audit from
     accidentally rebuilding the full market workspace once per historical bar.
+
+    ``enforce_trade_lifecycle`` folds final market decisions through the same
+    persistent FLAT/OPEN ownership contract intended for production. Pass 1 preserves
+    the existing SELL candidate semantics; the dedicated exit assessor will replace
+    that candidate in a later pass.
     """
 
     horizon: DecisionHorizon = DecisionHorizon.SHORT_TERM
     opportunity_calibration: OpportunityCalibration | None = None
     readiness_position_proxy: bool = False
+    enforce_trade_lifecycle: bool = True
     action_policy: ActionPolicy = ActionPolicy(
         permitted_sides=(StructuralDirection.LONG, StructuralDirection.SHORT)
     )
@@ -67,13 +74,42 @@ def _event_from_assessment(
     price: float,
     action_override: AuditDecisionAction | None = None,
     proxy_reason: str | None = None,
+    lifecycle: TradeLifecycleTransition | None = None,
 ) -> DecisionEvent:
     final = assessment.final
     action = action_override or _audit_action(final.action)
-    reasons = final.reasons if proxy_reason is None else (*final.reasons, proxy_reason)
+    extra_reasons: tuple[str, ...] = ()
+    if proxy_reason is not None:
+        extra_reasons += (proxy_reason,)
+    if lifecycle is not None:
+        extra_reasons += (lifecycle.reason,)
+    reasons = (*final.reasons, *extra_reasons)
+
+    waiting_for = tuple(final.waiting_for)
+    if lifecycle is not None and lifecycle.action is DecisionAction.WAIT and not waiting_for:
+        waiting_for = ("LIFECYCLE_LONG_ENTRY_PATH",)
+
     snapshot = {
         "historical_stream": True,
         "readiness_position_proxy": proxy_reason is not None,
+        "trade_lifecycle": None
+        if lifecycle is None
+        else {
+            "previous_position": lifecycle.previous.position.value,
+            "position_state": lifecycle.current.position.value,
+            "previous_exit_stage": None
+            if lifecycle.previous.exit_stage is None
+            else lifecycle.previous.exit_stage.value,
+            "exit_stage": None
+            if lifecycle.current.exit_stage is None
+            else lifecycle.current.exit_stage.value,
+            "trade_id": lifecycle.current.trade_id,
+            "entry_as_of": lifecycle.current.entry_as_of,
+            "requested_action": lifecycle.requested_action.value,
+            "action": lifecycle.action.value,
+            "transition_reason": lifecycle.reason,
+            "changed_position": lifecycle.changed_position,
+        },
         "horizon": assessment.horizon.value,
         "structural": _jsonable(assessment.structural),
         "relation": assessment.structural_snapshot.relation.value,
@@ -95,7 +131,7 @@ def _event_from_assessment(
         price=float(price),
         reasons=tuple(reasons),
         blockers=tuple(final.blockers),
-        waiting_for=tuple(final.waiting_for),
+        waiting_for=waiting_for,
         source_lineage=tuple(final.source_lineage),
         snapshot=snapshot,
     )
@@ -140,13 +176,38 @@ def assess_snapshot_stream(
     return tuple(rows)
 
 
+def apply_trade_lifecycle(
+    assessments: Iterable[tuple[HorizonDecisionAssessment, float]],
+) -> tuple[DecisionEvent, ...]:
+    """Fold causal decisions through one persistent long-only trade lifecycle."""
+
+    state = TradeLifecycleState()
+    events: list[DecisionEvent] = []
+    for assessment, price in assessments:
+        lifecycle = transition_trade_lifecycle(
+            state,
+            assessment.final,
+            as_of=assessment.as_of,
+        )
+        state = lifecycle.current
+        events.append(
+            _event_from_assessment(
+                assessment,
+                price=price,
+                action_override=_audit_action(lifecycle.action),
+                lifecycle=lifecycle,
+            )
+        )
+    return tuple(events)
+
+
 def apply_readiness_position_proxy(
     assessments: Iterable[tuple[HorizonDecisionAssessment, float]],
 ) -> tuple[DecisionEvent, ...]:
     """Turn READY side transitions into a long-only audit proxy.
 
-    This is hindsight-test plumbing only; it is not the production execution trigger.
-    A flat proxy opens on LONG READY and an open long closes on SHORT READY.
+    This is legacy hindsight-test plumbing only; it is not the production execution
+    trigger and it is bypassed by the real lifecycle fold unless explicitly enabled.
     """
 
     holding_long = False
@@ -189,6 +250,8 @@ def decision_events_from_snapshot_stream(
     )
     if cfg.readiness_position_proxy:
         return apply_readiness_position_proxy(assessments)
+    if cfg.enforce_trade_lifecycle:
+        return apply_trade_lifecycle(assessments)
     return tuple(
         _event_from_assessment(assessment, price=price)
         for assessment, price in assessments
@@ -198,6 +261,7 @@ def decision_events_from_snapshot_stream(
 __all__ = [
     "HistoricalDecisionStreamConfig",
     "apply_readiness_position_proxy",
+    "apply_trade_lifecycle",
     "assess_snapshot_stream",
     "decision_events_from_snapshot_stream",
 ]
