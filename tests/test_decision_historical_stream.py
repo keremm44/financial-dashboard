@@ -171,12 +171,74 @@ def test_trade_lifecycle_uses_dedicated_exit_path_not_legacy_sell_candidate():
     assert events[5].snapshot["trade_lifecycle"]["transition_reason"] == "LIFECYCLE_FLAT_SELL_SUPPRESSED"
 
 
+def test_lifecycle_readiness_proxy_exercises_real_ownership_and_exit_stages():
+    rows = (
+        (
+            _assessment(
+                side=StructuralDirection.LONG,
+                action=DecisionAction.READY,
+                as_of="2026-01-05 10:00",
+            ),
+            100.0,
+        ),
+        (
+            _assessment(
+                side=StructuralDirection.LONG,
+                action=DecisionAction.WAIT,
+                as_of="2026-01-05 11:00",
+                relation=HorizonRelation.COUNTER_REACTION,
+            ),
+            101.0,
+        ),
+        (
+            _assessment(
+                side=StructuralDirection.SHORT,
+                action=DecisionAction.NO_TRADE,
+                as_of="2026-01-05 12:00",
+                lt_direction=StructuralDirection.SHORT,
+                lt_thesis=ThesisState.INTACT,
+                relation=HorizonRelation.COUNTER_REACTION,
+            ),
+            98.0,
+        ),
+    )
+
+    events = apply_trade_lifecycle(rows, readiness_proxy=True)
+
+    assert [event.action for event in events] == [
+        AuditDecisionAction.BUY,
+        AuditDecisionAction.HOLD,
+        AuditDecisionAction.SELL,
+    ]
+    assert events[0].snapshot["lifecycle_readiness_proxy"] is True
+    assert events[0].snapshot["trade_lifecycle"]["position_state"] == "OPEN"
+    assert "AUDIT_PROXY_LONG_ENTRY_FROM_READY" in events[0].reasons
+    assert events[1].snapshot["long_exit"]["position_health"] == "PROTECTED"
+    assert events[2].snapshot["long_exit"]["stage"] == "EXIT_READY"
+    assert events[2].snapshot["trade_lifecycle"]["position_state"] == "FLAT"
+    assert "AUDIT_PROXY_LONG_EXIT_FROM_EXIT_READY" in events[2].reasons
+
+
 def test_historical_stream_defaults_to_long_only_action_policy():
     config = HistoricalDecisionStreamConfig()
     assert config.opportunity_calibration is None
     assert config.readiness_position_proxy is False
+    assert config.lifecycle_readiness_proxy is False
     assert config.enforce_trade_lifecycle is True
     assert config.action_policy.permitted_sides == (StructuralDirection.LONG,)
+
+
+def test_historical_stream_rejects_overlapping_proxy_modes():
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        HistoricalDecisionStreamConfig(
+            readiness_position_proxy=True,
+            lifecycle_readiness_proxy=True,
+        )
+    with pytest.raises(ValueError, match="requires enforce_trade_lifecycle"):
+        HistoricalDecisionStreamConfig(
+            lifecycle_readiness_proxy=True,
+            enforce_trade_lifecycle=False,
+        )
 
 
 def test_historical_stream_module_cannot_rebuild_workspace_or_load_cache():
