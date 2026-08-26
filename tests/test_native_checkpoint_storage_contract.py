@@ -1,5 +1,10 @@
 from pathlib import Path
 
+from financial_dashboard.decision.persistent_state import (
+    PersistentCacheIdentity,
+    PersistentCheckpointIdentity,
+)
+
 
 def test_native_checkpoint_does_not_embed_full_historical_replay():
     source = Path("src/financial_dashboard/decision/history_native_timeline.py").read_text(
@@ -60,3 +65,26 @@ def test_canonical_history_runner_uses_compact_persistent_runner():
 
     assert "PersistentHistoricalDecisionInputReplayRunner" in source
     assert "class HistoricalDecisionInputReplayRunner(PersistentHistoricalDecisionInputReplayRunner)" in source
+
+
+def test_persistent_identity_accepts_scoped_implementation_fingerprint():
+    exact = PersistentCacheIdentity(
+        namespace="decision_input_timeline",
+        symbol="ASELS",
+        semantic_fingerprint="decision-v1",
+        config_fingerprint="default",
+        source_fingerprint=(("30m", 100, 123),),
+        implementation_fingerprint="impl-v1",
+    )
+    checkpoint = PersistentCheckpointIdentity(
+        namespace="native_timeline",
+        symbol="ASELS",
+        semantic_fingerprint="native-v1",
+        config_fingerprint="default",
+        implementation_fingerprint="impl-v1",
+    )
+
+    assert exact.implementation_fingerprint == "impl-v1"
+    assert checkpoint.implementation_fingerprint == "impl-v1"
+    assert exact.digest
+    assert checkpoint.digest
