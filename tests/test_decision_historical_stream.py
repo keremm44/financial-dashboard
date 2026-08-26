@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,6 +23,16 @@ from financial_dashboard.decision.structural import (
 from financial_dashboard.decision_audit import DecisionAction as AuditDecisionAction
 
 
+@dataclass(frozen=True)
+class _FinalStub:
+    action: DecisionAction
+    market_side: StructuralDirection
+    reasons: tuple[str, ...] = ("TEST",)
+    blockers: tuple[str, ...] = ()
+    waiting_for: tuple[str, ...] = ()
+    source_lineage: tuple[str, ...] = ()
+
+
 def _assessment(
     *,
     side,
@@ -33,13 +44,9 @@ def _assessment(
     transition_target=None,
     execution_state=ExecutionTriggerState.ABSENT,
 ):
-    final = SimpleNamespace(
+    final = _FinalStub(
         action=action,
         market_side=side,
-        reasons=("TEST",),
-        blockers=(),
-        waiting_for=(),
-        source_lineage=(),
     )
     placeholder = SimpleNamespace()
     lt = SimpleNamespace(
