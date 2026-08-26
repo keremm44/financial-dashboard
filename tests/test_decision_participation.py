@@ -51,7 +51,7 @@ def test_opposing_participation_is_material_input():
     assert result.state is ParticipationState.OPPOSING
 
 
-def test_unsupported_break_is_preserved_without_direction_flip():
+def test_same_side_unsupported_break_is_weak():
     result = assess_participation(
         StructuralDirection.LONG,
         _projection(evidence_direction=0, participation_direction=0, break_direction=1, break_participation=BreakParticipationBehavior.UNSUPPORTED),
@@ -59,6 +59,24 @@ def test_unsupported_break_is_preserved_without_direction_flip():
     )
     assert result.state is ParticipationState.WEAK
     assert result.unsupported_break
+    assert "UNSUPPORTED_BREAK_ALIGNS_STRUCTURE" in result.reasons
+
+
+def test_opposing_unsupported_break_does_not_weaken_structural_side():
+    result = assess_participation(
+        StructuralDirection.LONG,
+        _projection(
+            evidence_direction=0,
+            participation_direction=0,
+            participation_trend=ParticipationTrend.NONE,
+            break_direction=-1,
+            break_participation=BreakParticipationBehavior.UNSUPPORTED,
+        ),
+        timeframe="1h",
+    )
+    assert result.state is ParticipationState.NEUTRAL
+    assert not result.unsupported_break
+    assert "OPPOSING_BREAK_UNSUPPORTED" in result.reasons
 
 
 def test_missing_or_degraded_is_unknown_not_neutral():
