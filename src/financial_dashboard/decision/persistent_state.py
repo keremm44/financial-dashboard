@@ -32,13 +32,7 @@ def _stable_digest(parts: Iterable[str]) -> str:
 
 @dataclass(frozen=True, slots=True)
 class PersistentCacheIdentity:
-    """Exact semantic identity for one trusted local persistent object.
-
-    Persistent state is intentionally fail-closed. A cache entry is reusable only
-    when the semantic/config/source identity matches exactly. Append-only runtime
-    checkpoints use :class:`PrefixFrameFingerprint` separately so new bars may be
-    accepted without treating a changed historical prefix as valid.
-    """
+    """Exact semantic identity for one trusted local persistent object."""
 
     namespace: str
     symbol: str
@@ -61,6 +55,28 @@ class PersistentCacheIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class PersistentCheckpointIdentity:
+    """Stable identity for a checkpoint that may accept append-only new source rows."""
+
+    namespace: str
+    symbol: str
+    semantic_fingerprint: str
+    config_fingerprint: str
+
+    @property
+    def digest(self) -> str:
+        return _stable_digest(
+            (
+                str(PERSISTENT_STATE_SCHEMA_VERSION),
+                self.namespace,
+                self.symbol,
+                self.semantic_fingerprint,
+                self.config_fingerprint,
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class PrefixFrameFingerprint:
     """Content identity for the already-consumed causal prefix of one timeframe."""
 
@@ -68,6 +84,16 @@ class PrefixFrameFingerprint:
     row_count: int
     last_timestamp_ns: int | None
     digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class PersistentCheckpointRecord:
+    """Checkpoint payload plus the exact consumed-prefix identity it depends on."""
+
+    identity: PersistentCheckpointIdentity
+    prefixes: tuple[PrefixFrameFingerprint, ...]
+    cursor: Any
+    payload: Any
 
 
 def fingerprint_frame_prefix(
@@ -128,10 +154,10 @@ def validate_append_only_prefix(
     inputs: AnalysisInputSnapshot,
     expected: Iterable[PrefixFrameFingerprint],
 ) -> bool:
-    """Return True only when every previously consumed row is byte-content equivalent.
+    """Return True only when every previously consumed row is content-equivalent.
 
     Additional rows after the checkpoint are allowed. Any edit/reorder/removal in the
-    consumed prefix invalidates the checkpoint instead of silently replaying from a
+    consumed prefix invalidates the checkpoint instead of silently continuing from a
     semantically different history.
     """
 
@@ -155,24 +181,34 @@ def validate_append_only_prefix(
 
 
 class PersistentObjectStore:
-    """Atomic trusted-local pickle store with exact identity validation.
+    """Atomic trusted-local pickle store with fail-closed identity validation.
 
-    The files live below the existing OHLCV cache root. They are application-owned
-    local state, never user-supplied pickle payloads. Corrupt/incompatible entries are
-    treated as cache misses and may be safely replaced by a cold replay.
+    Files live below the existing OHLCV cache root. They are application-owned local
+    state, never user-supplied pickle payloads. Corrupt/incompatible entries are cache
+    misses and may be replaced safely by a cold replay.
     """
 
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root) / ".decision_state"
         self.root.mkdir(parents=True, exist_ok=True)
 
-    def path_for(self, identity: PersistentCacheIdentity) -> Path:
-        directory = self.root / _safe_part(identity.symbol)
+    def _symbol_directory(self, symbol: str) -> Path:
+        directory = self.root / _safe_part(symbol)
         directory.mkdir(parents=True, exist_ok=True)
-        return directory / f"{_safe_part(identity.namespace)}__{identity.digest}.pkl"
+        return directory
 
-    def load(self, identity: PersistentCacheIdentity) -> Any | None:
-        path = self.path_for(identity)
+    def path_for(self, identity: PersistentCacheIdentity) -> Path:
+        return self._symbol_directory(identity.symbol) / (
+            f"{_safe_part(identity.namespace)}__{identity.digest}.pkl"
+        )
+
+    def checkpoint_path_for(self, identity: PersistentCheckpointIdentity) -> Path:
+        return self._symbol_directory(identity.symbol) / (
+            f"{_safe_part(identity.namespace)}__checkpoint__{identity.digest}.pkl"
+        )
+
+    @staticmethod
+    def _load_envelope(path: Path) -> dict[str, Any] | None:
         if not path.exists():
             return None
         try:
@@ -180,26 +216,18 @@ class PersistentObjectStore:
                 envelope = pickle.load(handle)
         except (OSError, EOFError, pickle.PickleError, AttributeError, ImportError, TypeError, ValueError):
             return None
-
         if not isinstance(envelope, dict):
             return None
         if envelope.get("schema_version") != PERSISTENT_STATE_SCHEMA_VERSION:
             return None
-        if envelope.get("identity") != identity:
-            return None
-        return envelope.get("payload")
+        return envelope
 
-    def save(self, identity: PersistentCacheIdentity, payload: Any) -> Path:
-        path = self.path_for(identity)
+    @staticmethod
+    def _atomic_save(path: Path, envelope: Mapping[str, Any]) -> Path:
         temporary = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
-        envelope = {
-            "schema_version": PERSISTENT_STATE_SCHEMA_VERSION,
-            "identity": identity,
-            "payload": payload,
-        }
         try:
             with temporary.open("wb") as handle:
-                pickle.dump(envelope, handle, protocol=pickle.HIGHEST_PROTOCOL)
+                pickle.dump(dict(envelope), handle, protocol=pickle.HIGHEST_PROTOCOL)
                 handle.flush()
                 os.fsync(handle.fileno())
             temporary.replace(path)
@@ -208,13 +236,58 @@ class PersistentObjectStore:
                 temporary.unlink(missing_ok=True)
         return path
 
+    def load(self, identity: PersistentCacheIdentity) -> Any | None:
+        envelope = self._load_envelope(self.path_for(identity))
+        if envelope is None or envelope.get("identity") != identity:
+            return None
+        return envelope.get("payload")
+
+    def save(self, identity: PersistentCacheIdentity, payload: Any) -> Path:
+        return self._atomic_save(
+            self.path_for(identity),
+            {
+                "schema_version": PERSISTENT_STATE_SCHEMA_VERSION,
+                "identity": identity,
+                "payload": payload,
+            },
+        )
+
     def remove(self, identity: PersistentCacheIdentity) -> None:
         self.path_for(identity).unlink(missing_ok=True)
+
+    def load_checkpoint(
+        self,
+        identity: PersistentCheckpointIdentity,
+    ) -> PersistentCheckpointRecord | None:
+        envelope = self._load_envelope(self.checkpoint_path_for(identity))
+        if envelope is None or envelope.get("identity") != identity:
+            return None
+        record = envelope.get("record")
+        if not isinstance(record, PersistentCheckpointRecord):
+            return None
+        if record.identity != identity:
+            return None
+        return record
+
+    def save_checkpoint(self, record: PersistentCheckpointRecord) -> Path:
+        return self._atomic_save(
+            self.checkpoint_path_for(record.identity),
+            {
+                "schema_version": PERSISTENT_STATE_SCHEMA_VERSION,
+                "identity": record.identity,
+                "record": record,
+            },
+        )
+
+    def remove_checkpoint(self, identity: PersistentCheckpointIdentity) -> None:
+        self.checkpoint_path_for(identity).unlink(missing_ok=True)
 
 
 __all__ = [
     "PERSISTENT_STATE_SCHEMA_VERSION",
     "PersistentCacheIdentity",
+    "PersistentCheckpointIdentity",
+    "PersistentCheckpointRecord",
     "PersistentObjectStore",
     "PrefixFrameFingerprint",
     "build_prefix_fingerprints",
