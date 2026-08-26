@@ -4,7 +4,7 @@ from dataclasses import asdict
 from json import dumps
 from typing import Any
 
-from .models import DecisionAuditReport, TradeAudit
+from .models import CensoredTradeAudit, DecisionAuditReport, TradeAudit
 
 
 def _fmt(value: float | None, suffix: str = "") -> str:
@@ -23,9 +23,23 @@ def _worst_trade_lines(trades: tuple[TradeAudit, ...], limit: int) -> list[str]:
                 f"  Entry local-low miss: {_fmt(trade.entry_local_low_miss_pct, '%')} / {_fmt(trade.entry_local_low_miss_atr, ' ATR')}",
                 f"  Extra downside after BUY: {_fmt(trade.post_entry_additional_downside_pct, '%')}",
                 f"  Exit peak miss: {_fmt(trade.exit_peak_miss_pct, '%')} | Giveback: {_fmt(trade.profit_giveback_pct, '%')}",
-                "  BUY reasons: " + ("; ".join(trade.entry_reasons) if trade.entry_reasons else "-") ,
+                "  BUY reasons: " + ("; ".join(trade.entry_reasons) if trade.entry_reasons else "-"),
                 "  BUY waiting_for: " + ("; ".join(trade.entry_waiting_for) if trade.entry_waiting_for else "-"),
                 "  SELL reasons: " + ("; ".join(trade.exit_reasons) if trade.exit_reasons else "-"),
+            )
+        )
+    return rows
+
+
+def _censored_trade_lines(trades: tuple[CensoredTradeAudit, ...]) -> list[str]:
+    if not trades:
+        return ["None."]
+    rows: list[str] = []
+    for trade in trades:
+        rows.extend(
+            (
+                f"{trade.entry_time} BUY -> OPEN at sample end {trade.sample_end_time}",
+                f"  Unrealized: {_fmt(trade.unrealized_return_pct, '%')} | MFE: {_fmt(trade.mfe_pct, '%')} | MAE: {_fmt(trade.mae_pct, '%')} | Bars open: {trade.bars_open}",
             )
         )
     return rows
@@ -34,6 +48,7 @@ def _worst_trade_lines(trades: tuple[TradeAudit, ...], limit: int) -> list[str]:
 def render_text(report: DecisionAuditReport, *, worst_trade_limit: int = 5) -> str:
     metrics = report.metrics
     stability = report.signal_stability
+    lifecycle = report.lifecycle
     opportunities = report.missed_opportunities
     captured = sum(1 for item in opportunities if item.captured)
     missed = len(opportunities) - captured
@@ -46,6 +61,21 @@ def render_text(report: DecisionAuditReport, *, worst_trade_limit: int = 5) -> s
         f"Symbol: {report.symbol}",
         f"Timeframe: {report.timeframe}",
         f"Period: {report.start_time} -> {report.end_time}",
+        "",
+        "LIFECYCLE VALIDATION",
+        "--------------------",
+        f"Lifecycle metadata events: {lifecycle.metadata_events}",
+        f"Lifecycle valid: {'YES' if lifecycle.lifecycle_valid else 'NO'}",
+        "Violations: " + ("; ".join(lifecycle.violations) if lifecycle.violations else "none"),
+        f"Completed cycles: {lifecycle.completed_cycles}",
+        f"Censored open trades: {lifecycle.censored_open_trades}",
+        f"HOLD bars: {lifecycle.hold_bars}",
+        f"Protected / pressured HOLD bars: {lifecycle.protected_hold_bars} / {lifecycle.pressured_hold_bars}",
+        f"EXIT_WATCH episodes / avg bars: {lifecycle.exit_watch_episode_count} / {_fmt(lifecycle.average_exit_watch_duration_bars)}",
+        f"EXIT_READY episodes / avg bars: {lifecycle.exit_ready_episode_count} / {_fmt(lifecycle.average_exit_ready_duration_bars)}",
+        f"Average EXIT_READY -> SELL delay: {_fmt(lifecycle.average_exit_ready_to_sell_delay_bars)} bars",
+        f"EXIT_WATCH -> MONITOR reversions: {lifecycle.exit_watch_to_monitor_reversions}",
+        f"EXIT_READY -> EXIT_WATCH reversions: {lifecycle.exit_ready_to_watch_reversions}",
         "",
         "TRADE RESULTS",
         "-------------",
@@ -110,6 +140,10 @@ def render_text(report: DecisionAuditReport, *, worst_trade_limit: int = 5) -> s
             "",
             f"Unmatched BUY events: {report.unmatched_buy_events}",
             f"Unmatched SELL events: {report.unmatched_sell_events}",
+            "",
+            "RIGHT-CENSORED OPEN TRADES",
+            "--------------------------",
+            *_censored_trade_lines(report.censored_trades),
             "",
             "WORST TRADES / DECISION EXPLANATIONS",
             "------------------------------------",
