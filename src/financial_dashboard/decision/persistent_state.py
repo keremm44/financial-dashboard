@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
 import os
@@ -13,7 +14,7 @@ import pandas as pd
 from financial_dashboard.data.analysis_inputs import AnalysisInputSnapshot
 
 
-PERSISTENT_STATE_SCHEMA_VERSION = 1
+PERSISTENT_STATE_SCHEMA_VERSION = 2
 
 
 def _safe_part(value: str) -> str:
@@ -27,6 +28,31 @@ def _stable_digest(parts: Iterable[str]) -> str:
         encoded = part.encode("utf-8")
         digest.update(len(encoded).to_bytes(8, "big"))
         digest.update(encoded)
+    return digest.hexdigest()
+
+
+@lru_cache(maxsize=1)
+def codebase_semantic_fingerprint() -> str:
+    """Hash the installed financial_dashboard Python source tree.
+
+    Persistent state must never silently survive a code change that can alter domain
+    or decision-input semantics. The hash is conservative on purpose: any Python
+    source change below the package invalidates application-owned cached state. The
+    result is memoized for the process and costs only a small file-read pass at first
+    cache access.
+    """
+
+    package_root = Path(__file__).resolve().parents[1]
+    digest = sha256()
+    for path in sorted(package_root.rglob("*.py"), key=lambda item: item.as_posix()):
+        if "__pycache__" in path.parts:
+            continue
+        relative = path.relative_to(package_root).as_posix()
+        payload = path.read_bytes()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative.encode("utf-8"))
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
     return digest.hexdigest()
 
 
@@ -45,6 +71,7 @@ class PersistentCacheIdentity:
         return _stable_digest(
             (
                 str(PERSISTENT_STATE_SCHEMA_VERSION),
+                codebase_semantic_fingerprint(),
                 self.namespace,
                 self.symbol,
                 self.semantic_fingerprint,
@@ -68,6 +95,7 @@ class PersistentCheckpointIdentity:
         return _stable_digest(
             (
                 str(PERSISTENT_STATE_SCHEMA_VERSION),
+                codebase_semantic_fingerprint(),
                 self.namespace,
                 self.symbol,
                 self.semantic_fingerprint,
@@ -291,6 +319,7 @@ __all__ = [
     "PersistentObjectStore",
     "PrefixFrameFingerprint",
     "build_prefix_fingerprints",
+    "codebase_semantic_fingerprint",
     "fingerprint_frame_prefix",
     "validate_append_only_prefix",
 ]
