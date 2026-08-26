@@ -78,9 +78,15 @@ def code_paths_semantic_fingerprint(relative_paths: tuple[str, ...]) -> str:
     return _hash_source_paths(paths, root=package_root)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PersistentCacheIdentity:
-    """Exact semantic identity for one trusted local persistent object."""
+    """Exact semantic identity for one trusted local persistent object.
+
+    These identity objects intentionally do not use dataclass slots. Python versions
+    differ in how an inherited/defaulted field is materialized during slots generation;
+    the tiny metadata objects are not on the hot path, so regular frozen dataclasses are
+    safer and have no meaningful runtime cost.
+    """
 
     namespace: str
     symbol: str
@@ -105,7 +111,7 @@ class PersistentCacheIdentity:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PersistentCheckpointIdentity:
     """Stable identity for a checkpoint that may accept append-only new source rows."""
 
