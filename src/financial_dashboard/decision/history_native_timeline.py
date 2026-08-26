@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import pickle
 from time import perf_counter
 from typing import Any
 
@@ -28,7 +29,7 @@ from .persistent_state import (
     build_prefix_fingerprints,
     validate_append_only_prefix,
 )
-from .state_timeline import CausalStateStore, DecisionStatePoint, TimelineFingerprint, build_state_store
+from .state_timeline import CausalStateStore, TimelineFingerprint, build_state_store
 
 
 _NATIVE_PERSISTENCE_SEMANTIC_VERSION = "native-causal-runtime-checkpoint-v1"
@@ -160,8 +161,6 @@ class HistoricalNativeTimelineReplayRunner:
             cache.save_checkpoint(record)
             self.last_checkpoint_status = "SAVED"
         except Exception:
-            # Persistence is an optimization boundary. A serialization/filesystem
-            # problem must never alter decision semantics or break a valid cold run.
             self.last_checkpoint_status = "SAVE_FAILED"
 
     def replay(
@@ -276,11 +275,7 @@ class HistoricalNativeTimelineReplayRunner:
                     started = perf_counter()
                     raw_store = reducer.run(events=new_events, cutoffs=reducer_cutoffs)
                     native_reduce_seconds = perf_counter() - started
-                    full_state = (
-                        raw_store.domains[-1].state
-                        if raw_store.domains
-                        else previous.full_state
-                    )
+                    full_state = raw_store.domains[-1].state if raw_store.domains else previous.full_state
                     retained_count = len(new_cutoffs)
                     appended_store = (
                         build_state_store(
