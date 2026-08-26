@@ -15,11 +15,12 @@ from .engine import DecisionEngineConfig, HorizonDecisionAssessment, assess_hori
 from .execution import ExecutionTriggerEvent, ExecutionTriggerState
 from .lifecycle import PositionState, TradeLifecycleState, TradeLifecycleTransition, transition_trade_lifecycle
 from .opportunity import OpportunityCalibration
-from .structural import DecisionHorizon, StructuralDirection
+from .structural import DecisionHorizon, HorizonRelation, StructuralDirection
 from .trade_exit import (
     ExitExecutionState,
     LongExitAssessment,
     LongExitExecutionAssessment,
+    PositionHealth,
     assess_long_exit_execution,
     assess_long_position_exit,
 )
@@ -102,6 +103,49 @@ def _lineage_from_refs(refs: Iterable[Any]) -> tuple[str, ...]:
     return _dedup(values)
 
 
+def _lifecycle_phase(
+    assessment: HorizonDecisionAssessment,
+    *,
+    lifecycle: TradeLifecycleTransition | None,
+    long_exit: LongExitAssessment | None,
+) -> str:
+    """Derive a compact, non-persistent phase for audit/debug output only."""
+
+    if lifecycle is None:
+        return assessment.final.action.value
+    if lifecycle.action is DecisionAction.BUY:
+        return "ENTRY_EXECUTED"
+    if lifecycle.action is DecisionAction.SELL:
+        return "EXIT_EXECUTED"
+    if lifecycle.current.position is PositionState.OPEN:
+        if long_exit is not None:
+            if long_exit.stage.value == "EXIT_READY":
+                return "EXIT_READY"
+            if long_exit.stage.value == "EXIT_WATCH":
+                return "EXIT_WATCH"
+        relation = assessment.structural_snapshot.relation
+        if relation is HorizonRelation.COUNTER_REACTION:
+            return "COUNTER_REACTION"
+        if relation is HorizonRelation.PULLBACK:
+            return "PULLBACK"
+        if long_exit is not None and long_exit.position_health is PositionHealth.HEALTHY:
+            return "HEALTHY"
+        if long_exit is not None and long_exit.position_health is PositionHealth.PROTECTED:
+            return "PROTECTED"
+        if long_exit is not None and long_exit.position_health is PositionHealth.PRESSURED:
+            return "PRESSURED"
+        return "OPEN_MONITOR"
+
+    if assessment.final.action is DecisionAction.NO_TRADE:
+        return "NO_SETUP"
+    if assessment.final.action is DecisionAction.READY:
+        return "READY"
+    if assessment.final.action is DecisionAction.WAIT:
+        timing_state = getattr(assessment.timing.state, "value", str(assessment.timing.state))
+        return "WAITING_FOR_TIMING" if timing_state != "READY" else "WATCHING"
+    return "WATCHING"
+
+
 def _event_from_assessment(
     assessment: HorizonDecisionAssessment,
     *,
@@ -180,10 +224,12 @@ def _event_from_assessment(
             "changed_position": lifecycle.changed_position,
         }
 
+    phase = _lifecycle_phase(assessment, lifecycle=lifecycle, long_exit=long_exit)
     snapshot = {
         "historical_stream": True,
         "readiness_position_proxy": proxy_reason is not None,
         "lifecycle_readiness_proxy": lifecycle_readiness_proxy,
+        "lifecycle_phase": phase,
         "trade_lifecycle": lifecycle_snapshot,
         "long_exit": None
         if long_exit is None
@@ -205,6 +251,7 @@ def _event_from_assessment(
         "horizon": assessment.horizon.value,
         "structural": _jsonable(assessment.structural),
         "relation": assessment.structural_snapshot.relation.value,
+        "permission": _jsonable(assessment.permission),
         "durability": _jsonable(assessment.durability),
         "reaction": _jsonable(assessment.reaction),
         "participation": _jsonable(assessment.participation),
@@ -215,6 +262,13 @@ def _event_from_assessment(
         "timing": _jsonable(assessment.timing),
         "eligibility": _jsonable(assessment.eligibility),
         "execution": _jsonable(assessment.execution),
+        "decision": {
+            "action": action.value,
+            "reasons": list(reasons),
+            "blockers": list(blockers),
+            "waiting_for": list(waiting_for),
+            "next_conditions": list(waiting_for),
+        },
     }
 
     lifecycle_owns_long = lifecycle is not None and (
