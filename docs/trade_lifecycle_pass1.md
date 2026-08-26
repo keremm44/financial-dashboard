@@ -21,8 +21,8 @@ PositionState:
 
 ExitStage:
   MONITOR
-  EXIT_WATCH      # reserved for dedicated exit assessment
-  EXIT_READY      # reserved for dedicated exit assessment
+  EXIT_WATCH
+  EXIT_READY
 ```
 
 `FLAT` carries no open-trade metadata. `OPEN` carries a deterministic trade id, entry timestamp, and exit stage.
@@ -42,24 +42,24 @@ Pre-entry labels such as WATCHING, SETUP_FORMING, WAITING_FOR_TIMING, and READY 
 9. Historical replay must fold the same persistent lifecycle contract over a strictly increasing causal snapshot stream.
 10. No future bar, hindsight metric, MFE/MAE, profit giveback, or audit-only field may enter lifecycle transition input.
 
-## Important pass-1 limitation
+## Pass-1 limitation and pass-2 replacement
 
-Pass 1 deliberately does **not** define the final exit policy.
+Pass 1 originally allowed the existing bearish market-decision SELL candidate to close an OPEN trade solely so repeated-action ownership invariants could be exercised end to end.
 
-The current market-decision stream can still produce a legacy SELL candidate from the existing SHORT-side assessment. The lifecycle fold permits that candidate to close an OPEN trade solely so historical ownership and repeated-action invariants can be exercised end to end.
+That temporary behavior has now been superseded by `docs/trade_lifecycle_pass2.md`.
 
-This is temporary. A later pass must introduce a dedicated long-position exit assessment so:
+The active contract is now:
 
-- a short-term bearish counter-reaction does not automatically mean SELL;
-- `market side = SHORT` is not treated as equivalent to `close current LONG`;
-- MONITOR -> EXIT_WATCH -> EXIT_READY is driven by typed, causal exit evidence;
-- SELL requires a dedicated fresh exit execution event or an explicitly accepted structural hard-exit event.
+- a bearish market assessment does not close an OPEN long by itself;
+- LT INTACT + ST COUNTER_REACTION is HOLD/protected, not SELL;
+- MONITOR -> EXIT_WATCH -> EXIT_READY is produced by the dedicated long-exit assessment;
+- SELL requires EXIT_READY plus a separate fresh causal exit execution event.
 
-No exit-arm threshold, bar-count cooldown, profit-protection percentage, or arbitrary ATR cutoff is accepted in pass 1.
+No exit-arm threshold, bar-count cooldown, profit-protection percentage, or arbitrary ATR cutoff is introduced by either pass.
 
 ## Historical replay contract
 
-The historical decision stream first evaluates each causal `DecisionInputSnapshot` through the existing decision engine and then folds the resulting final market decision through `TradeLifecycleState`.
+Historical decision replay evaluates each causal `DecisionInputSnapshot` through the existing market decision engine and then folds the result through `TradeLifecycleState`.
 
 Conceptually:
 
@@ -68,7 +68,7 @@ state = FLAT
 
 for snapshot in causal_snapshots:
     market_decision = assess(snapshot)
-    lifecycle_transition = transition(state, market_decision)
+    lifecycle_transition = transition(state, market_decision, dedicated_exit_path)
     emit(lifecycle_transition)
     state = lifecycle_transition.current
 ```
@@ -85,8 +85,4 @@ The emitted audit snapshot records:
 - transition reason;
 - whether ownership changed.
 
-This makes repeated BUY/SELL suppression directly testable instead of reconstructing position ownership only inside the hindsight audit.
-
-## Required next pass
-
-The next lifecycle pass must add a dedicated exit-assessment contract and cross-horizon position-health interpretation before production Streamlit behavior is considered complete. In particular, LT INTACT + ST COUNTER_REACTION must be representable as HOLD rather than being automatically converted to SELL.
+Pass 2 additionally records dedicated long-exit health, reasons, waiting conditions, and exit execution state.
