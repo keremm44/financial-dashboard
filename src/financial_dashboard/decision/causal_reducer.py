@@ -32,6 +32,14 @@ class CausalBarEvent:
         return (pd.Timestamp(self.available_at).value, self.timeframe, self.bar_index)
 
 
+@dataclass(frozen=True, slots=True)
+class ReducerCursor:
+    """Minimal persisted continuation cursor for one causal reducer."""
+
+    watermarks: Mapping[str, int]
+    last_event_key: tuple[int, str, int] | None
+
+
 class DomainRuntime(Protocol[DomainStateT]):
     """Incremental domain adapter shared by cold historical replay and live catch-up."""
 
@@ -60,6 +68,10 @@ class CausalTimelineReducer(Generic[DomainStateT, DecisionStateT]):
     only bars after the persisted/known watermark. The reducer logic is identical in
     both cases, which prevents a separate live semantic path from drifting away from
     backtests.
+
+    A reducer may be restored from a persisted :class:`ReducerCursor`. The restored
+    runtime must represent exactly the same consumed prefix; callers are responsible
+    for validating that prefix before constructing the resumed reducer.
     """
 
     def __init__(
@@ -68,16 +80,30 @@ class CausalTimelineReducer(Generic[DomainStateT, DecisionStateT]):
         runtime: DomainRuntime[DomainStateT],
         compose_decision: DecisionComposer[DomainStateT, DecisionStateT],
         fingerprint: TimelineFingerprint,
+        initial_cursor: ReducerCursor | None = None,
     ) -> None:
         self.runtime = runtime
         self.compose_decision = compose_decision
         self.fingerprint = fingerprint
-        self._watermarks: dict[str, int] = {}
-        self._last_event_key: tuple[int, str, int] | None = None
+        self._watermarks: dict[str, int] = (
+            {} if initial_cursor is None else {str(tf): int(index) for tf, index in initial_cursor.watermarks.items()}
+        )
+        self._last_event_key: tuple[int, str, int] | None = (
+            None if initial_cursor is None else initial_cursor.last_event_key
+        )
+        if any(index < 0 for index in self._watermarks.values()):
+            raise ValueError("persisted reducer watermarks must be non-negative")
 
     @property
     def watermarks(self) -> Mapping[str, int]:
         return dict(self._watermarks)
+
+    @property
+    def cursor(self) -> ReducerCursor:
+        return ReducerCursor(
+            watermarks=dict(self._watermarks),
+            last_event_key=self._last_event_key,
+        )
 
     def _ingest(self, event: CausalBarEvent) -> None:
         key = event.sort_key
@@ -150,4 +176,5 @@ __all__ = [
     "CausalTimelineReducer",
     "DecisionComposer",
     "DomainRuntime",
+    "ReducerCursor",
 ]
