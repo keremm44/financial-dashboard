@@ -15,6 +15,9 @@ from financial_dashboard.decision.historical_stream import (
     HistoricalDecisionStreamConfig,
     decision_events_from_snapshot_stream,
 )
+from financial_dashboard.decision.history_incremental import (
+    IncrementalHistoricalDecisionInputReplayRunner,
+)
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
 from financial_dashboard.decision.history_single_pass import (
     SinglePassHistoricalDecisionInputReplayRunner,
@@ -132,6 +135,14 @@ def main() -> None:
         help="Smoke/debug only: keep the last N 1h decision points; native history is still replayed once.",
     )
     parser.add_argument("--pattern-profile", default=None)
+    parser.add_argument(
+        "--incremental-state-timeline",
+        action="store_true",
+        help=(
+            "Use the migration candidate backed by the shared historical/live causal reducer. "
+            "The legacy single-pass path remains the default until golden equivalence is proven."
+        ),
+    )
     proxy_group = parser.add_mutually_exclusive_group()
     proxy_group.add_argument(
         "--readiness-position-proxy",
@@ -183,8 +194,13 @@ def main() -> None:
         requested_start=args.start,
     )
 
+    replay_runner = (
+        IncrementalHistoricalDecisionInputReplayRunner(store)
+        if args.incremental_state_timeline
+        else SinglePassHistoricalDecisionInputReplayRunner(store)
+    )
     started = perf_counter()
-    input_replay = SinglePassHistoricalDecisionInputReplayRunner(store).replay(
+    input_replay = replay_runner.replay(
         args.symbol,
         config=HistoricalDecisionInputConfig(
             pattern_profile=args.pattern_profile,
@@ -234,6 +250,10 @@ def main() -> None:
     print(f"CAUSAL_WARMUP_START\t{effective_start}")
     print(f"CAUSAL_SNAPSHOTS\t{len(input_replay.snapshots)}")
     print(f"DECISION_EVENTS\t{len(decisions)}")
+    print(
+        "INPUT_REPLAY_PATH\t"
+        + ("INCREMENTAL_STATE_TIMELINE" if args.incremental_state_timeline else "LEGACY_SINGLE_PASS")
+    )
     print(f"LOAD_INPUTS_SECONDS\t{timings.load_inputs_seconds:.2f}")
     print(f"NATIVE_CAPTURE_PASS_SECONDS\t{timings.native_capture_pass_seconds:.2f}")
     print(f"HAM_REPLAY_SECONDS\t{timings.ham_seconds:.2f}")
