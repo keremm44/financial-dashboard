@@ -371,7 +371,18 @@ class IncrementalHistoricalDecisionInputReplayRunner:
         volume_view = IndexedVolumeView(volume_full)
 
         start_position = 0 if append_base is None else len(append_base.snapshots)
-        points_to_assemble = native.state_store.domains[start_position:]
+        if native.state_store_start_position == 0:
+            # Cold/native fallback still exposes the full historical state store.
+            points_to_assemble = native.state_store.domains[start_position:]
+        elif append_base is not None and native.state_store_start_position == start_position:
+            # Checkpoint resume intentionally exposes only newly appended native points;
+            # the frozen decision timeline already owns the historical prefix.
+            points_to_assemble = native.state_store.domains
+        else:
+            raise RuntimeError(
+                "native checkpoint delta is not aligned with the persisted decision prefix: "
+                f"native starts at {native.state_store_start_position}, decision prefix is {start_position}"
+            )
         selected_watermarks = tuple(point.watermarks for point in points_to_assemble)
         selected_indices_1d = tuple(int(item["1d"]) for item in selected_watermarks)
 
