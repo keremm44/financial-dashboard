@@ -40,14 +40,40 @@ The validator checks:
 3. previous/current ownership states are continuous;
 4. FLAT cannot carry open-trade metadata;
 5. OPEN must carry a valid exit stage and stable trade id;
-6. BUY must be FLAT -> OPEN and, when execution metadata is present, entry execution must be CONFIRMED;
+6. production BUY must be FLAT -> OPEN and use confirmed fresh entry execution when execution metadata is present;
 7. HOLD must remain OPEN -> OPEN;
 8. WAIT/READY/NO_TRADE must not leak into OPEN as entry actions;
 9. SELL must be OPEN -> FLAT;
 10. lifecycle-aware SELL must have `long_exit.stage = EXIT_READY`;
-11. lifecycle-aware SELL must have a separately CONFIRMED long-exit execution event.
+11. production SELL must have a separately CONFIRMED long-exit execution event.
 
 Violations are surfaced in the audit report. They are not silently repaired.
+
+## Audit-only lifecycle readiness baseline
+
+The production execution-event adapter is intentionally not fabricated by Pass 3. To make the new lifecycle measurable before that adapter exists, historical replay exposes an explicit optional mode:
+
+```text
+--lifecycle-readiness-proxy
+```
+
+This mode does **not** change Structure, Permission, timing, opportunity, conflict, eligibility, position health, or long-exit stage logic. It substitutes only the two execution edges:
+
+```text
+FLAT + LONG READY     -> proxy BUY
+OPEN + EXIT_READY     -> proxy SELL
+```
+
+The events remain marked with `snapshot.lifecycle_readiness_proxy = true` and audit reasons such as:
+
+```text
+AUDIT_PROXY_LONG_ENTRY_FROM_READY
+AUDIT_PROXY_LONG_EXIT_FROM_EXIT_READY
+```
+
+The lifecycle validator recognizes this explicit proxy contract, so lack of a real fresh entry/exit execution event is not mislabeled as a lifecycle violation in this mode. The proxy is never a production decision source and must not be presented as execution-timing validation. It is a **structural lifecycle readiness baseline** used to measure entry readiness, position holding behavior, exit maturity, and structural exit quality before a native fresh execution adapter is available.
+
+The older `--readiness-position-proxy` remains only for historical comparison. It bypasses the dedicated long-exit semantics and therefore is not the preferred lifecycle baseline.
 
 ## Lifecycle stability metrics
 
@@ -83,10 +109,23 @@ Completed trades continue to be graded using:
 
 These metrics remain hindsight-only.
 
+## Backtest modes
+
+The historical CLI now reports one of three explicit modes:
+
+```text
+CAUSAL_TRADE_LIFECYCLE
+LIFECYCLE_READINESS_PROXY
+LEGACY_READINESS_POSITION_PROXY
+```
+
+`CAUSAL_TRADE_LIFECYCLE` requires real supplied execution events to produce BUY/SELL. `LIFECYCLE_READINESS_PROXY` is the preferred temporary baseline for structural lifecycle measurement. `LEGACY_READINESS_POSITION_PROXY` is retained only for comparison with older audit results.
+
 ## Non-goals
 
 Pass 3 does not add:
 
+- a fabricated production execution trigger;
 - new exit-arm rules;
 - supporting-domain SELL thresholds;
 - profit/giveback exit rules;
