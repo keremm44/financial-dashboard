@@ -48,6 +48,8 @@ class MarketStructureEngine(_SwingCoreEngine):
         self._runtime = MarketStructureRuntime(self.break_config)
         self._event_ledger = RuntimeMarketStructureEventLedger()
         self._export = None
+        self._public_export_bar: int | None = None
+        self._public_export_cache = None
 
     def _candidate_update(self, candidate, incoming, locked_by_break: bool):
         runtime_lock = self._runtime.locks_candidate(incoming.scope, candidate) if hasattr(self, "_runtime") else False
@@ -127,7 +129,6 @@ class MarketStructureEngine(_SwingCoreEngine):
         )
 
         self._event_ledger.extend(structure_events, self._rows)
-        event_history = self._event_ledger.snapshot(current_bar=bar_index)
 
         score = self._runtime.score(bar_index=bar_index)
         runtime_export = self._runtime.export(
@@ -135,14 +136,12 @@ class MarketStructureEngine(_SwingCoreEngine):
             self._internal.swings,
             bar_index=bar_index,
         )
-        latest_external = next(
-            (record for record in reversed(event_history) if record.scope == SCOPE_EXTERNAL),
-            None,
-        )
-        latest_internal = next(
-            (record for record in reversed(event_history) if record.scope == SCOPE_INTERNAL),
-            None,
-        )
+        # Keep the hot per-bar path on static annotations. Dynamic ``age_bars`` is
+        # materialized lazily by export_contract/event_history only when a consumer
+        # actually reads the public event history.
+        event_history = self._event_ledger.static_snapshot()
+        latest_external = self._event_ledger.latest_static(scope=SCOPE_EXTERNAL)
+        latest_internal = self._event_ledger.latest_static(scope=SCOPE_INTERNAL)
         external = self._runtime.external.context
         internal = self._runtime.internal.context
         self._export = replace(
@@ -159,6 +158,8 @@ class MarketStructureEngine(_SwingCoreEngine):
                 latest_event=latest_internal,
             ),
         )
+        self._public_export_bar = None
+        self._public_export_cache = None
 
         if external.direction > 0:
             direction = Direction.UP
@@ -212,7 +213,7 @@ class MarketStructureEngine(_SwingCoreEngine):
     def latest_external_event(self) -> MarketStructureEventRecord | None:
         if not self._rows:
             return None
-        return self._event_ledger.latest(
+        return self._event_ledger.latest_for_scope(
             current_bar=len(self._rows) - 1,
             scope=SCOPE_EXTERNAL,
         )
@@ -221,7 +222,7 @@ class MarketStructureEngine(_SwingCoreEngine):
     def latest_internal_event(self) -> MarketStructureEventRecord | None:
         if not self._rows:
             return None
-        return self._event_ledger.latest(
+        return self._event_ledger.latest_for_scope(
             current_bar=len(self._rows) - 1,
             scope=SCOPE_INTERNAL,
         )
@@ -236,7 +237,39 @@ class MarketStructureEngine(_SwingCoreEngine):
 
     @property
     def export_contract(self):
-        return self._export
+        if self._export is None or not self._rows:
+            return self._export
+        current_bar = len(self._rows) - 1
+        if self._public_export_bar == current_bar and self._public_export_cache is not None:
+            return self._public_export_cache
+
+        event_history = self._event_ledger.snapshot(current_bar=current_bar)
+        latest_external = self._event_ledger.latest_for_scope(
+            current_bar=current_bar,
+            scope=SCOPE_EXTERNAL,
+        )
+        latest_internal = self._event_ledger.latest_for_scope(
+            current_bar=current_bar,
+            scope=SCOPE_INTERNAL,
+        )
+        external = self._runtime.external.context
+        internal = self._runtime.internal.context
+        self._public_export_cache = replace(
+            self._export,
+            events=event_history,
+            latest_external_event=latest_external,
+            latest_internal_event=latest_internal,
+            external_scope=MarketStructureScopeSnapshot.from_context(
+                external,
+                latest_event=latest_external,
+            ),
+            internal_scope=MarketStructureScopeSnapshot.from_context(
+                internal,
+                latest_event=latest_internal,
+            ),
+        )
+        self._public_export_bar = current_bar
+        return self._public_export_cache
 
     @property
     def external_break_candidate(self):
