@@ -8,15 +8,17 @@ import pandas as pd
 
 from financial_dashboard.targeting.clustering import (
     TargetClusterConfig,
+    _build_cluster,
     _highest_confluence,
     _interval_gap,
     _nearest,
     _nearest_liquidity,
     _origin_group,
-    cluster_target_evidence,
+    _side,
 )
 from financial_dashboard.targeting.models import (
     LiquidityScope,
+    TargetCluster,
     TargetEvidence,
     TargetSide,
     TargetingSnapshot,
@@ -122,6 +124,65 @@ def deduplicate_origin_events_indexed(
     )
 
 
+def cluster_target_evidence_bounded(
+    evidence: Iterable[TargetEvidence],
+    *,
+    current_price: float,
+    reference_atr: float,
+    config: TargetClusterConfig | None = None,
+) -> tuple[TargetCluster, ...]:
+    """Canonical greedy clustering with O(1) group-bound lookup.
+
+    The legacy loop recomputes ``min``/``max`` over every existing group for every
+    candidate. Keeping each group's current low/high envelope alongside the members
+    preserves the exact first-compatible-group rule while removing repeated scans of
+    members already assigned to that group.
+    """
+
+    cfg = config or TargetClusterConfig()
+    atr = max(float(reference_atr), 1e-12)
+    eligible = [item for item in evidence if item.target_eligible]
+    result: list[TargetCluster] = []
+    for side in (TargetSide.BELOW, TargetSide.AT_PRICE, TargetSide.ABOVE):
+        side_items = sorted(
+            (item for item in eligible if _side(item, current_price) is side),
+            key=lambda item: (item.low, item.high, item.uid),
+        )
+        groups: list[list[TargetEvidence]] = []
+        bounds: list[tuple[float, float]] = []
+        for item in side_items:
+            chosen_index: int | None = None
+            for index, (low, high) in enumerate(bounds):
+                gap = _interval_gap(low, high, item.low, item.high) / atr
+                next_low = min(low, item.low)
+                next_high = max(high, item.high)
+                next_span = (next_high - next_low) / atr
+                if gap <= cfg.evidence_gap_atr and next_span <= cfg.max_span_atr:
+                    chosen_index = index
+                    break
+            if chosen_index is None:
+                groups.append([item])
+                bounds.append((item.low, item.high))
+            else:
+                groups[chosen_index].append(item)
+                low, high = bounds[chosen_index]
+                bounds[chosen_index] = (min(low, item.low), max(high, item.high))
+        result.extend(
+            _build_cluster(group, current_price=current_price, reference_atr=atr)
+            for group in groups
+        )
+    return tuple(
+        sorted(
+            result,
+            key=lambda cluster: (
+                cluster.side.value,
+                cluster.distance_atr,
+                cluster.identity,
+            ),
+        )
+    )
+
+
 def build_targeting_from_deduped_evidence(
     *,
     symbol: str,
@@ -132,19 +193,12 @@ def build_targeting_from_deduped_evidence(
     evidence: Iterable[TargetEvidence],
     config: TargetClusterConfig | None = None,
 ) -> TargetingSnapshot:
-    """Build canonical targeting after origin dedup has already been performed.
-
-    ``build_targeting_snapshot`` intentionally deduplicates its input for general
-    callers. Historical decision assembly already performs the exact same operation
-    before semantic targeting, so calling it again creates a second O(E^2) pass.
-    This helper preserves the remaining canonical cluster/nearest logic verbatim and
-    is used only where the caller owns the dedup invariant.
-    """
+    """Build canonical targeting after origin dedup has already been performed."""
 
     cfg = config or TargetClusterConfig()
     cutoff = pd.Timestamp(as_of)
     causal = tuple(item for item in evidence if pd.Timestamp(item.available_at) <= cutoff)
-    clusters = cluster_target_evidence(
+    clusters = cluster_target_evidence_bounded(
         causal,
         current_price=current_price,
         reference_atr=reference_atr,
@@ -190,5 +244,6 @@ def build_targeting_from_deduped_evidence(
 
 __all__ = [
     "build_targeting_from_deduped_evidence",
+    "cluster_target_evidence_bounded",
     "deduplicate_origin_events_indexed",
 ]
