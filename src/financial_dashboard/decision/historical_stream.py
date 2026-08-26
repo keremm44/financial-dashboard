@@ -14,28 +14,25 @@ from .composer import ActionPolicy, DecisionAction
 from .engine import DecisionEngineConfig, HorizonDecisionAssessment, assess_horizon_decision
 from .execution import ExecutionTriggerEvent
 from .opportunity import OpportunityCalibration
-from .position import PositionContext, PositionSide
 from .structural import DecisionHorizon, StructuralDirection
 
 
 @dataclass(frozen=True, slots=True)
 class HistoricalDecisionStreamConfig:
-    """Configuration for the cheap decision-only historical pass."""
+    """Configuration for the cheap decision-only historical pass.
+
+    Native/domain engines are deliberately out of scope here. The caller must supply
+    a causal, strictly increasing stream of already-built ``DecisionInputSnapshot``
+    objects from a single-pass upstream replay. This prevents the decision audit from
+    accidentally rebuilding the full market workspace once per historical bar.
+    """
 
     horizon: DecisionHorizon = DecisionHorizon.SHORT_TERM
     opportunity_calibration: OpportunityCalibration | None = None
     readiness_position_proxy: bool = False
-    position_aware: bool = False
-    initial_position: PositionContext = PositionContext()
     action_policy: ActionPolicy = ActionPolicy(
         permitted_sides=(StructuralDirection.LONG, StructuralDirection.SHORT)
     )
-
-    def __post_init__(self) -> None:
-        if self.readiness_position_proxy and self.position_aware:
-            raise ValueError(
-                "readiness_position_proxy and position_aware are distinct audit modes"
-            )
 
 
 def _jsonable(value: Any) -> Any:
@@ -74,16 +71,10 @@ def _event_from_assessment(
     final = assessment.final
     action = action_override or _audit_action(final.action)
     reasons = final.reasons if proxy_reason is None else (*final.reasons, proxy_reason)
-    position = getattr(assessment, "position", PositionContext.flat())
-    position_before = getattr(final, "position_before", PositionSide.FLAT)
-    position_after = getattr(final, "position_after", PositionSide.FLAT)
     snapshot = {
         "historical_stream": True,
         "readiness_position_proxy": proxy_reason is not None,
         "horizon": assessment.horizon.value,
-        "position": _jsonable(position),
-        "position_before": position_before.value,
-        "position_after": position_after.value,
         "structural": _jsonable(assessment.structural),
         "relation": assessment.structural_snapshot.relation.value,
         "durability": _jsonable(assessment.durability),
@@ -110,43 +101,18 @@ def _event_from_assessment(
     )
 
 
-def _advance_position(
-    position: PositionContext,
-    assessment: HorizonDecisionAssessment,
-    *,
-    price: float,
-) -> PositionContext:
-    """Advance exposure only on actual composed BUY/SELL actions."""
-
-    action = assessment.final.action
-    if position.side is PositionSide.FLAT:
-        if action is DecisionAction.BUY:
-            return PositionContext.long(opened_at=assessment.as_of, entry_price=price)
-        if action is DecisionAction.SELL:
-            return PositionContext.short(opened_at=assessment.as_of, entry_price=price)
-        return position
-
-    if position.side is PositionSide.LONG:
-        if action is DecisionAction.SELL:
-            return PositionContext.flat()
-        if action is DecisionAction.BUY:
-            raise ValueError("position-aware stream cannot BUY again while already LONG")
-        return position
-
-    if action is DecisionAction.BUY:
-        return PositionContext.flat()
-    if action is DecisionAction.SELL:
-        raise ValueError("position-aware stream cannot SELL again while already SHORT")
-    return position
-
-
 def assess_snapshot_stream(
     snapshots: Iterable[DecisionInputSnapshot],
     *,
     config: HistoricalDecisionStreamConfig | None = None,
     execution_events: Mapping[Any, ExecutionTriggerEvent] | None = None,
 ) -> tuple[tuple[HorizonDecisionAssessment, float], ...]:
-    """Evaluate the decision layer over one causal snapshot stream in O(N)."""
+    """Evaluate the decision layer over one causal snapshot stream.
+
+    This function is intentionally O(number of decision snapshots) over the decision
+    layer only. It never loads cache files, clips OHLCV, imports the workspace runner,
+    or reruns any native market engine.
+    """
 
     cfg = config or HistoricalDecisionStreamConfig()
     engine_config = DecisionEngineConfig(
@@ -156,7 +122,6 @@ def assess_snapshot_stream(
     event_map = execution_events or {}
     previous_as_of: Any | None = None
     rows: list[tuple[HorizonDecisionAssessment, float]] = []
-    current_position = cfg.initial_position
 
     for snapshot in snapshots:
         if previous_as_of is not None and snapshot.as_of <= previous_as_of:
@@ -164,32 +129,13 @@ def assess_snapshot_stream(
         for ref in snapshot.source_refs:
             if not ref.is_available_at(snapshot.as_of):
                 raise ValueError("historical decision snapshot contains future-unavailable evidence")
-
-        if cfg.position_aware:
-            assessment = assess_horizon_decision(
-                snapshot,
-                cfg.horizon,
-                config=engine_config,
-                execution_event=event_map.get(snapshot.as_of),
-                position=current_position,
-            )
-        else:
-            # Preserve the original call surface for the raw causal decision stream.
-            assessment = assess_horizon_decision(
-                snapshot,
-                cfg.horizon,
-                config=engine_config,
-                execution_event=event_map.get(snapshot.as_of),
-            )
-
-        price = float(snapshot.current_price)
-        rows.append((assessment, price))
-        if cfg.position_aware:
-            current_position = _advance_position(
-                current_position,
-                assessment,
-                price=price,
-            )
+        assessment = assess_horizon_decision(
+            snapshot,
+            cfg.horizon,
+            config=engine_config,
+            execution_event=event_map.get(snapshot.as_of),
+        )
+        rows.append((assessment, float(snapshot.current_price)))
         previous_as_of = snapshot.as_of
     return tuple(rows)
 
