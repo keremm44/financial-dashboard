@@ -6,12 +6,6 @@ from pathlib import Path
 import streamlit as st
 
 from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES
-from financial_dashboard.decision import (
-    DecisionHorizon,
-    PositionContext,
-    assess_horizon_decision,
-)
-from financial_dashboard.decision_input import build_decision_input_snapshot
 from financial_dashboard.engines.market_structure_state import EVENT_BOS, EVENT_CHOCH
 from financial_dashboard.engines.pattern_compression_core import PROFILE_VALUES
 from financial_dashboard.ui.cross_domain_view_models import (
@@ -180,71 +174,10 @@ def _render_context_summary(workspace) -> None:
     permission_cols[2].metric("Continuation", values["Continuation"])
 
 
-def _render_decision_panel(workspace, position: PositionContext) -> None:
-    st.subheader("BUY/SELL karar motoru")
-    st.caption(
-        "Structure yön otoritesidir. 30m yalnız timing/execution mikro-çözünürlüğüdür. "
-        "Bu ekranda taze execution event enjekte edilmez; motor BUY/SELL uydurmaz ve "
-        "uygun durumda READY/HOLD seviyesinde kalır."
-    )
-
-    if workspace.cross_domain_result is None:
-        st.error(f"Cross-domain context hazırlanamadı: {_domain_error(workspace.cross_domain)}")
-        return
-
-    try:
-        snapshot = build_decision_input_snapshot(workspace)
-        assessments = (
-            ("Uzun vade", assess_horizon_decision(snapshot, DecisionHorizon.LONG_TERM, position=position)),
-            ("Kısa vade", assess_horizon_decision(snapshot, DecisionHorizon.SHORT_TERM, position=position)),
-        )
-    except Exception as error:
-        st.error(f"Decision assessment hazırlanamadı: {type(error).__name__}: {error}")
-        return
-
-    position_cols = st.columns(3)
-    position_cols[0].metric("Pozisyon", position.side.value)
-    position_cols[1].metric(
-        "Giriş fiyatı",
-        "—" if position.entry_price is None else f"{position.entry_price:.4f}",
-    )
-    position_cols[2].metric("Execution TF", "30m")
-
-    for title, assessment in assessments:
-        st.markdown(f"### {title}")
-        metrics = st.columns(6)
-        metrics[0].metric("Yön", assessment.structural.direction.value)
-        metrics[1].metric("Thesis", assessment.structural.thesis_state.value)
-        metrics[2].metric("Timing", assessment.timing.state.value)
-        metrics[3].metric("Opportunity", assessment.opportunity.state.value)
-        metrics[4].metric("Conflict", assessment.conflict.state.value)
-        metrics[5].metric("Action", assessment.final.action.value)
-
-        st.json(
-            {
-                "relation_to_LT": assessment.structural_snapshot.relation.value,
-                "eligibility": assessment.eligibility.state.value,
-                "execution_trigger": assessment.execution.state.value,
-                "position_before": assessment.final.position_before.value,
-                "position_after": assessment.final.position_after.value,
-                "reasons": list(assessment.final.reasons),
-                "blockers": list(assessment.final.blockers),
-                "waiting_for": list(assessment.final.waiting_for),
-            },
-            expanded=False,
-        )
-
-    st.info(
-        "Opportunity calibration tanımlı değilse motor UNKNOWN/WAIT üretir; bu, "
-        "rastgele ATR eşiği kullanmamak için bilinçli fail-closed davranıştır."
-    )
-
-
 def _render_math_panel(workspace, observer, statuses) -> None:
     st.subheader("Matematik / Model girdileri")
     st.caption(
-        "Karar katmanının kullandığı mevcut sayısal ve typed girdiler. Context ve Permission "
-        "türetilmiş özetlerdir; bağımsız oy olarak tekrar sayılmaz."
+        "Bu görünüm gelecekteki BUY/SELL motorunun kullanabileceği mevcut sayısal ve typed girdileri tek yerde toplar. Şu an action üretmez."
     )
 
     if workspace.cross_domain_result is None:
@@ -315,7 +248,7 @@ def _render_math_panel(workspace, observer, statuses) -> None:
 
 def _render_technical_panel(workspace, observer) -> None:
     st.subheader("Teknik detay")
-    st.caption("Domain ayrıntıları ve ham teknik gözlem. Yapısal yön otoritesi yalnız Structure'dır.")
+    st.caption("Domain ayrıntıları ve ham teknik gözlem. BUY/SELL veya matematiksel karar paneli değildir.")
     _render_market(observer, targeting=workspace.targeting_result)
 
     if workspace.cross_domain_result is not None:
@@ -346,41 +279,12 @@ def main() -> None:
             "Çalışma görünümü",
             ("Market (hızlı)", "Tam analiz"),
             index=0,
-            help="Market hızlı yolu foundation observer çalıştırır. Tam analiz karar dahil bütün workspace domainlerini yükler.",
+            help="Market hızlı yolu foundation observer çalıştırır. Tam analiz bütün workspace domainlerini ihtiyaç halinde yükler.",
         )
-        st.divider()
-        position_label = st.radio(
-            "Portföy durumu",
-            ("FLAT", "LONG (alım yapıldı)"),
-            index=0,
-            help=(
-                "Bu seçim piyasa yönünü değiştirmez. Yalnız action katmanına mevcut pozisyonu bildirir. "
-                "Cash-equity varsayımında yeni SHORT açma kapalıdır."
-            ),
-        )
-        entry_price = None
-        if position_label.startswith("LONG"):
-            raw_entry = st.number_input(
-                "Manuel giriş fiyatı (opsiyonel)",
-                min_value=0.0,
-                value=0.0,
-                step=0.01,
-                format="%.4f",
-            )
-            entry_price = float(raw_entry) if raw_entry > 0.0 else None
         st.caption("Analiz TF: " + " · ".join(ANALYSIS_TIMEFRAMES))
 
-    position = (
-        PositionContext.long(entry_price=entry_price)
-        if position_label.startswith("LONG")
-        else PositionContext.flat()
-    )
-
     st.title("Financial Dashboard")
-    st.caption(
-        "Market hızlı gözlem içindir. Tam analiz: market facts → cross-domain context → "
-        "permission → LT/ST decision → 30m execution. Pozisyon bilgisi yalnız action yönetiminde kullanılır."
-    )
+    st.caption("Market hızlı gözlem içindir. Tam analiz, model girdilerini ve teknik kanıtları tek workspace içinde toplar. Action layer henüz yok.")
 
     if not symbol:
         st.info("Bu cache dizininde analiz edilebilir sembol bulunamadı.")
@@ -409,7 +313,6 @@ def main() -> None:
             st.session_state.cache_epoch,
         )
         st.caption(f"{observer.symbol} · {', '.join(observer.timeframes)} · FAST FOUNDATION")
-        st.info("BUY/SELL paneli için 'Tam analiz' görünümünü açın.")
         _render_market(observer)
         return
 
@@ -428,17 +331,15 @@ def main() -> None:
 
     panel = st.radio(
         "Tam analiz paneli",
-        ("İnsan özeti", "BUY/SELL", "Matematik / Model", "Teknik detay"),
+        ("İnsan özeti", "Matematik / Model", "Teknik detay"),
         horizontal=True,
-        help="Tek workspace sonucu; yalnızca sunum biçimi değişir. BUY/SELL paneli typed karar katmanını gösterir.",
+        help="Tek workspace sonucu; yalnızca sunum biçimi değişir. Matematik / Model bütün model girdilerini baştan sona tek yerde gösterir.",
     )
 
     if panel == "İnsan özeti":
         _render_context_summary(workspace)
         st.divider()
         _render_market(observer, targeting=workspace.targeting_result)
-    elif panel == "BUY/SELL":
-        _render_decision_panel(workspace, position)
     elif panel == "Matematik / Model":
         _render_math_panel(workspace, observer, statuses)
     else:
