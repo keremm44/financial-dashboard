@@ -62,44 +62,6 @@ class CrossDomainContextSnapshot:
                 raise ValueError("source_refs cannot contain facts unavailable at snapshot as_of")
 
 
-def _unique_refs(facts: Iterable[FactRef]) -> tuple[FactRef, ...]:
-    unique = {ref.deterministic_key: ref for ref in facts}
-    return tuple(sorted(unique.values(), key=lambda ref: ref.deterministic_key))
-
-
-def _boundary_from_unique_refs(
-    refs: tuple[FactRef, ...],
-    *,
-    as_of: Any,
-    unsupported_contexts: Iterable[str] = (),
-) -> KnowledgeBoundary:
-    eligible_ids: list[str] = []
-    future_ids: list[str] = []
-    unconfirmed_ids: list[str] = []
-    for ref in refs:
-        if ref.is_available_at(as_of):
-            eligible_ids.append(ref.native_id)
-        else:
-            future_ids.append(ref.native_id)
-        if ref.confirmed_at is None:
-            unconfirmed_ids.append(ref.native_id)
-    unsupported = tuple(
-        sorted(
-            {
-                str(item).strip()
-                for item in unsupported_contexts
-                if str(item).strip()
-            }
-        )
-    )
-    return KnowledgeBoundary(
-        as_of=as_of,
-        eligible_fact_ids=tuple(eligible_ids),
-        excluded_future_fact_ids=tuple(future_ids),
-        unconfirmed_fact_ids=tuple(unconfirmed_ids),
-        unsupported_contexts=unsupported,
-    )
-
 
 def evaluate_knowledge_boundary(
     facts: Iterable[FactRef],
@@ -109,10 +71,18 @@ def evaluate_knowledge_boundary(
 ) -> KnowledgeBoundary:
     if as_of is None:
         raise ValueError("as_of must be known")
-    return _boundary_from_unique_refs(
-        _unique_refs(facts),
+    unique = {ref.deterministic_key: ref for ref in facts}
+    refs = tuple(sorted(unique.values(), key=lambda ref: ref.deterministic_key))
+    eligible = tuple(ref.native_id for ref in refs if ref.is_available_at(as_of))
+    future = tuple(ref.native_id for ref in refs if not ref.is_available_at(as_of))
+    unconfirmed = tuple(ref.native_id for ref in refs if ref.confirmed_at is None)
+    unsupported = tuple(sorted({str(item).strip() for item in unsupported_contexts if str(item).strip()}))
+    return KnowledgeBoundary(
         as_of=as_of,
-        unsupported_contexts=unsupported_contexts,
+        eligible_fact_ids=eligible,
+        excluded_future_fact_ids=future,
+        unconfirmed_fact_ids=unconfirmed,
+        unsupported_contexts=unsupported,
     )
 
 
@@ -121,7 +91,8 @@ def eligible_fact_refs(facts: Iterable[FactRef], *, as_of: Any) -> tuple[FactRef
 
     if as_of is None:
         raise ValueError("as_of must be known")
-    return tuple(ref for ref in _unique_refs(facts) if ref.is_available_at(as_of))
+    unique = {ref.deterministic_key: ref for ref in facts if ref.is_available_at(as_of)}
+    return tuple(sorted(unique.values(), key=lambda ref: ref.deterministic_key))
 
 
 def build_context_snapshot(
@@ -135,17 +106,13 @@ def build_context_snapshot(
     lineage_groups: Iterable[LineageGroup] = (),
     unsupported_contexts: Iterable[str] = (),
 ) -> CrossDomainContextSnapshot:
-    """Build one context snapshot while canonicalizing fact refs only once."""
-
-    if as_of is None:
-        raise ValueError("as_of must be known")
-    refs = _unique_refs(all_fact_refs)
-    boundary = _boundary_from_unique_refs(
-        refs,
+    all_refs = tuple(all_fact_refs)
+    boundary = evaluate_knowledge_boundary(
+        all_refs,
         as_of=as_of,
         unsupported_contexts=unsupported_contexts,
     )
-    eligible = tuple(ref for ref in refs if ref.is_available_at(as_of))
+    eligible = eligible_fact_refs(all_refs, as_of=as_of)
     groups = tuple(sorted(lineage_groups, key=lambda group: group.lineage_id))
     return CrossDomainContextSnapshot(
         symbol=symbol,
