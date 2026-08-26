@@ -4,18 +4,35 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+from financial_dashboard.context.envelope import ContextDataQuality
 from financial_dashboard.decision.composer import DecisionAction
+from financial_dashboard.decision.execution import ExecutionTriggerEvent, ExecutionTriggerState
 from financial_dashboard.decision.historical_stream import (
     HistoricalDecisionStreamConfig,
     apply_readiness_position_proxy,
     apply_trade_lifecycle,
     assess_snapshot_stream,
 )
-from financial_dashboard.decision.structural import DecisionHorizon, StructuralDirection
+from financial_dashboard.decision.structural import (
+    DecisionHorizon,
+    HorizonRelation,
+    StructuralDirection,
+    ThesisState,
+)
 from financial_dashboard.decision_audit import DecisionAction as AuditDecisionAction
 
 
-def _assessment(*, side, action, as_of):
+def _assessment(
+    *,
+    side,
+    action,
+    as_of,
+    lt_direction=StructuralDirection.LONG,
+    lt_thesis=ThesisState.INTACT,
+    relation=HorizonRelation.ALIGNED,
+    transition_target=None,
+    execution_state=ExecutionTriggerState.ABSENT,
+):
     final = SimpleNamespace(
         action=action,
         market_side=side,
@@ -25,12 +42,24 @@ def _assessment(*, side, action, as_of):
         source_lineage=(),
     )
     placeholder = SimpleNamespace()
+    lt = SimpleNamespace(
+        direction=lt_direction,
+        thesis_state=lt_thesis,
+        transition_target=transition_target,
+        data_quality=ContextDataQuality.VALID,
+        source_refs=(),
+    )
+    st = SimpleNamespace(source_refs=())
     return SimpleNamespace(
         horizon=DecisionHorizon.SHORT_TERM,
         as_of=pd.Timestamp(as_of),
         final=final,
         structural=placeholder,
-        structural_snapshot=SimpleNamespace(relation=SimpleNamespace(value="ALIGNED")),
+        structural_snapshot=SimpleNamespace(
+            long_term=lt,
+            short_term=st,
+            relation=relation,
+        ),
         durability=placeholder,
         reaction=placeholder,
         participation=placeholder,
@@ -40,7 +69,20 @@ def _assessment(*, side, action, as_of):
         conflict=placeholder,
         timing=placeholder,
         eligibility=placeholder,
-        execution=placeholder,
+        execution=SimpleNamespace(state=execution_state),
+    )
+
+
+def _exit_event(as_of):
+    timestamp = pd.Timestamp(as_of)
+    return ExecutionTriggerEvent(
+        state=ExecutionTriggerState.CONFIRMED,
+        side=StructuralDirection.SHORT,
+        timeframe="30m",
+        observed_at=timestamp,
+        available_at=timestamp,
+        reason="TEST_LONG_EXIT_EVENT",
+        source_refs=(),
     )
 
 
@@ -64,36 +106,77 @@ def test_readiness_proxy_opens_long_and_closes_on_opposing_ready():
     assert "AUDIT_PROXY_LONG_EXIT_FROM_OPPOSING_READY" in events[3].reasons
 
 
-def test_trade_lifecycle_suppresses_repeated_execution_actions():
+def test_trade_lifecycle_uses_dedicated_exit_path_not_legacy_sell_candidate():
+    exit_time = pd.Timestamp("2026-01-05 14:00")
     rows = (
         (_assessment(side=StructuralDirection.LONG, action=DecisionAction.BUY, as_of="2026-01-05 10:00"), 100.0),
         (_assessment(side=StructuralDirection.LONG, action=DecisionAction.BUY, as_of="2026-01-05 11:00"), 101.0),
-        (_assessment(side=StructuralDirection.LONG, action=DecisionAction.READY, as_of="2026-01-05 12:00"), 102.0),
-        (_assessment(side=StructuralDirection.SHORT, action=DecisionAction.SELL, as_of="2026-01-05 13:00"), 99.0),
-        (_assessment(side=StructuralDirection.SHORT, action=DecisionAction.SELL, as_of="2026-01-05 14:00"), 98.0),
+        (
+            _assessment(
+                side=StructuralDirection.SHORT,
+                action=DecisionAction.SELL,
+                as_of="2026-01-05 12:00",
+                relation=HorizonRelation.COUNTER_REACTION,
+            ),
+            99.0,
+        ),
+        (
+            _assessment(
+                side=StructuralDirection.SHORT,
+                action=DecisionAction.NO_TRADE,
+                as_of="2026-01-05 13:00",
+                lt_direction=StructuralDirection.SHORT,
+                lt_thesis=ThesisState.INTACT,
+                relation=HorizonRelation.COUNTER_REACTION,
+            ),
+            98.0,
+        ),
+        (
+            _assessment(
+                side=StructuralDirection.SHORT,
+                action=DecisionAction.NO_TRADE,
+                as_of=exit_time,
+                lt_direction=StructuralDirection.SHORT,
+                lt_thesis=ThesisState.INTACT,
+                relation=HorizonRelation.COUNTER_REACTION,
+            ),
+            97.0,
+        ),
+        (_assessment(side=StructuralDirection.SHORT, action=DecisionAction.SELL, as_of="2026-01-05 15:00"), 96.0),
     )
 
-    events = apply_trade_lifecycle(rows)
+    events = apply_trade_lifecycle(
+        rows,
+        exit_execution_events={exit_time: _exit_event(exit_time)},
+    )
 
     assert [event.action for event in events] == [
         AuditDecisionAction.BUY,
         AuditDecisionAction.HOLD,
         AuditDecisionAction.HOLD,
+        AuditDecisionAction.HOLD,
         AuditDecisionAction.SELL,
         AuditDecisionAction.WAIT,
     ]
-    assert events[0].snapshot["trade_lifecycle"]["position_state"] == "OPEN"
     assert events[1].snapshot["trade_lifecycle"]["requested_action"] == "BUY"
-    assert events[1].snapshot["trade_lifecycle"]["action"] == "HOLD"
-    assert events[3].snapshot["trade_lifecycle"]["position_state"] == "FLAT"
-    assert events[4].snapshot["trade_lifecycle"]["transition_reason"] == "LIFECYCLE_FLAT_SELL_SUPPRESSED"
+    assert events[2].snapshot["trade_lifecycle"]["requested_action"] == "SELL"
+    assert events[2].snapshot["trade_lifecycle"]["action"] == "HOLD"
+    assert events[2].snapshot["long_exit"]["position_health"] == "PROTECTED"
+    assert events[2].snapshot["long_exit"]["stage"] == "MONITOR"
+    assert events[3].snapshot["long_exit"]["stage"] == "EXIT_READY"
+    assert events[3].snapshot["long_exit"]["execution"]["state"] == "ABSENT"
+    assert events[4].snapshot["long_exit"]["execution"]["state"] == "CONFIRMED"
+    assert events[4].snapshot["trade_lifecycle"]["position_state"] == "FLAT"
+    assert events[4].side.value == "LONG"
+    assert events[5].snapshot["trade_lifecycle"]["transition_reason"] == "LIFECYCLE_FLAT_SELL_SUPPRESSED"
 
 
-def test_historical_stream_has_no_magic_opportunity_calibration():
+def test_historical_stream_defaults_to_long_only_action_policy():
     config = HistoricalDecisionStreamConfig()
     assert config.opportunity_calibration is None
     assert config.readiness_position_proxy is False
     assert config.enforce_trade_lifecycle is True
+    assert config.action_policy.permitted_sides == (StructuralDirection.LONG,)
 
 
 def test_historical_stream_module_cannot_rebuild_workspace_or_load_cache():
