@@ -2,17 +2,16 @@ from __future__ import annotations
 
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 
-from .history_incremental import IncrementalHistoricalDecisionInputReplayRunner
 from .history_single_pass import SinglePassHistoricalDecisionInputReplayRunner
+from .persistent_history_runner import PersistentHistoricalDecisionInputReplayRunner
 
 
-class HistoricalDecisionInputReplayRunner(IncrementalHistoricalDecisionInputReplayRunner):
+class HistoricalDecisionInputReplayRunner(PersistentHistoricalDecisionInputReplayRunner):
     """Canonical historical decision-input runner.
 
-    Historical replay now uses the same append-only causal reducer and native-domain
-    runtime intended for live/catch-up execution. The old capture-based single-pass
-    implementation is intentionally retained only as an explicit equivalence/debug
-    fallback while the migration settles.
+    Historical replay uses append-only native/supporting engine checkpoints plus one
+    frozen decision read-model timeline. The append checkpoint itself is metadata-only,
+    so historical snapshots are not serialized twice.
     """
 
     def __init__(self, store: ParquetOHLCVStore) -> None:
