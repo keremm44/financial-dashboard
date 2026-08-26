@@ -87,6 +87,21 @@ def _dedup(values: Iterable[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(value for value in values if value))
 
 
+def _lineage_from_refs(refs: Iterable[Any]) -> tuple[str, ...]:
+    values: list[str] = []
+    for ref in refs:
+        lineage_id = getattr(ref, "lineage_id", None)
+        if lineage_id:
+            values.append(str(lineage_id))
+            continue
+        domain = getattr(getattr(ref, "domain", None), "value", None)
+        timeframe = getattr(ref, "timeframe", None)
+        native_id = getattr(ref, "native_id", None)
+        if domain and timeframe and native_id:
+            values.append(f"{domain}:{timeframe}:{native_id}")
+    return _dedup(values)
+
+
 def _event_from_assessment(
     assessment: HorizonDecisionAssessment,
     *,
@@ -122,10 +137,29 @@ def _event_from_assessment(
                 *(() if exit_execution is None else exit_execution.waiting_for),
             )
         )
+        blockers: tuple[str, ...] = ()
     else:
         waiting_for = tuple(final.waiting_for)
+        blockers = tuple(final.blockers)
     if lifecycle is not None and lifecycle.action is DecisionAction.WAIT and not waiting_for:
         waiting_for = ("LIFECYCLE_LONG_ENTRY_PATH",)
+    if (
+        lifecycle_readiness_proxy
+        and lifecycle_proxy_reason is not None
+        and lifecycle is not None
+        and lifecycle.action in {DecisionAction.BUY, DecisionAction.SELL}
+    ):
+        # The explicitly marked audit proxy substitutes exactly the execution edge;
+        # top-level output must not claim the already-substituted edge is still pending.
+        waiting_for = ()
+
+    exit_lineage: tuple[str, ...] = ()
+    if long_exit is not None:
+        exit_lineage = _lineage_from_refs(long_exit.source_refs)
+    execution_lineage: tuple[str, ...] = ()
+    if exit_execution is not None:
+        execution_lineage = _lineage_from_refs(exit_execution.source_refs)
+    source_lineage = _dedup((*final.source_lineage, *exit_lineage, *execution_lineage))
 
     lifecycle_snapshot = None
     if lifecycle is not None:
@@ -196,9 +230,9 @@ def _event_from_assessment(
         side=side,
         price=float(price),
         reasons=reasons,
-        blockers=tuple(final.blockers),
+        blockers=blockers,
         waiting_for=waiting_for,
-        source_lineage=tuple(final.source_lineage),
+        source_lineage=source_lineage,
         snapshot=snapshot,
     )
 
