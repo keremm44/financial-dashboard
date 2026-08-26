@@ -15,13 +15,11 @@ from financial_dashboard.decision.historical_stream import (
     HistoricalDecisionStreamConfig,
     decision_events_from_snapshot_stream,
 )
-from financial_dashboard.decision.history_incremental import (
-    IncrementalHistoricalDecisionInputReplayRunner,
+from financial_dashboard.decision.history_replay import (
+    HistoricalDecisionInputReplayRunner,
+    LegacyHistoricalDecisionInputReplayRunner,
 )
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
-from financial_dashboard.decision.history_single_pass import (
-    SinglePassHistoricalDecisionInputReplayRunner,
-)
 from financial_dashboard.decision.opportunity import OpportunityCalibration
 from financial_dashboard.decision.structural import DecisionHorizon
 from financial_dashboard.decision_audit import DecisionAuditConfig, audit_decisions, render_json, render_text
@@ -119,8 +117,8 @@ def _timeline_json(decisions) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Replay each native market engine forward once, freeze causal 1h decision "
-            "states, evaluate the long-only trade lifecycle, then run hindsight audit."
+            "Replay native market engines through the canonical append-only causal timeline, "
+            "evaluate the long-only trade lifecycle, then run hindsight audit."
         )
     )
     parser.add_argument("cache_root", type=Path)
@@ -136,12 +134,17 @@ def main() -> None:
     )
     parser.add_argument("--pattern-profile", default=None)
     parser.add_argument(
-        "--incremental-state-timeline",
+        "--legacy-single-pass",
         action="store_true",
         help=(
-            "Use the migration candidate backed by the shared historical/live causal reducer. "
-            "The legacy single-pass path remains the default until golden equivalence is proven."
+            "Use the retired capture-based historical implementation for equivalence/debug only. "
+            "The append-only causal timeline is the default and production-aligned path."
         ),
+    )
+    parser.add_argument(
+        "--incremental-state-timeline",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     proxy_group = parser.add_mutually_exclusive_group()
     proxy_group.add_argument(
@@ -185,6 +188,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.legacy_single_pass and args.incremental_state_timeline:
+        raise SystemExit("--legacy-single-pass and --incremental-state-timeline are mutually exclusive")
+
     horizon = DecisionHorizon.LONG_TERM if args.horizon == "lt" else DecisionHorizon.SHORT_TERM
     calibration = _calibration(args)
     store = ParquetOHLCVStore(args.cache_root)
@@ -195,9 +201,9 @@ def main() -> None:
     )
 
     replay_runner = (
-        IncrementalHistoricalDecisionInputReplayRunner(store)
-        if args.incremental_state_timeline
-        else SinglePassHistoricalDecisionInputReplayRunner(store)
+        LegacyHistoricalDecisionInputReplayRunner(store)
+        if args.legacy_single_pass
+        else HistoricalDecisionInputReplayRunner(store)
     )
     started = perf_counter()
     input_replay = replay_runner.replay(
@@ -252,7 +258,7 @@ def main() -> None:
     print(f"DECISION_EVENTS\t{len(decisions)}")
     print(
         "INPUT_REPLAY_PATH\t"
-        + ("INCREMENTAL_STATE_TIMELINE" if args.incremental_state_timeline else "LEGACY_SINGLE_PASS")
+        + ("LEGACY_SINGLE_PASS" if args.legacy_single_pass else "CANONICAL_CAUSAL_TIMELINE")
     )
     print(f"LOAD_INPUTS_SECONDS\t{timings.load_inputs_seconds:.2f}")
     print(f"NATIVE_CAPTURE_PASS_SECONDS\t{timings.native_capture_pass_seconds:.2f}")
