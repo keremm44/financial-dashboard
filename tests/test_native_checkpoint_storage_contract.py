@@ -26,3 +26,23 @@ def test_decision_assembly_consumes_only_new_native_points_after_restore():
     assert "native.state_store_start_position == start_position" in source
     assert "points_to_assemble = native.state_store.domains" in source
     assert "native checkpoint delta is not aligned" in source
+
+
+def test_decision_append_checkpoint_keeps_only_a_reference_to_frozen_timeline():
+    source = Path("src/financial_dashboard/decision/persistent_history_runner.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "class DecisionTimelineReference" in source
+    assert "payload=DecisionTimelineReference(exact_identity=exact_identity)" in source
+    assert "payload=result" not in source
+    assert "decision-input-append-reference-v2" in source
+
+
+def test_canonical_history_runner_uses_compact_persistent_runner():
+    source = Path("src/financial_dashboard/decision/history_replay.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "PersistentHistoricalDecisionInputReplayRunner" in source
+    assert "class HistoricalDecisionInputReplayRunner(PersistentHistoricalDecisionInputReplayRunner)" in source
