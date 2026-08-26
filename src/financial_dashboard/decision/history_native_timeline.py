@@ -184,6 +184,21 @@ class HistoricalNativeTimelineReplayRunner:
         decision_tf = cfg.decision_timeframe.strip().lower()
         decision_frame = inputs.for_timeframe(decision_tf).input_batch.frame.copy()
         decision_frame["timestamp"] = pd.to_datetime(decision_frame["timestamp"], errors="raise")
+
+        first_causal_cutoffs = []
+        for timeframe in inputs.timeframes:
+            frame = inputs.for_timeframe(timeframe).input_batch.frame
+            if frame.empty:
+                continue
+            first_timestamp = pd.Timestamp(frame.iloc[0]["timestamp"])
+            first_causal_cutoffs.append(pd.Timestamp(self.clock.available_at(first_timestamp, timeframe)))
+        if first_causal_cutoffs:
+            common_causal_cutoff = max(first_causal_cutoffs)
+            decision_available_at = decision_frame["timestamp"].map(
+                lambda value: pd.Timestamp(self.clock.available_at(value, decision_tf))
+            )
+            decision_frame = decision_frame.loc[decision_available_at >= common_causal_cutoff]
+
         if cfg.start_at is not None:
             decision_frame = decision_frame.loc[decision_frame["timestamp"] >= pd.Timestamp(cfg.start_at)]
         if cfg.end_at is not None:
