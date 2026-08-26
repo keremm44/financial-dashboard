@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import pickle
+from time import perf_counter
 from typing import Any, Mapping
 
 from financial_dashboard.data.analysis_inputs import AnalysisInputSnapshot
@@ -53,6 +54,17 @@ class _VolatilityRuntime:
 
 
 @dataclass(frozen=True, slots=True)
+class SupportingReplayTimings:
+    ham_seconds: float = 0.0
+    volume_seconds: float = 0.0
+    volatility_seconds: float = 0.0
+
+    @property
+    def total_seconds(self) -> float:
+        return self.ham_seconds + self.volume_seconds + self.volatility_seconds
+
+
+@dataclass(frozen=True, slots=True)
 class SupportingRuntimeCheckpoint:
     """Detached continuation state for HAM, Volume and Volatility engines."""
 
@@ -97,6 +109,7 @@ class IncrementalSupportingReplayRuntime:
         self.symbol = symbol.strip().upper()
         self.clock = clock or CausalBarClock()
         self.volatility_profile = volatility_profile
+        self.last_timings = SupportingReplayTimings()
         self._ham = {
             timeframe: _HamRuntime(
                 engine=HamEvidenceEngine(
@@ -195,6 +208,7 @@ class IncrementalSupportingReplayRuntime:
     def advance(self) -> None:
         """Advance every supporting engine through only its unseen closed rows."""
 
+        ham_seconds = volume_seconds = volatility_seconds = 0.0
         for timeframe in self.inputs.timeframes:
             frame = self.inputs.for_timeframe(timeframe).input_batch.frame
             start = int(self._watermarks[timeframe]) + 1
@@ -203,12 +217,25 @@ class IncrementalSupportingReplayRuntime:
             if start == len(frame):
                 continue
             for index, row in enumerate(frame.iloc[start:].to_dict("records"), start=start):
+                started = perf_counter()
                 self._ham[timeframe].engine.update(row)
+                ham_seconds += perf_counter() - started
+
+                started = perf_counter()
                 self._volume[timeframe].engine.update(row)
+                volume_seconds += perf_counter() - started
+
                 if timeframe in self._volatility:
+                    started = perf_counter()
                     snapshot = self._volatility[timeframe].engine.update(row)
                     self._volatility[timeframe].snapshots.append(snapshot)
+                    volatility_seconds += perf_counter() - started
                 self._watermarks[timeframe] = index
+        self.last_timings = SupportingReplayTimings(
+            ham_seconds=ham_seconds,
+            volume_seconds=volume_seconds,
+            volatility_seconds=volatility_seconds,
+        )
 
     @staticmethod
     def _structure_snapshots(
@@ -223,13 +250,15 @@ class IncrementalSupportingReplayRuntime:
     def freeze(self, *, structure_replay: StructureLocationMTFResult) -> SupportingReplayState:
         """Build immutable public replays from already-advanced engine histories."""
 
-        ham_rows: list[HamTimeframeEvidenceReplay] = []
-        volume_rows: list[VolumeTimeframeEvidenceReplay] = []
+        ham_seconds = self.last_timings.ham_seconds
+        volume_seconds = self.last_timings.volume_seconds
+        volatility_seconds = self.last_timings.volatility_seconds
 
+        started = perf_counter()
+        ham_rows: list[HamTimeframeEvidenceReplay] = []
         for timeframe in self.inputs.timeframes:
             input_row = self.inputs.for_timeframe(timeframe)
             batch = input_row.input_batch
-
             ham_engine = self._ham[timeframe].engine
             ham_history = ham_engine.history
             ham_latest = ham_engine.snapshot
@@ -248,7 +277,18 @@ class IncrementalSupportingReplayRuntime:
                     latest=ham_latest,
                 )
             )
+        ham = HamMTFEvidenceReplay(
+            symbol=self.symbol,
+            timeframes=tuple(self.inputs.timeframes),
+            timeframe_replays=tuple(ham_rows),
+        )
+        ham_seconds += perf_counter() - started
 
+        started = perf_counter()
+        volume_rows: list[VolumeTimeframeEvidenceReplay] = []
+        for timeframe in self.inputs.timeframes:
+            input_row = self.inputs.for_timeframe(timeframe)
+            batch = input_row.input_batch
             volume_engine = self._volume[timeframe].engine
             history = volume_engine.history
             latest = volume_engine.snapshot
@@ -281,12 +321,6 @@ class IncrementalSupportingReplayRuntime:
                     excluded_tail_bar_count=_trailing_excluded_count(input_row.raw_frame),
                 )
             )
-
-        ham = HamMTFEvidenceReplay(
-            symbol=self.symbol,
-            timeframes=tuple(self.inputs.timeframes),
-            timeframe_replays=tuple(ham_rows),
-        )
         volume_tuple = tuple(volume_rows)
         volume = VolumeMTFEvidenceReplay(
             symbol=self.symbol,
@@ -302,7 +336,9 @@ class IncrementalSupportingReplayRuntime:
                 clock=self.clock,
             ),
         )
+        volume_seconds += perf_counter() - started
 
+        started = perf_counter()
         volatility_by_timeframe: dict[str, VolatilityTimeframeReplay] = {}
         volatility_timeframes = tuple(
             timeframe for timeframe in VOLATILITY_TIMEFRAMES if timeframe in self.inputs.timeframes
@@ -326,6 +362,12 @@ class IncrementalSupportingReplayRuntime:
             by_timeframe=volatility_by_timeframe,
             profile=self.volatility_profile,
         )
+        volatility_seconds += perf_counter() - started
+        self.last_timings = SupportingReplayTimings(
+            ham_seconds=ham_seconds,
+            volume_seconds=volume_seconds,
+            volatility_seconds=volatility_seconds,
+        )
         return SupportingReplayState(
             ham=ham,
             volume=volume,
@@ -336,5 +378,6 @@ class IncrementalSupportingReplayRuntime:
 __all__ = [
     "IncrementalSupportingReplayRuntime",
     "SupportingReplayState",
+    "SupportingReplayTimings",
     "SupportingRuntimeCheckpoint",
 ]
