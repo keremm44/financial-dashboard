@@ -49,31 +49,58 @@ def _lineages(refs) -> tuple[str, ...]:
 
 
 def _reaction_evidence(reaction: ReactionAssessment) -> ConflictFamilyEvidence:
-    if reaction.failure_present:
-        severity = ConflictSeverity.MATERIAL
-        reason = (
-            "REACTION_FAILED_WHILE_OTHER_REACTION_CONFIRMED"
-            if reaction.confirmation_present
-            else "REACTION_FAILED"
+    """Treat only a currently failed reaction path as a material contradiction.
+
+    ``ReactionAssessment`` aggregates multiple already-frozen OB/FVG lineages. A
+    historical failed lineage can coexist with a currently confirmed or developing
+    reaction. That mixed history is diagnostic weakness, not a second directional
+    veto against the active path. A pure FAILED state remains material.
+    """
+
+    if reaction.state is ReactionState.FAILED:
+        return ConflictFamilyEvidence(
+            "REACTION",
+            ConflictSeverity.MATERIAL,
+            ("REACTION_CURRENT_PATH_FAILED",),
+            _lineages(reaction.source_refs),
         )
-        return ConflictFamilyEvidence("REACTION", severity, (reason,), _lineages(reaction.source_refs))
+    if reaction.failure_present:
+        return ConflictFamilyEvidence(
+            "REACTION",
+            ConflictSeverity.LOW,
+            ("REACTION_HISTORICAL_FAILURE_WITH_ACTIVE_PATH",),
+            _lineages(reaction.source_refs),
+        )
     return ConflictFamilyEvidence("REACTION", ConflictSeverity.NONE, (), _lineages(reaction.source_refs))
 
 
 def _participation_evidence(participation: ParticipationAssessment) -> ConflictFamilyEvidence:
-    if participation.state is ParticipationState.OPPOSING:
-        reason = "PARTICIPATION_HEAVY_CONFLICT" if participation.heavy_conflict else "PARTICIPATION_OPPOSING"
-        return ConflictFamilyEvidence(
-            "PARTICIPATION",
-            ConflictSeverity.MATERIAL,
-            (reason,),
-            _lineages(participation.source_refs),
-        )
+    """Keep Volume/participation as quality evidence, never side authority.
+
+    Native participation direction and ``heavy_conflict`` may describe poor or
+    opposing participation quality, but Volume does not own market direction. Those
+    observations therefore stay LOW conflict. The one material case retained here is
+    an explicitly unsupported break on the Structure-owned side, which describes the
+    quality of a concrete structural event rather than creating a competing side.
+    """
+
     if participation.unsupported_break:
         return ConflictFamilyEvidence(
             "PARTICIPATION",
             ConflictSeverity.MATERIAL,
-            ("UNSUPPORTED_BREAK",),
+            ("UNSUPPORTED_STRUCTURE_SIDE_BREAK",),
+            _lineages(participation.source_refs),
+        )
+    if participation.state is ParticipationState.OPPOSING:
+        reason = (
+            "PARTICIPATION_HEAVY_QUALITY_CONFLICT"
+            if participation.heavy_conflict
+            else "PARTICIPATION_OPPOSING_QUALITY"
+        )
+        return ConflictFamilyEvidence(
+            "PARTICIPATION",
+            ConflictSeverity.LOW,
+            (reason,),
             _lineages(participation.source_refs),
         )
     if participation.state is ParticipationState.WEAK:

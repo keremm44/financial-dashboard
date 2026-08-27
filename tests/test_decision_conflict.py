@@ -48,8 +48,11 @@ def test_two_independent_material_families_can_be_high():
     result = assess_conflict(
         StructuralDirection.LONG,
         reaction=_reaction(failed=True),
-        participation=_participation(ParticipationState.OPPOSING),
-        environment=_environment(),
+        participation=_participation(),
+        environment=_environment(
+            alignment=EnvironmentAlignment.OPPOSING,
+            regime=VolatilityRangeRegime.EXPANDING,
+        ),
     )
     assert result.state is ConflictState.HIGH
 
