@@ -5,6 +5,7 @@ import pytest
 
 from financial_dashboard.engines.stabil_support_behavior import (
     PriceSupportRelation,
+    SupportApproachOrigin,
     SupportInteractionState,
     SupportMotion,
     build_support_behavior,
@@ -67,6 +68,7 @@ def test_support_motion_is_separate_from_price_distance_and_flattens_after_lower
     fresh = _behavior(falling)
     assert fresh.motion is SupportMotion.FALLING
     assert fresh.last_rebase_step_atr == pytest.approx(-2.0)
+    assert fresh.approach_origin is SupportApproachOrigin.POST_REBASE
 
     flattened = falling + tuple(
         _obs(day, close=97.0, support=96.0, origin_day=2, confirmed_day=4, available_day=4)
@@ -76,6 +78,7 @@ def test_support_motion_is_separate_from_price_distance_and_flattens_after_lower
     assert mature.motion is SupportMotion.FLAT_AFTER_FALL
     assert mature.bars_since_rebase == 4
     assert mature.relation in {PriceSupportRelation.AT_SUPPORT, PriceSupportRelation.ABOVE_NEAR}
+    assert mature.approach_origin is SupportApproachOrigin.POST_REBASE
 
 
 def test_rising_support_with_expanding_distance_is_supported_advance() -> None:
@@ -88,6 +91,8 @@ def test_rising_support_with_expanding_distance_is_supported_advance() -> None:
     assert behavior.motion is SupportMotion.RISING
     assert behavior.relation is PriceSupportRelation.ABOVE_FAR
     assert behavior.interaction is SupportInteractionState.SUPPORTED_ADVANCE
+    assert behavior.distance_delta_atr == pytest.approx(1.5)
+    assert behavior.approach_origin is SupportApproachOrigin.UNAVAILABLE
 
 
 def test_price_approaching_flat_support_is_explicit_timing_context_not_breakdown() -> None:
@@ -99,6 +104,19 @@ def test_price_approaching_flat_support_is_explicit_timing_context_not_breakdown
     assert behavior.motion is SupportMotion.FLAT
     assert behavior.relation is PriceSupportRelation.ABOVE_NEAR
     assert behavior.interaction is SupportInteractionState.APPROACHING_SUPPORT
+    assert behavior.distance_delta_atr == pytest.approx(-1.5)
+    assert behavior.approach_origin is SupportApproachOrigin.FROM_ABOVE
+
+
+def test_price_approaching_support_from_below_preserves_distinct_origin() -> None:
+    items = (
+        _obs(3, close=96.0),
+        _obs(4, close=99.0),
+    )
+    behavior = _behavior(items)
+    assert behavior.relation is PriceSupportRelation.BELOW_NEAR
+    assert behavior.approach_origin is SupportApproachOrigin.FROM_BELOW
+    assert behavior.distance_delta_atr == pytest.approx(1.5)
 
 
 def test_price_below_fresh_falling_support_with_persistence_is_downside_continuation() -> None:
@@ -111,6 +129,18 @@ def test_price_below_fresh_falling_support_with_persistence_is_downside_continua
     assert behavior.motion is SupportMotion.FALLING
     assert behavior.relation is PriceSupportRelation.BELOW_FAR
     assert behavior.interaction is SupportInteractionState.DOWNSIDE_CONTINUATION
+
+
+def test_reclaim_crossing_records_post_reclaim_origin() -> None:
+    items = (
+        _obs(3, close=102.0),
+        _obs(4, close=99.0),
+        _obs(5, close=100.5, low=99.8),
+    )
+    behavior = _behavior(items)
+    assert behavior.reclaim_active
+    assert behavior.relation in {PriceSupportRelation.AT_SUPPORT, PriceSupportRelation.ABOVE_NEAR}
+    assert behavior.approach_origin is SupportApproachOrigin.POST_RECLAIM
 
 
 def test_reclaim_above_still_falling_support_remains_unconfirmed_attempt() -> None:
