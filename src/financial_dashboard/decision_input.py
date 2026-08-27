@@ -154,6 +154,17 @@ class DecisionInputSnapshot:
 
         return assess_entry_arbitration(self, config=config)
 
+    def entry_decision(self, *, config=None, execution_event=None):
+        """Resolve the selected scenario into the causal long-entry action layer."""
+
+        from financial_dashboard.decision.entry import assess_entry_decision
+
+        return assess_entry_decision(
+            self,
+            config=config,
+            execution_event=execution_event,
+        )
+
     def quality_for_timeframe(self, timeframe: str) -> ContextDataQuality:
         normalized = timeframe.strip().lower()
         for key, quality in self.data_quality_by_timeframe:
