@@ -7,6 +7,7 @@ from financial_dashboard.context.projections import project_stabil_support
 from financial_dashboard.engines.stabil_support_behavior import (
     PriceSupportRelation,
     StabilSupportBehaviorSnapshot,
+    SupportApproachOrigin,
     SupportInteractionState,
     SupportMotion,
 )
@@ -49,6 +50,7 @@ def test_stabil_projection_exposes_behavior_without_reinterpreting_lifecycle() -
         motion=SupportMotion.FALLING,
         relation=PriceSupportRelation.ABOVE_NEAR,
         interaction=SupportInteractionState.RECLAIM_ATTEMPT,
+        approach_origin=SupportApproachOrigin.POST_RECLAIM,
         bars_since_rebase=2,
         cross_count=1,
         last_rebase_step_atr=-0.8,
@@ -64,6 +66,7 @@ def test_stabil_projection_exposes_behavior_without_reinterpreting_lifecycle() -
     assert projection.behavior.motion == "FALLING"
     assert projection.behavior.relation == "ABOVE_NEAR"
     assert projection.behavior.interaction == "RECLAIM_ATTEMPT"
+    assert projection.behavior.approach_origin == "POST_RECLAIM"
     assert projection.behavior.bars_since_rebase == 2
     assert projection.behavior.cross_count == 1
     assert projection.behavior.last_rebase_step_atr == -0.8
