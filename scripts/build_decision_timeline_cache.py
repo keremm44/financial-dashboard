@@ -10,7 +10,10 @@ from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.decision.history_replay import HistoricalDecisionInputReplayRunner
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
-from financial_dashboard.decision.persistent_history_runner import DecisionTimelineCacheMiss
+from financial_dashboard.decision.timeline_cache import (
+    DecisionTimelineCacheMiss,
+    load_frozen_decision_timeline,
+)
 from financial_dashboard.structure_location_replay import CausalBarClock
 
 
@@ -88,15 +91,16 @@ def main() -> None:
         start_at=effective_start,
         end_at=args.end,
     )
-    runner = HistoricalDecisionInputReplayRunner(store)
 
     started = perf_counter()
     try:
-        cached = runner.load_cached(args.symbol, config=config)
+        cached_load = load_frozen_decision_timeline(store, args.symbol, config=config)
     except DecisionTimelineCacheMiss:
         probe_seconds = perf_counter() - started
         print(f"CACHE_PROBE_SECONDS\t{probe_seconds:.3f}")
         print("CACHE_STATUS\tMISS_BUILDING")
+
+        runner = HistoricalDecisionInputReplayRunner(store)
         started = perf_counter()
         built = runner.replay(args.symbol, config=config)
         build_seconds = perf_counter() - started
@@ -105,10 +109,9 @@ def main() -> None:
         print(f"APPEND_STATUS\t{runner.last_decision_append_status}")
         print(f"SNAPSHOTS\t{len(built.snapshots)}")
 
-        verify_runner = HistoricalDecisionInputReplayRunner(store)
         started = perf_counter()
         try:
-            cached = verify_runner.load_cached(args.symbol, config=config)
+            cached_load = load_frozen_decision_timeline(store, args.symbol, config=config)
         except DecisionTimelineCacheMiss as exc:
             raise SystemExit(
                 "DecisionInput timeline was computed but exact cache verification failed; "
@@ -116,12 +119,12 @@ def main() -> None:
             ) from exc
         verify_seconds = perf_counter() - started
         print(f"VERIFY_LOAD_SECONDS\t{verify_seconds:.3f}")
-        print(f"VERIFY_STATUS\t{verify_runner.last_persistent_cache_status}")
+        print(f"VERIFY_STATUS\t{cached_load.cache_status}")
     else:
         load_seconds = perf_counter() - started
         print(f"CACHE_LOAD_SECONDS\t{load_seconds:.3f}")
-        print(f"CACHE_STATUS\t{runner.last_persistent_cache_status}")
-        print(f"SNAPSHOTS\t{len(cached.snapshots)}")
+        print(f"CACHE_STATUS\t{cached_load.cache_status}")
+        print(f"SNAPSHOTS\t{len(cached_load.replay.snapshots)}")
 
     print(f"CAUSAL_WARMUP_START\t{effective_start}")
     print("DECISION_TIMELINE_CACHE_READY")
