@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from _ui_test_data import make_ui_store
 from financial_dashboard.decision.history_incremental import IncrementalHistoricalDecisionInputReplayRunner
 from financial_dashboard.decision.history_replay import (
@@ -8,6 +10,10 @@ from financial_dashboard.decision.history_replay import (
 )
 from financial_dashboard.decision.history_single_pass import SinglePassHistoricalDecisionInputReplayRunner
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
+from financial_dashboard.decision.timeline_cache import (
+    DecisionTimelineCacheMiss,
+    load_frozen_decision_timeline,
+)
 
 
 def test_canonical_historical_runner_uses_incremental_causal_timeline() -> None:
@@ -27,3 +33,28 @@ def test_canonical_projection_cache_preserves_legacy_decision_snapshots(tmp_path
 
     assert canonical.cutoffs == legacy.cutoffs
     assert canonical.snapshots == legacy.snapshots
+
+
+def test_cache_only_loader_fails_closed_before_timeline_is_built(tmp_path) -> None:
+    store = make_ui_store(tmp_path)
+    config = HistoricalDecisionInputConfig(max_bars=3)
+
+    with pytest.raises(DecisionTimelineCacheMiss):
+        load_frozen_decision_timeline(store, "THYAO", config=config)
+
+
+def test_cache_only_loader_reuses_exact_frozen_timeline_without_domain_replay(tmp_path) -> None:
+    store = make_ui_store(tmp_path)
+    config = HistoricalDecisionInputConfig(max_bars=3)
+
+    builder = HistoricalDecisionInputReplayRunner(store)
+    built = builder.replay("THYAO", config=config)
+
+    loaded = load_frozen_decision_timeline(store, "THYAO", config=config)
+    cached = loaded.replay
+
+    assert cached.cutoffs == built.cutoffs
+    assert cached.snapshots == built.snapshots
+    assert loaded.cache_status == "HIT_EXACT_CACHE_ONLY"
+    assert cached.timings.native_replay_seconds == 0.0
+    assert cached.timings.snapshot_assembly_seconds == 0.0
