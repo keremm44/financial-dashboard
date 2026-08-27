@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import fields, is_dataclass
+from enum import Enum
+import math
 from types import MappingProxyType
+from typing import Any, Mapping
 
 import pandas as pd
 
@@ -15,6 +19,33 @@ from financial_dashboard.decision.native_domain_runtime import (
 )
 from financial_dashboard.decision.supporting_replay_runtime import IncrementalSupportingReplayRuntime
 from financial_dashboard.structure_location_replay import CausalBarClock
+
+
+def _semantic(value: Any) -> Any:
+    """Normalize immutable replay objects for causal parity assertions.
+
+    Dataclass equality is not suitable for these snapshots because NaN compares
+    unequal to itself and some frozen points contain pandas DataFrames whose direct
+    equality is element-wise. Normalize both cases without weakening numeric values.
+    """
+    if isinstance(value, pd.DataFrame):
+        return tuple(
+            tuple((str(column), _semantic(row[column])) for column in value.columns)
+            for _, row in value.iterrows()
+        )
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, float) and math.isnan(value):
+        return "__NaN__"
+    if isinstance(value, Enum):
+        return value.value
+    if is_dataclass(value) and not isinstance(value, type):
+        return tuple((field.name, _semantic(getattr(value, field.name))) for field in fields(value))
+    if isinstance(value, Mapping):
+        return tuple(sorted((str(key), _semantic(item)) for key, item in value.items()))
+    if isinstance(value, (tuple, list)):
+        return tuple(_semantic(item) for item in value)
+    return value
 
 
 def _raw(count: int, *, timeframe: str, freq: str) -> pd.DataFrame:
@@ -163,7 +194,9 @@ def test_supporting_checkpoint_exact_warm_run_advances_zero_rows() -> None:
     assert restored.last_timings.volatility_seconds >= 0.0
     assert resumed.ham.replay_for("1d").history == frozen.ham.replay_for("1d").history
     assert resumed.volume.replay_for("1d").history == frozen.volume.replay_for("1d").history
-    assert resumed.volatility.for_timeframe("1d").snapshots == frozen.volatility.for_timeframe("1d").snapshots
+    assert _semantic(resumed.volatility.for_timeframe("1d").snapshots) == _semantic(
+        frozen.volatility.for_timeframe("1d").snapshots
+    )
 
 
 def test_stabil_frozen_point_is_causal_prefix_invariant() -> None:
@@ -173,5 +206,5 @@ def test_stabil_frozen_point_is_causal_prefix_invariant() -> None:
     full_points = _stabil_points(full_inputs, indices_1d=(79, 119))
     prefix_point = _stabil_points(prefix_inputs, indices_1d=(79,))[79]
 
-    assert full_points[79] == prefix_point
+    assert _semantic(full_points[79]) == _semantic(prefix_point)
     assert 119 in full_points
