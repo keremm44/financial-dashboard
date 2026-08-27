@@ -139,9 +139,9 @@ def _decision_structure_projection(structural):
 def _horizon_permission(
     snapshot: DecisionInputSnapshot,
     horizon: DecisionHorizon,
-    structural,
 ) -> PermissionEnvelope:
     anchor_timeframe, trigger_timeframes = _permission_policy(horizon)
+    structural = _decision_structure_projection(snapshot.structure)
     axes = evaluate_context_axes(
         structural=structural,
         zones=snapshot.qualified_zones,
@@ -274,7 +274,7 @@ def assess_horizon_decision(
         else structural_snapshot.short_term
     )
     reaction_timeframes, participation_tf, environment_tf, timing_tf = _timeframe_policy(horizon)
-    permission = _horizon_permission(snapshot, horizon, decision_structure)
+    permission = _horizon_permission(snapshot, horizon)
 
     durability = assess_durability(snapshot.stabil_support)
     reaction = assess_reaction(
