@@ -10,7 +10,10 @@ from financial_dashboard.decision.history_replay import (
 )
 from financial_dashboard.decision.history_single_pass import SinglePassHistoricalDecisionInputReplayRunner
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
-from financial_dashboard.decision.persistent_history_runner import DecisionTimelineCacheMiss
+from financial_dashboard.decision.timeline_cache import (
+    DecisionTimelineCacheMiss,
+    load_frozen_decision_timeline,
+)
 
 
 def test_canonical_historical_runner_uses_incremental_causal_timeline() -> None:
@@ -34,15 +37,10 @@ def test_canonical_projection_cache_preserves_legacy_decision_snapshots(tmp_path
 
 def test_cache_only_loader_fails_closed_before_timeline_is_built(tmp_path) -> None:
     store = make_ui_store(tmp_path)
-    runner = HistoricalDecisionInputReplayRunner(store)
     config = HistoricalDecisionInputConfig(max_bars=3)
 
     with pytest.raises(DecisionTimelineCacheMiss):
-        runner.load_cached("THYAO", config=config)
-
-    assert runner.last_persistent_cache_status == "MISS_CACHE_ONLY"
-    assert runner.last_native_checkpoint_status == "NOT_TOUCHED"
-    assert runner.last_supporting_checkpoint_status == "NOT_TOUCHED"
+        load_frozen_decision_timeline(store, "THYAO", config=config)
 
 
 def test_cache_only_loader_reuses_exact_frozen_timeline_without_domain_replay(tmp_path) -> None:
@@ -52,13 +50,11 @@ def test_cache_only_loader_reuses_exact_frozen_timeline_without_domain_replay(tm
     builder = HistoricalDecisionInputReplayRunner(store)
     built = builder.replay("THYAO", config=config)
 
-    reader = HistoricalDecisionInputReplayRunner(store)
-    cached = reader.load_cached("THYAO", config=config)
+    loaded = load_frozen_decision_timeline(store, "THYAO", config=config)
+    cached = loaded.replay
 
     assert cached.cutoffs == built.cutoffs
     assert cached.snapshots == built.snapshots
-    assert reader.last_persistent_cache_status == "HIT_EXACT_CACHE_ONLY"
-    assert reader.last_native_checkpoint_status == "NOT_TOUCHED"
-    assert reader.last_supporting_checkpoint_status == "NOT_TOUCHED"
+    assert loaded.cache_status == "HIT_EXACT_CACHE_ONLY"
     assert cached.timings.native_replay_seconds == 0.0
     assert cached.timings.snapshot_assembly_seconds == 0.0
