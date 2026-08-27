@@ -128,19 +128,22 @@ def test_canonical_default_does_not_invent_execution_events():
     assert replay.final_state.position is PositionState.FLAT
 
 
-def test_decision_backtest_uses_canonical_lifecycle_and_frozen_cache_by_default():
-    source = open("scripts/decision_backtest.py", encoding="utf-8").read()
+def test_buy_sell_backtest_is_cache_only_and_uses_canonical_lifecycle():
+    source = open("scripts/buy_sell_backtest.py", encoding="utf-8").read()
+    assert "load_frozen_decision_timeline(" in source
     assert "replay_canonical_trade_lifecycle(" in source
     assert "canonical_decision_events_from_replay(" in source
-    assert "replay_runner.load_cached(" in source
     assert "FROZEN_DECISION_TIMELINE_CACHE_ONLY" in source
     assert "FROZEN_DECISION_TIMELINE_CACHE_MISS" in source
-    assert "--legacy-decision-stream" in source
-    assert "--canonical-readiness-proxy" in source
+    assert "DOMAIN_REPLAY_AND_SNAPSHOT_SECONDS\\t0.00" in source
+    assert "BUY_SELL_BACKTEST_OK" in source
+    assert "HistoricalDecisionInputReplayRunner" not in source
+    assert ".replay(args.symbol" not in source
 
 
 def test_timeline_builder_is_the_explicit_domain_replay_path():
     source = open("scripts/build_decision_timeline_cache.py", encoding="utf-8").read()
-    assert "runner.load_cached(" in source
+    assert "load_frozen_decision_timeline(" in source
+    assert "HistoricalDecisionInputReplayRunner" in source
     assert "runner.replay(" in source
     assert "DECISION_TIMELINE_CACHE_READY" in source
