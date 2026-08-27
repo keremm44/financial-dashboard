@@ -10,12 +10,13 @@ import pandas as pd
 from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES
 from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
-from financial_dashboard.decision.arbiter import assess_entry_arbitration
-from financial_dashboard.decision.entry import assess_entry_decision
+from financial_dashboard.decision.arbiter import arbitrate_entry_scenarios
+from financial_dashboard.decision.engine import assess_horizon_decision
+from financial_dashboard.decision.entry import compose_entry_decision
 from financial_dashboard.decision.history_replay import HistoricalDecisionInputReplayRunner
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
 from financial_dashboard.decision.persistent_state import PersistentObjectStore
-from financial_dashboard.decision.scenario import assess_entry_scenario
+from financial_dashboard.decision.scenario import ScenarioStage, assess_entry_scenario
 from financial_dashboard.decision.structural import DecisionHorizon
 from financial_dashboard.decision.timeline_cache import load_frozen_decision_timeline
 from financial_dashboard.structure_location_replay import CausalBarClock
@@ -91,6 +92,25 @@ def _print_counter(title: str, counter: Counter[str], *, top: int | None = None)
         print(f"{key:<{width}}  {count:6d}")
 
 
+def _count_conflict(
+    *,
+    prefix: str,
+    assessment,
+    state_counter: Counter[str],
+    family_counter: Counter[str],
+    material_family_counter: Counter[str],
+    reason_counter: Counter[str],
+) -> None:
+    state_counter[f"{prefix}:{_value(assessment.conflict.state)}"] += 1
+    for family in assessment.conflict.families:
+        severity = _value(family.severity)
+        family_counter[f"{prefix}:{family.family}:{severity}"] += 1
+        if severity == "MATERIAL":
+            material_family_counter[f"{prefix}:{family.family}"] += 1
+        for reason in family.reasons:
+            reason_counter[f"{prefix}:{family.family}:{reason}"] += 1
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -149,6 +169,10 @@ def main() -> None:
         "ST blockers": Counter(),
         "ST waiting": Counter(),
     }
+    conflict_state: Counter[str] = Counter()
+    conflict_family: Counter[str] = Counter()
+    conflict_material_family: Counter[str] = Counter()
+    conflict_reasons: Counter[str] = Counter()
     arbiter_state: Counter[str] = Counter()
     arbiter_selection: Counter[str] = Counter()
     arbiter_reasons: Counter[str] = Counter()
@@ -164,7 +188,13 @@ def main() -> None:
     for snapshot in snapshots:
         lt = assess_entry_scenario(snapshot, DecisionHorizon.LONG_TERM)
         st = assess_entry_scenario(snapshot, DecisionHorizon.SHORT_TERM)
-        for prefix, scenario in (("LT", lt), ("ST", st)):
+        lt_decision = assess_horizon_decision(snapshot, DecisionHorizon.LONG_TERM)
+        st_decision = assess_horizon_decision(snapshot, DecisionHorizon.SHORT_TERM)
+
+        for prefix, scenario, assessment in (
+            ("LT", lt, lt_decision),
+            ("ST", st, st_decision),
+        ):
             horizon_state[f"{prefix} presence"][_value(scenario.presence)] += 1
             horizon_state[f"{prefix} stage"][_value(scenario.stage)] += 1
             horizon_state[f"{prefix} kind"][_value(scenario.kind)] += 1
@@ -173,14 +203,33 @@ def main() -> None:
             _add_many(horizon_state[f"{prefix} reasons"], scenario.reasons)
             _add_many(horizon_state[f"{prefix} blockers"], scenario.blockers)
             _add_many(horizon_state[f"{prefix} waiting"], scenario.waiting_for)
+            _count_conflict(
+                prefix=prefix,
+                assessment=assessment,
+                state_counter=conflict_state,
+                family_counter=conflict_family,
+                material_family_counter=conflict_material_family,
+                reason_counter=conflict_reasons,
+            )
 
-        arbitration = assess_entry_arbitration(snapshot)
+        arbitration = arbitrate_entry_scenarios(lt, st)
         arbiter_state[_value(arbitration.state)] += 1
         arbiter_selection[_value(arbitration.selection)] += 1
         _add_many(arbiter_reasons, arbitration.reasons)
         _add_many(arbiter_waiting, arbitration.waiting_for)
 
-        entry = assess_entry_decision(snapshot, execution_event=None)
+        selected_assessment = None
+        if arbitration.selected_scenario is not None and arbitration.selected_scenario.stage is ScenarioStage.QUALIFIED:
+            selected_assessment = (
+                lt_decision
+                if arbitration.selected_horizon is DecisionHorizon.LONG_TERM
+                else st_decision
+            )
+        entry = compose_entry_decision(
+            arbitration,
+            selected_assessment=selected_assessment,
+            execution_event_consumed=False,
+        )
         entry_action[_value(entry.action)] += 1
         entry_stage["NONE" if entry.scenario_stage is None else _value(entry.scenario_stage)] += 1
         entry_horizon["NONE" if entry.selected_horizon is None else _value(entry.selected_horizon)] += 1
@@ -213,6 +262,10 @@ def main() -> None:
     ):
         _print_counter(title.upper(), horizon_state[title], top=args.top)
 
+    _print_counter("CONFLICT STATE BY HORIZON", conflict_state)
+    _print_counter("CONFLICT FAMILY / SEVERITY", conflict_family, top=args.top)
+    _print_counter("MATERIAL CONFLICT FAMILY", conflict_material_family, top=args.top)
+    _print_counter("CONFLICT FAMILY REASONS", conflict_reasons, top=args.top)
     _print_counter("ARBITER STATE", arbiter_state)
     _print_counter("ARBITER SELECTION", arbiter_selection)
     _print_counter("ARBITER REASONS", arbiter_reasons, top=args.top)
