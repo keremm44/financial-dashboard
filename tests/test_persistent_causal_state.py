@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import fields, is_dataclass
+from enum import Enum
+import math
 from types import MappingProxyType
+from typing import Any, Mapping
 
 import pandas as pd
 
@@ -24,6 +28,27 @@ from financial_dashboard.decision.persistent_state import (
 from financial_dashboard.decision.state_timeline import TimelineFingerprint
 from financial_dashboard.decision.supporting_replay_runtime import IncrementalSupportingReplayRuntime
 from financial_dashboard.structure_location_replay import CausalBarClock
+
+
+def _semantic(value: Any) -> Any:
+    if isinstance(value, pd.DataFrame):
+        return tuple(
+            tuple((str(column), _semantic(row[column])) for column in value.columns)
+            for _, row in value.iterrows()
+        )
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, float) and math.isnan(value):
+        return "__NaN__"
+    if isinstance(value, Enum):
+        return value.value
+    if is_dataclass(value) and not isinstance(value, type):
+        return tuple((field.name, _semantic(getattr(value, field.name))) for field in fields(value))
+    if isinstance(value, Mapping):
+        return tuple(sorted((str(key), _semantic(item)) for key, item in value.items()))
+    if isinstance(value, (tuple, list)):
+        return tuple(_semantic(item) for item in value)
+    return value
 
 
 def _frame(
@@ -106,7 +131,7 @@ def test_append_only_prefix_accepts_new_rows_but_rejects_history_edits():
     assert validate_append_only_prefix(extended, expected)
 
     edited_raw = _frame(25)
-    edited_raw.loc[5, "close"] += 9.0
+    edited_raw.loc[5, "volume"] += 9.0
     edited = AnalysisInputSnapshot(
         symbol="ASELS",
         timeframes=("1h",),
@@ -289,4 +314,6 @@ def test_supporting_checkpoint_restore_matches_full_replay():
         == full_volume.participation_without_structure
     )
     assert resumed.volume.round2 == full.volume.round2
-    assert resumed.volatility.for_timeframe("1d").snapshots == full.volatility.for_timeframe("1d").snapshots
+    assert _semantic(resumed.volatility.for_timeframe("1d").snapshots) == _semantic(
+        full.volatility.for_timeframe("1d").snapshots
+    )
