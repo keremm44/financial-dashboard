@@ -443,9 +443,11 @@ class StabilSupportBehaviorProjection:
     motion: str
     relation: str
     interaction: str
+    approach_origin: str
     bars_since_rebase: int | None
     cross_count: int
     last_rebase_step_atr: float | None
+    distance_delta_atr: float | None
     reclaim_active: bool
 
 
@@ -483,9 +485,11 @@ def _project_stabil_behavior(behavior: Any | None) -> StabilSupportBehaviorProje
         motion=str(_enum_value(behavior.motion)),
         relation=str(_enum_value(behavior.relation)),
         interaction=str(_enum_value(behavior.interaction)),
+        approach_origin=str(_enum_value(behavior.approach_origin)),
         bars_since_rebase=behavior.bars_since_rebase,
         cross_count=int(behavior.cross_count),
         last_rebase_step_atr=behavior.last_rebase_step_atr,
+        distance_delta_atr=behavior.distance_delta_atr,
         reclaim_active=bool(behavior.reclaim_active),
     )
 

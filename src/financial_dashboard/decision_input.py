@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from financial_dashboard.context.break_relations import (
+    CrossDomainBreakRelations,
+    build_cross_domain_break_relations,
+)
 from financial_dashboard.context.builder import CrossDomainBuildResult
 from financial_dashboard.context.envelope import ContextDataQuality, FactRef
 from financial_dashboard.context.fvg_engulfing_projection import FvgEngulfingLifecycleProjection
@@ -23,6 +27,10 @@ from financial_dashboard.context.projections import (
     VolatilityProjection,
 )
 from financial_dashboard.context.snapshot import CrossDomainContextSnapshot, KnowledgeBoundary
+from financial_dashboard.context.structural_levels import (
+    StructuralLevelView,
+    build_structural_level_view,
+)
 from financial_dashboard.context.support_resistance_projection import SupportResistanceProjection
 from financial_dashboard.context.volatility_environment_projection import VolatilityEnvironmentProjection
 from financial_dashboard.context.zones import ZoneIntelligenceSnapshot
@@ -93,6 +101,25 @@ class DecisionInputSnapshot:
             raise ValueError("decision input cannot contain future-unavailable refs")
         if self.knowledge_boundary.as_of != self.as_of:
             raise ValueError("decision input knowledge boundary must share as_of")
+
+    @property
+    def structural_levels(self) -> StructuralLevelView:
+        """Derived weak-objective/protected-boundary view; never independent evidence."""
+
+        return build_structural_level_view(
+            self.structure,
+            current_price=self.current_price,
+        )
+
+    @property
+    def break_relations(self) -> CrossDomainBreakRelations:
+        """Derived break-overlap view used to prevent cross-domain vote stacking."""
+
+        return build_cross_domain_break_relations(
+            structure=self.structure,
+            pattern=self.pattern_behavior,
+            support_resistance=self.support_resistance,
+        )
 
     def quality_for_timeframe(self, timeframe: str) -> ContextDataQuality:
         normalized = timeframe.strip().lower()

@@ -63,9 +63,11 @@ def _projection(
             motion=motion,
             relation="ABOVE_NEAR",
             interaction=interaction,
+            approach_origin="UNAVAILABLE",
             bars_since_rebase=3,
             cross_count=0,
             last_rebase_step_atr=None,
+            distance_delta_atr=None,
             reclaim_active=False,
         ),
     )
