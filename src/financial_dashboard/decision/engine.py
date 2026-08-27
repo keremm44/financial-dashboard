@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from financial_dashboard.context.axes import evaluate_context_axes
 from financial_dashboard.context.envelope import ContextDataQuality, FactRef
 from financial_dashboard.context.permissions import PermissionEnvelope, resolve_permission_axes
+from financial_dashboard.context.projections import StructuralFactsProjection
 from financial_dashboard.decision_input import DecisionInputSnapshot
 
 from .composer import ActionPolicy, FinalDecision, compose_final_decision
@@ -90,13 +91,54 @@ def _permission_policy(horizon: DecisionHorizon) -> tuple[str, tuple[str, ...]]:
     return "1h", ("30m",)
 
 
+def _decision_structure_projection(
+    structural: StructuralFactsProjection,
+) -> StructuralFactsProjection:
+    """Normalize price-only Structure quality for Decision without mutating source diagnostics.
+
+    Generic OHLCV quality marks a batch DATA_LIMITED for warnings such as zero volume
+    or an open/incomplete source tail. Market Structure is price-only and its replay
+    already excludes unsafe candles, so those generic limitations must not erase 1D/1H
+    structural authority inside the Decision layer. Other domain projections retain
+    their native quality unchanged.
+    """
+
+    changed = False
+    rows = []
+    for row in structural.timeframe_facts:
+        if row.data_quality is not ContextDataQuality.DATA_LIMITED:
+            rows.append(row)
+            continue
+        changed = True
+        events = tuple(
+            replace(
+                event,
+                ref=replace(event.ref, data_quality=ContextDataQuality.VALID),
+            )
+            if event.ref.data_quality is ContextDataQuality.DATA_LIMITED
+            else event
+            for event in row.events
+        )
+        rows.append(
+            replace(
+                row,
+                data_quality=ContextDataQuality.VALID,
+                events=events,
+            )
+        )
+    if not changed:
+        return structural
+    return replace(structural, timeframe_facts=tuple(rows))
+
+
 def _horizon_permission(
     snapshot: DecisionInputSnapshot,
     horizon: DecisionHorizon,
+    structural: StructuralFactsProjection,
 ) -> PermissionEnvelope:
     anchor_timeframe, trigger_timeframes = _permission_policy(horizon)
     axes = evaluate_context_axes(
-        structural=snapshot.structure,
+        structural=structural,
         zones=snapshot.qualified_zones,
         anchor_timeframe=anchor_timeframe,
         liquidity=snapshot.liquidity,
@@ -219,14 +261,15 @@ def assess_horizon_decision(
     """
 
     cfg = config or DecisionEngineConfig()
-    structural_snapshot = build_horizon_structural_snapshot(snapshot.structure)
+    decision_structure = _decision_structure_projection(snapshot.structure)
+    structural_snapshot = build_horizon_structural_snapshot(decision_structure)
     structural = (
         structural_snapshot.long_term
         if horizon is DecisionHorizon.LONG_TERM
         else structural_snapshot.short_term
     )
     reaction_timeframes, participation_tf, environment_tf, timing_tf = _timeframe_policy(horizon)
-    permission = _horizon_permission(snapshot, horizon)
+    permission = _horizon_permission(snapshot, horizon, decision_structure)
 
     durability = assess_durability(snapshot.stabil_support)
     reaction = assess_reaction(
