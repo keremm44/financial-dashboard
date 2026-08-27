@@ -128,9 +128,19 @@ def test_canonical_default_does_not_invent_execution_events():
     assert replay.final_state.position is PositionState.FLAT
 
 
-def test_decision_backtest_uses_canonical_lifecycle_by_default():
+def test_decision_backtest_uses_canonical_lifecycle_and_frozen_cache_by_default():
     source = open("scripts/decision_backtest.py", encoding="utf-8").read()
     assert "replay_canonical_trade_lifecycle(" in source
     assert "canonical_decision_events_from_replay(" in source
+    assert "replay_runner.load_cached(" in source
+    assert "FROZEN_DECISION_TIMELINE_CACHE_ONLY" in source
+    assert "FROZEN_DECISION_TIMELINE_CACHE_MISS" in source
     assert "--legacy-decision-stream" in source
     assert "--canonical-readiness-proxy" in source
+
+
+def test_timeline_builder_is_the_explicit_domain_replay_path():
+    source = open("scripts/build_decision_timeline_cache.py", encoding="utf-8").read()
+    assert "runner.load_cached(" in source
+    assert "runner.replay(" in source
+    assert "DECISION_TIMELINE_CACHE_READY" in source
