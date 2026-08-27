@@ -206,6 +206,11 @@ def main() -> None:
     parser.add_argument("--end", default=None)
     parser.add_argument("--max-bars", type=int, default=None)
     parser.add_argument("--pattern-profile", default=None)
+    parser.add_argument(
+        "--verify-reload",
+        action="store_true",
+        help="Re-load the full exact cache after a build instead of sidecar digest verification",
+    )
     args = parser.parse_args()
 
     store = ParquetOHLCVStore(args.cache_root)
@@ -230,6 +235,7 @@ def main() -> None:
         config=config,
         run_with=_run_with_live_timings,
         progress=_progress,
+        verify_reload=args.verify_reload,
     )
     if report.built:
         print(f"BUILD_STATUS\t{report.runner.last_persistent_cache_status}")

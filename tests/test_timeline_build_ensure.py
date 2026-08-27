@@ -137,3 +137,110 @@ def test_cold_domain_checkpoint_scope_restores_versions(monkeypatch):
 
     assert native_history._NATIVE_PERSISTENCE_SEMANTIC_VERSION == native_before
     assert incremental_history._SUPPORTING_PERSISTENCE_SEMANTIC_VERSION == supporting_before
+
+
+def test_seed_production_checkpoints_copies_bootstrap_state(tmp_path):
+    from financial_dashboard.decision.persistent_state import (
+        PersistentCheckpointIdentity,
+        PersistentCheckpointRecord,
+        PersistentObjectStore,
+    )
+
+    store = PersistentObjectStore(tmp_path)
+    nonce_identity = PersistentCheckpointIdentity(
+        namespace="native_timeline",
+        symbol="ASELS",
+        semantic_fingerprint=(
+            "native-causal-runtime-checkpoint-v2-decision-bootstrap-full-v2-abcd1234"
+        ),
+        config_fingerprint="default",
+    )
+    record = PersistentCheckpointRecord(
+        identity=nonce_identity,
+        prefixes=(),
+        cursor={"1h": 10},
+        payload={"state": "cold-full"},
+    )
+    store.save_checkpoint(record)
+    production_existing = PersistentCheckpointRecord(
+        identity=PersistentCheckpointIdentity(
+            namespace="supporting_runtime",
+            symbol="ASELS",
+            semantic_fingerprint="supporting-runtime-checkpoint-v1",
+            config_fingerprint="cfg",
+        ),
+        prefixes=(),
+        cursor=None,
+        payload={"keep": True},
+    )
+    store.save_checkpoint(production_existing)
+
+    class _StoreShim:
+        root = tmp_path
+
+    seeded = timeline_build.seed_production_checkpoints(_StoreShim(), "ASELS")
+    assert seeded == 1
+
+    production_identity = PersistentCheckpointIdentity(
+        namespace="native_timeline",
+        symbol="ASELS",
+        semantic_fingerprint="native-causal-runtime-checkpoint-v2",
+        config_fingerprint="default",
+    )
+    restored = store.load_checkpoint(production_identity)
+    assert restored is not None
+    assert restored.payload == {"state": "cold-full"}
+    assert restored.cursor == {"1h": 10}
+    assert store.load_checkpoint(nonce_identity) is not None
+    assert store.load_checkpoint(production_existing.identity).payload == {"keep": True}
+
+
+def test_ensure_reuses_built_result_via_sidecar_without_reload(tmp_path, monkeypatch):
+    from financial_dashboard.data.parquet_store import ParquetOHLCVStore
+    from financial_dashboard.decision.history_single_pass import (
+        SinglePassHistoricalDecisionInputReplay,
+    )
+    from financial_dashboard.decision.persistent_history_runner import (
+        _save_rebuildable_exact_cache,
+    )
+    from financial_dashboard.decision.persistent_state import PersistentObjectStore
+    from financial_dashboard.decision.timeline_cache import DecisionTimelineCacheMiss
+
+    real_store = ParquetOHLCVStore(tmp_path)
+    from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
+
+    identity = timeline_build.HistoricalDecisionInputReplayRunner(real_store)._cache_identity(
+        symbol="ASELS", config=HistoricalDecisionInputConfig()
+    )
+    built_payload = SinglePassHistoricalDecisionInputReplay(
+        symbol="ASELS",
+        decision_timeframe="1h",
+        cutoffs=(1, 2),
+        snapshots=("s1", "s2", "s3"),
+        timings=None,
+    )
+
+    load_calls = {"count": 0}
+
+    def always_miss(*args, **kwargs):
+        load_calls["count"] += 1
+        raise DecisionTimelineCacheMiss("stub miss")
+
+    def fake_build(store_arg, *, symbol, config, run_with=None, progress=timeline_build._default_progress):
+        _save_rebuildable_exact_cache(
+            PersistentObjectStore(real_store.root), identity, built_payload
+        )
+        return SimpleNamespace(status="ok"), built_payload
+
+    monkeypatch.setattr(timeline_build, "load_frozen_decision_timeline", always_miss)
+    monkeypatch.setattr(timeline_build, "build_timeline_once", fake_build)
+
+    messages: list[str] = []
+    report = timeline_build.ensure_frozen_decision_timeline(
+        real_store, "ASELS", config=None, progress=messages.append
+    )
+    assert report.built is True
+    assert report.load.replay.snapshots == ("s1", "s2", "s3")
+    assert report.load.cache_status == "HIT_BUILT_SIDECAR_VERIFIED"
+    assert load_calls["count"] == 1
+    assert any("VERIFY_MODE\tSIDECAR_DIGEST" in message for message in messages)

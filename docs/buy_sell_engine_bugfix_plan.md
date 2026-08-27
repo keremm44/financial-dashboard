@@ -659,6 +659,34 @@ Sıra: **D1 (5 dk) → D2 Adım1+2 → D3 → yeniden ölçüm → D2 Adım 3 (k
 
 ---
 
+## BÖLÜM 9 — Hız: Build/Doğrulama Maliyetlerini Kesme (2026-08-28)
+
+> **Ölçüm (kullanıcı, i7/8GB):** cold build 520 s + verify reload 87.6 s (491 MB pickle).
+> **Kısıt:** hız düzeltmeleri parmak izi kümelerindeki dosyalara dokunamaz (yoksa yine
+> rebuild). Tüm değişiklikler `decision/timeline_build.py` + script'lerde (küme dışı) —
+> **bu pull cache'i bozmaz.**
+>
+> **Düzeltme 1 — verify reload kaldırıldı:** build zaten sonucu bellekte tutuyor; 491 MB'ı
+> yeniden unpickle etmek yerine `.identity.json` sidecar digest karşılaştırmasıyla ucuz
+> doğrulama (`VERIFY_MODE SIDECAR_DIGEST`) ve bellekteki sonuç kullanılır. Build akışı
+> ~87 s kısaldı. `--verify-reload` ile eski tam doğrulama seçilebilir.
+>
+> **Düzeltme 2 — üretim checkpoint tohumlama:** soğuk bootstrap nonce'lı kimliklere
+> yazar, üretim native/supporting checkpoint'leri boş kalırdı → bir sonraki VERİ
+> yenilemesi yine tam soğuk native replay isterdi. Artık başarılı soğuk build sonrası
+> nonce durumları üretim kimliklerine kopyalanır (`CHECKPOINTS_SEEDED`) → sonraki veri
+> yenilemesi artımlı çalışır (yalnız yeni barlar).
+>
+> **Bir kerelik tohumlama (rebuild'siz):** mevcut nonce checkpoint'ler diskte; şu tek
+> satır bir sonraki yenilemeyi hemen artımlı yapar:
+> `python -c "from financial_dashboard.data.parquet_store import ParquetOHLCVStore; from financial_dashboard.decision.timeline_build import seed_production_checkpoints as s; print(s(ParquetOHLCVStore('storage/cache'),'ASELS'))"`
+>
+> **Kalan maliyet (bilinçli):** HIT koşularında ~87 s pickle load kalıyor. Yapısal
+> çözüm (snapshot içindeki tarihsel gözlem kırpması → ~3-6× küçük dosya) composition
+> kodu ister → bir kez daha rebuild tetikler; ayrı kararla uygulanacak.
+
+---
+
 ## Ek A — Önerilen yeni dosyalar
 
 ```
