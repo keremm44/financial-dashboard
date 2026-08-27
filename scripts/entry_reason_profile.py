@@ -193,8 +193,12 @@ def _count_failure_sources(
             failed = interaction == "FAILED" or state in {"CONSUMED", "EXPIRED_CANDIDATE"}
             if not failed:
                 continue
+            if interaction == "FAILED":
+                mode = "INTERACTION_FAILED"
+            else:
+                mode = str(item.terminal_reason or state or "UNKNOWN").strip().upper()
             counter[
-                f"OB:{timeframe}:{_age_bucket(item.age_bars, active=bool(item.active))}"
+                f"OB:{timeframe}:{mode}:{_age_bucket(item.age_bars, active=bool(item.active))}"
                 f":{_distance_bucket(item.distance_atr)}"
             ] += 1
     fvg = snapshot.fvg_engulfing_lifecycle
@@ -288,6 +292,11 @@ def main() -> None:
         help="Optional OpportunityCalibration JSON produced by build_opportunity_calibration.py",
     )
     parser.add_argument(
+        "--auto-calibration",
+        action="store_true",
+        help="Load <cache_root>/calibration/opportunity/<symbol>.json automatically when it exists",
+    )
+    parser.add_argument(
         "--legacy-reaction",
         action="store_true",
         help="Disable the reaction relevance/supersession scope (pre-fix behaviour, A/B diagnostics)",
@@ -316,10 +325,15 @@ def main() -> None:
     relevance_policy = None if args.legacy_reaction else ReactionRelevancePolicy()
     calibration_label = "NONE"
     opportunity_calibration = None
-    if args.opportunity_calibration is not None:
-        record = load_opportunity_calibration(args.opportunity_calibration)
+    calibration_path = args.opportunity_calibration
+    if calibration_path is None and args.auto_calibration:
+        candidate = args.cache_root / "calibration" / "opportunity" / f"{clean_symbol}.json"
+        if candidate.exists():
+            calibration_path = candidate
+    if calibration_path is not None:
+        record = load_opportunity_calibration(calibration_path)
         opportunity_calibration = record.calibration
-        calibration_label = str(args.opportunity_calibration)
+        calibration_label = str(calibration_path)
     engine_config = DecisionEngineConfig(
         opportunity_calibration=opportunity_calibration,
         reaction_relevance=relevance_policy,
@@ -403,6 +417,9 @@ def main() -> None:
     st_room_values: list[float] = []
     heavy_conflict_tracker = _RunLengthTracker()
     heavy_conflict_true_bars = 0
+    heavy_conflict_reasons: Counter[str] = Counter()
+    heavy_conflict_ages: list[float] = []
+    opportunity_unknown_sources: Counter[str] = Counter()
     warmup_snapshots = 0
     first_single_gate: tuple[int, str, str] | None = None
     prev_conflict_state: dict[str, str] = {}
@@ -454,6 +471,13 @@ def main() -> None:
             horizon_state[f"{prefix} kind"][_value(scenario.kind)] += 1
             horizon_state[f"{prefix} opportunity"][_value(scenario.opportunity_state)] += 1
             horizon_state[f"{prefix} eligibility"][_value(scenario.eligibility_state)] += 1
+            if _value(scenario.opportunity_state) == "UNKNOWN":
+                unknown_reason = (
+                    assessment.opportunity.reasons[0]
+                    if assessment.opportunity.reasons
+                    else "OPPORTUNITY_REASON_MISSING"
+                )
+                opportunity_unknown_sources[f"{prefix}:{unknown_reason}"] += 1
             _add_many(horizon_state[f"{prefix} reasons"], scenario.reasons)
             _add_many(horizon_state[f"{prefix} blockers"], scenario.blockers)
             _add_many(horizon_state[f"{prefix} waiting"], scenario.waiting_for)
@@ -512,7 +536,16 @@ def main() -> None:
         heavy_now = False
         if participation is not None:
             try:
-                heavy_now = bool(participation.for_timeframe("1h").heavy_conflict)
+                heavy_row = participation.for_timeframe("1h")
+                heavy_now = bool(heavy_row.heavy_conflict)
+                if heavy_now:
+                    for reason in getattr(heavy_row, "heavy_conflict_reasons", ()) or (
+                        "UNATTRIBUTED",
+                    ):
+                        heavy_conflict_reasons[str(reason)] += 1
+                    heavy_conflict_ages.append(
+                        float(getattr(heavy_row, "heavy_conflict_bars", 0) or 0)
+                    )
             except KeyError:
                 heavy_now = False
         heavy_conflict_tracker.push(heavy_now)
@@ -522,7 +555,11 @@ def main() -> None:
         if _value(lt.presence) == "UNKNOWN":
             warmup_snapshots += 1
 
-        if first_single_gate is None and len(entry.waiting_for) == 1:
+        if (
+            first_single_gate is None
+            and len(entry.waiting_for) == 1
+            and _value(lt.presence) != "UNKNOWN"
+        ):
             first_single_gate = (index, str(snapshot.as_of), entry.waiting_for[0])
 
     decision_seconds = perf_counter() - decision_started
@@ -607,10 +644,31 @@ def main() -> None:
     else:
         print("RUNS\t0")
 
+    print("\nHEAVY_CONFLICT REASONS (1h, native disjunct-level)")
+    print("-" * 52)
+    if not heavy_conflict_reasons:
+        print("None.")
+    else:
+        rows = heavy_conflict_reasons.most_common(args.top)
+        width = max(len(key) for key, _ in rows)
+        for key, count in rows:
+            print(f"{key:<{width}}  {count:8d}")
+    _print_stats_line("HEAVY_CONFLICT_AGE_BARS", heavy_conflict_ages)
+
     print("\nOPPORTUNITY ROOM ATR DISTRIBUTION")
     print("-" * 36)
     _print_stats_line("LT_ROOM_ATR", lt_room_values)
     _print_stats_line("ST_ROOM_ATR", st_room_values)
+
+    print("\nOPPORTUNITY UNKNOWN SOURCES (system vs market)")
+    print("-" * 50)
+    if not opportunity_unknown_sources:
+        print("None.")
+    else:
+        rows = opportunity_unknown_sources.most_common(args.top)
+        width = max(len(key) for key, _ in rows)
+        for key, count in rows:
+            print(f"{key:<{width}}  {count:8d}")
 
     print("\nREACTION RELEVANT SET SIZE")
     print("-" * 28)

@@ -522,6 +522,12 @@ def load_opportunity_calibration(path: Path) -> OpportunityCalibrationRecord
 
 ## BÖLÜM  7 — Kalan Kapılar: Detaylı Onarım Planı (2026-08-27, ilk ASELS ölçümünden sonra)
 
+> **DURUM: UYGULANDI** (aynı gün). D1 + D2(Adım 1+2) + D3 + D4 kodlandı;
+> kalibrasyon JSON çöküşü (`PersistentCacheIdentity` serileşemiyordu) hem kaynakta
+> (`str(identity)`) hem alıcıda (`_json_safe` meta sanitizasyonu) düzeltildi.
+> Tam paket **1160 passed / 4 skipped**. D2 Adım 3 (native predikat sıkılaştırma)
+> bilinçli olarak bekliyor: önce `HEAVY_CONFLICT REASONS` ölçümü yapılmalı.
+
 > **Girdi ölçümleri (ASELS, relevance AÇIK, kalibrasyonsuz):**
 > `LT:REACTION:MATERIAL 1080/1263 (%85)`, `ST:PARTICIPATION:MATERIAL 1030`,
 > `heavy_conflict` TRUE=987, RUNS=2 (325 ve 662 bar), `OPPORTUNITY UNKNOWN 1263`,

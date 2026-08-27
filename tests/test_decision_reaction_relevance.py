@@ -67,6 +67,7 @@ def _ob(
     top: float = 101.0,
     bottom: float = 99.0,
     timeframe: str = "1h",
+    terminal_reason: str | None = None,
 ) -> OrderBlockBehaviorObservation:
     return OrderBlockBehaviorObservation(
         timeframe=timeframe,
@@ -94,7 +95,7 @@ def _ob(
         favorable_exit_index=None,
         bars_held_favorable=0,
         max_favorable_move_atr=0.0,
-        terminal_reason=None,
+        terminal_reason=terminal_reason,
     )
 
 
@@ -362,3 +363,127 @@ def test_policy_validation_rejects_negative_bounds():
         ReactionRelevancePolicy(max_age_bars=-1)
     with pytest.raises(ValueError):
         ReactionRelevancePolicy(max_distance_atr=-0.5)
+    with pytest.raises(ValueError):
+        ReactionRelevancePolicy(ob_failure_modes=("",))
+
+
+def _terminal_ob(*, state: str, interaction: str = "NONE", terminal_reason: str | None = None):
+    return _ob(
+        native_id=f"OB:{state}:{interaction}:{terminal_reason}",
+        state=state,
+        interaction=interaction,
+        active=False,
+        age_bars=10,
+        terminal_reason=terminal_reason,
+    )
+
+
+def test_consumed_gap_through_still_votes_failure():
+    from financial_dashboard.decision.reaction import ob_failure_vote
+
+    zone = _terminal_ob(state="CONSUMED", terminal_reason="GAP_THROUGH")
+    assert ob_failure_vote(zone, ("INTERACTION_FAILED", "CONSUMED_GAP_THROUGH")) is True
+
+
+def test_lifecycle_terminal_reasons_do_not_vote_failure():
+    from financial_dashboard.decision.reaction import ob_failure_vote
+
+    modes = ("INTERACTION_FAILED", "CONSUMED_GAP_THROUGH")
+    assert (
+        ob_failure_vote(_terminal_ob(state="CONSUMED", terminal_reason="FILL_THRESHOLD"), modes)
+        is False
+    )
+    assert (
+        ob_failure_vote(
+            _terminal_ob(state="EXPIRED_CANDIDATE", terminal_reason="IMBALANCE_NOT_CONFIRMED"),
+            modes,
+        )
+        is False
+    )
+    assert (
+        ob_failure_vote(
+            _terminal_ob(state="CONSUMED", terminal_reason="REMOVED_BY_CANONICAL_ENGINE"), modes
+        )
+        is False
+    )
+
+
+def test_interaction_failed_alone_votes_failure():
+    from financial_dashboard.decision.reaction import ob_failure_vote
+
+    zone = _terminal_ob(state="FRESH", interaction="FAILED")
+    assert ob_failure_vote(zone, ("INTERACTION_FAILED",)) is True
+
+
+def test_legacy_failure_modes_count_every_terminal():
+    from financial_dashboard.decision.reaction import ob_failure_vote
+
+    assert (
+        ob_failure_vote(
+            _terminal_ob(state="EXPIRED_CANDIDATE", terminal_reason="IMBALANCE_NOT_CONFIRMED"),
+            None,
+        )
+        is True
+    )
+    assert (
+        ob_failure_vote(_terminal_ob(state="CONSUMED", terminal_reason="FILL_THRESHOLD"), None)
+        is True
+    )
+
+
+def test_lifecycle_terminal_no_longer_blocks_reaction():
+    # Young + near terminal zone whose death is lifecycle completion, not a
+    # directional contradiction: with default policy it must not create failure.
+    ob = _ob_projection(_terminal_ob(state="CONSUMED", terminal_reason="FILL_THRESHOLD"))
+    scoped_ob, _ = _scoped(ob, None, _DEFAULT)
+    assessment = assess_reaction(
+        StructuralDirection.LONG,
+        order_blocks=scoped_ob,
+        timeframes=("1h",),
+        relevance=_DEFAULT,
+    )
+    assert assessment.failure_present is False
+
+
+def test_gap_through_terminal_keeps_material_conflict():
+    from financial_dashboard.context.volatility_environment_projection import (
+        ExpansionCharacter,
+        VolatilityRangeRegime,
+    )
+    from financial_dashboard.decision.conflict import ConflictState, assess_conflict
+    from financial_dashboard.decision.environment import (
+        EnvironmentAlignment,
+        EnvironmentAssessment,
+        EnvironmentRisk,
+    )
+    from financial_dashboard.decision.participation import (
+        ParticipationAssessment,
+        ParticipationState,
+    )
+
+    ob = _ob_projection(_terminal_ob(state="CONSUMED", terminal_reason="GAP_THROUGH"))
+    scoped_ob, _ = _scoped(ob, None, _DEFAULT)
+    reaction = assess_reaction(
+        StructuralDirection.LONG,
+        order_blocks=scoped_ob,
+        timeframes=("1h",),
+        relevance=_DEFAULT,
+    )
+    assert reaction.failure_present is True
+    conflict = assess_conflict(
+        StructuralDirection.LONG,
+        reaction=reaction,
+        participation=ParticipationAssessment(
+            ParticipationState.NEUTRAL, False, False, ContextDataQuality.VALID, (), ()
+        ),
+        environment=EnvironmentAssessment(
+            VolatilityRangeRegime.BALANCED,
+            ExpansionCharacter.NEUTRAL,
+            EnvironmentAlignment.NEUTRAL,
+            EnvironmentRisk.NORMAL,
+            ContextDataQuality.VALID,
+            (),
+            (),
+        ),
+    )
+    assert conflict.state is ConflictState.MATERIAL

@@ -81,6 +81,8 @@ class ParticipationBehaviorTimeframeProjection:
     net_progress_atr: float | None
     directional_efficiency: float | None
     effort_result_class: str | None
+    heavy_conflict_reasons: tuple[str, ...] = ()
+    heavy_conflict_bars: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,6 +292,11 @@ def project_participation_behavior(
                 break_direction=int(getattr(export, "break_direction", 0)),
                 break_stage=str(getattr(export, "break_stage", "NONE") or "NONE"),
                 heavy_conflict=bool(getattr(export, "heavy_conflict", False)),
+                heavy_conflict_reasons=tuple(
+                    str(reason)
+                    for reason in getattr(export, "heavy_conflict_reasons", ()) or ()
+                ),
+                heavy_conflict_bars=int(getattr(export, "heavy_conflict_bars", 0) or 0),
                 shock_direction=int(getattr(export, "shock_direction", 0)),
                 rvol=getattr(export, "rvol", None),
                 relative_traded_value=getattr(export, "relative_traded_value", None),

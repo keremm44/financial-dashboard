@@ -244,7 +244,7 @@ def main() -> None:
             "forward_bars": args.forward_bars,
             "quantiles": [q1, q2, q3],
             "reference_timeframe": DECISION_TIMEFRAME,
-            "source_identity": identity,
+            "source_identity": str(identity),
         },
     )
 

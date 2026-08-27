@@ -95,7 +95,7 @@ def _patch_pipeline(monkeypatch, *, side=StructuralDirection.LONG, calls=None):
             calls.setdefault("reaction", []).append(kwargs["timeframes"])
         return ReactionAssessment(ReactionState.CONFIRMED, False, True, False, ContextDataQuality.VALID, ("CONFIRMED",), ())
 
-    def participation(side_value, projection, *, timeframe):
+    def participation(side_value, projection, *, timeframe, max_heavy_conflict_age_bars=None):
         if calls is not None:
             calls.setdefault("participation", []).append(timeframe)
         return ParticipationAssessment(ParticipationState.SUPPORTIVE, False, False, ContextDataQuality.VALID, ("SUPPORTIVE",), ())

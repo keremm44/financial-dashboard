@@ -46,12 +46,18 @@ class DecisionEngineConfig:
 
     opportunity_calibration: OpportunityCalibration | None = None
     reaction_relevance: ReactionRelevancePolicy | None = ReactionRelevancePolicy()
+    participation_conflict_max_age_bars: int | None = 24
     action_policy: ActionPolicy = field(default_factory=ActionPolicy)
     execution_timeframe: str = "30m"
 
     def __post_init__(self) -> None:
         if self.execution_timeframe.strip().lower() != "30m":
             raise ValueError("v1 execution timeframe is architecturally fixed to 30m")
+        if (
+            self.participation_conflict_max_age_bars is not None
+            and self.participation_conflict_max_age_bars < 0
+        ):
+            raise ValueError("participation_conflict_max_age_bars must be >= 0 when provided")
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,6 +319,7 @@ def assess_horizon_decision(
         structural.direction,
         snapshot.participation_behavior,
         timeframe=participation_tf,
+        max_heavy_conflict_age_bars=cfg.participation_conflict_max_age_bars,
     )
     environment = assess_environment(
         structural.direction,

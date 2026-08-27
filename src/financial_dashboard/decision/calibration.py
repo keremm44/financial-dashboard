@@ -35,6 +35,25 @@ class OpportunityCalibrationRecord:
             raise ValueError("calibration sample_size must be >= 0")
 
 
+def _json_safe(value: Any) -> Any:
+    """Deterministically coerce meta values to JSON-native types.
+
+    Calibration metadata may legitimately carry rich objects (e.g. a cache
+    identity). They are preserved as their string form instead of crashing the
+    deterministic writer.
+    """
+
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, (int, float, str)):
+        return value
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_json_safe(item) for item in value]
+    return str(value)
+
+
 def save_opportunity_calibration(
     path: Path | str,
     record: OpportunityCalibrationRecord,
@@ -53,7 +72,7 @@ def save_opportunity_calibration(
             "moderate_max_atr": record.calibration.moderate_max_atr,
         },
         "sample_size": record.sample_size,
-        **dict(record.meta),
+        **{str(key): _json_safe(value) for key, value in record.meta.items()},
     }
     tmp_path = target.with_name(f"{target.name}.tmp")
     with tmp_path.open("w", encoding="utf-8") as handle:

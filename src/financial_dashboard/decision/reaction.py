@@ -37,12 +37,23 @@ class ReactionRelevancePolicy:
     max_age_bars: int | None = 50
     max_distance_atr: float | None = 5.0
     supersession: bool = True
+    # Which terminal OB outcomes still cast a directional failure vote. Lifecycle
+    # completion (zone filled/used, candidate expired unconfirmed, engine cleanup)
+    # is not a directional contradiction; only an explicit FAILED interaction or a
+    # confirmed block that price gapped through against it is. ``None`` keeps the
+    # legacy "every terminal zone votes" behaviour for A/B diagnostics.
+    ob_failure_modes: tuple[str, ...] | None = ("INTERACTION_FAILED", "CONSUMED_GAP_THROUGH")
 
     def __post_init__(self) -> None:
         if self.max_age_bars is not None and self.max_age_bars < 0:
             raise ValueError("max_age_bars must be >= 0 when provided")
         if self.max_distance_atr is not None and self.max_distance_atr < 0:
             raise ValueError("max_distance_atr must be >= 0 when provided")
+        if self.ob_failure_modes is not None:
+            modes = tuple(str(mode).strip().upper() for mode in self.ob_failure_modes)
+            if not modes or not all(modes):
+                raise ValueError("ob_failure_modes must contain non-empty mode names when provided")
+            object.__setattr__(self, "ob_failure_modes", modes)
 
     @property
     def label(self) -> str:
@@ -63,6 +74,30 @@ def _ob_terminal(observation) -> bool:
     state = str(observation.state).strip().upper()
     interaction = str(observation.interaction).strip().upper()
     return state in _OB_TERMINAL_STATES or interaction in _OB_TERMINAL_INTERACTIONS
+
+
+def ob_failure_vote(observation, modes: tuple[str, ...] | None) -> bool:
+    """Whether one terminal OB observation still casts a directional failure vote.
+
+    ``modes=None`` keeps the legacy behaviour where every terminal zone votes.
+    Otherwise only the selected terminal outcomes vote:
+    ``INTERACTION_FAILED`` (explicit failed interaction) and
+    ``CONSUMED_GAP_THROUGH`` (a confirmed block price gapped through against).
+    """
+
+    state = str(observation.state).strip().upper()
+    interaction = str(observation.interaction).strip().upper()
+    reason = str(observation.terminal_reason or "").strip().upper()
+    if not _ob_terminal(observation):
+        return False
+    if modes is None:
+        return True
+    votes: set[str] = set()
+    if interaction == "FAILED":
+        votes.add("INTERACTION_FAILED")
+    if state == "CONSUMED" and reason == "GAP_THROUGH":
+        votes.add("CONSUMED_GAP_THROUGH")
+    return bool(votes & set(modes))
 
 
 def _fvg_terminal(row) -> bool:
@@ -277,6 +312,7 @@ def assess_reaction(
         )
 
     allowed_tfs = {tf.strip().lower() for tf in timeframes}
+    ob_failure_modes = relevance.ob_failure_modes if relevance is not None else None
     refs: list[FactRef] = []
     confirmed = False
     developing = False
@@ -304,7 +340,7 @@ def assess_reaction(
                 confirmed = True
                 confirmed_ranges.append((timeframe, float(item.bottom), float(item.top)))
                 reasons.append(f"OB_CONFIRMED:{item.timeframe}:{item.identity}")
-            elif interaction == "FAILED" or state in {"CONSUMED", "EXPIRED_CANDIDATE"}:
+            elif ob_failure_vote(item, ob_failure_modes):
                 failure_records.append(
                     ("OB", item.timeframe, item.identity, float(item.bottom), float(item.top))
                 )
@@ -449,6 +485,7 @@ __all__ = [
     "ReactionRelevancePolicy",
     "ReactionState",
     "assess_reaction",
+    "ob_failure_vote",
     "select_relevant_zones",
     "zone_is_relevant",
 ]
