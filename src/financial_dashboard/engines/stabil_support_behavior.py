@@ -25,6 +25,14 @@ class PriceSupportRelation(StrEnum):
     BELOW_FAR = "BELOW_FAR"
 
 
+class SupportApproachOrigin(StrEnum):
+    UNAVAILABLE = "UNAVAILABLE"
+    FROM_ABOVE = "FROM_ABOVE"
+    FROM_BELOW = "FROM_BELOW"
+    POST_RECLAIM = "POST_RECLAIM"
+    POST_REBASE = "POST_REBASE"
+
+
 class SupportInteractionState(StrEnum):
     UNAVAILABLE = "UNAVAILABLE"
     HOLDING_ABOVE = "HOLDING_ABOVE"
@@ -66,6 +74,7 @@ class StabilSupportBehaviorSnapshot:
     motion: SupportMotion = SupportMotion.UNAVAILABLE
     relation: PriceSupportRelation = PriceSupportRelation.UNAVAILABLE
     interaction: SupportInteractionState = SupportInteractionState.UNAVAILABLE
+    approach_origin: SupportApproachOrigin = SupportApproachOrigin.UNAVAILABLE
     bars_since_rebase: int | None = None
     cross_count: int = 0
     last_rebase_step_atr: float | None = None
@@ -135,6 +144,14 @@ def _relation(
     )
 
 
+def _is_near(relation: PriceSupportRelation) -> bool:
+    return relation in {
+        PriceSupportRelation.AT_SUPPORT,
+        PriceSupportRelation.ABOVE_NEAR,
+        PriceSupportRelation.BELOW_NEAR,
+    }
+
+
 def build_support_behavior(
     observations: Iterable[DailySupportObservation],
     lifecycle: StabilSupportLifecycleSnapshot,
@@ -146,8 +163,8 @@ def build_support_behavior(
 
     The lifecycle owns factual breach/reclaim events. This layer adds the orthogonal
     semantics needed by later decision code: support-step motion, price proximity,
-    persistence and whether a reclaim is merely attempted or structurally accepted.
-    Only the supplied causal observation prefix is inspected.
+    persistence, approach origin and whether a reclaim is merely attempted or
+    structurally accepted. Only the supplied causal observation prefix is inspected.
     """
 
     cfg = config or StabilSupportBehaviorConfig()
@@ -169,6 +186,7 @@ def build_support_behavior(
     reclaim_active = False
     reclaim_failed = False
     relation = PriceSupportRelation.UNAVAILABLE
+    approach_origin = SupportApproachOrigin.UNAVAILABLE
     distance_delta_atr: float | None = None
 
     for index, obs in enumerate(items):
@@ -187,12 +205,14 @@ def build_support_behavior(
             reclaim_active = False
             reclaim_failed = False
             relation = PriceSupportRelation.UNAVAILABLE
+            approach_origin = SupportApproachOrigin.UNAVAILABLE
             distance_delta_atr = None
             continue
 
+        previous_relation = relation
         rebased = identity != current_identity
+        old_support = current_support
         if rebased:
-            old_support = current_support
             last_progression = _progression(old_support, obs.support_level, min_tick)
             if old_support is not None and obs.atr is not None and abs(float(obs.atr)) > 1e-12:
                 last_rebase_step_atr = (float(obs.support_level) - float(old_support)) / float(obs.atr)
@@ -208,11 +228,24 @@ def build_support_behavior(
             cross_count = 0
             reclaim_active = False
             reclaim_failed = False
+            approach_origin = SupportApproachOrigin.UNAVAILABLE
 
         assert current_support is not None
         close = float(obs.close)
         below = close < current_support
         relation = _relation(obs, support=current_support, near_atr=cfg.near_atr)
+        near_now = _is_near(relation)
+
+        if rebased and old_support is not None and near_now:
+            approach_origin = SupportApproachOrigin.POST_REBASE
+        elif previous_below is True and not below and near_now:
+            approach_origin = SupportApproachOrigin.POST_RECLAIM
+        elif near_now and previous_relation is PriceSupportRelation.ABOVE_FAR:
+            approach_origin = SupportApproachOrigin.FROM_ABOVE
+        elif near_now and previous_relation is PriceSupportRelation.BELOW_FAR:
+            approach_origin = SupportApproachOrigin.FROM_BELOW
+        elif not near_now:
+            approach_origin = SupportApproachOrigin.UNAVAILABLE
 
         if previous_below is not None and below != previous_below:
             cross_count += 1
@@ -257,11 +290,7 @@ def build_support_behavior(
         SupportMotion.FLAT_AFTER_RISE,
         SupportMotion.FLAT_AFTER_FALL,
     }
-    near_relation = relation in {
-        PriceSupportRelation.AT_SUPPORT,
-        PriceSupportRelation.ABOVE_NEAR,
-        PriceSupportRelation.BELOW_NEAR,
-    }
+    near_relation = _is_near(relation)
 
     if (
         flat_motion
@@ -309,6 +338,7 @@ def build_support_behavior(
         motion=motion,
         relation=relation,
         interaction=interaction,
+        approach_origin=approach_origin,
         bars_since_rebase=bars_since_rebase,
         cross_count=cross_count,
         last_rebase_step_atr=last_rebase_step_atr,
@@ -321,6 +351,7 @@ __all__ = [
     "PriceSupportRelation",
     "StabilSupportBehaviorConfig",
     "StabilSupportBehaviorSnapshot",
+    "SupportApproachOrigin",
     "SupportInteractionState",
     "SupportMotion",
     "build_support_behavior",
