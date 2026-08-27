@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, is_dataclass, replace
 from enum import StrEnum
+from types import SimpleNamespace
 
 from financial_dashboard.context.envelope import ContextDataQuality, FactRef
 from financial_dashboard.context.pattern_behavior_projection import (
@@ -73,11 +74,14 @@ def _pattern_row(pattern: PatternBehaviorProjection | None, timeframe: str):
     # Decision-only Structure quality normalization and never mutates domain state.
     if row.ref.data_quality is ContextDataQuality.DATA_LIMITED:
         native_phase = _native_pattern_phase(row.native_state, unavailable=False)
-        return replace(
-            row,
-            ref=replace(row.ref, data_quality=ContextDataQuality.VALID),
-            phase=native_phase,
-        )
+        normalized_ref = replace(row.ref, data_quality=ContextDataQuality.VALID)
+        if is_dataclass(row):
+            return replace(row, ref=normalized_ref, phase=native_phase)
+        # Unit-test and plugin doubles may intentionally be opaque/simple objects.
+        # Preserve that compatibility without changing the production dataclass path.
+        values = dict(vars(row))
+        values.update(ref=normalized_ref, phase=native_phase)
+        return SimpleNamespace(**values)
     return row
 
 
