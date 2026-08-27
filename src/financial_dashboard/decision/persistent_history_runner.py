@@ -4,9 +4,7 @@ from dataclasses import dataclass
 import os
 import pickle
 
-from financial_dashboard.data.identity import normalize_symbol
-
-from .history_incremental import IncrementalHistoricalDecisionInputReplayRunner, _zero_timings
+from .history_incremental import IncrementalHistoricalDecisionInputReplayRunner
 from .history_single_pass import SinglePassHistoricalDecisionInputReplay
 from .history_source import HistoricalDecisionInputConfig
 from .persistent_state import (
@@ -21,10 +19,6 @@ from .persistent_state import (
 
 
 _DECISION_APPEND_REFERENCE_SEMANTIC_VERSION = "decision-input-append-reference-v2"
-
-
-class DecisionTimelineCacheMiss(RuntimeError):
-    """Raised when a cache-only consumer cannot find the exact frozen timeline."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,54 +71,6 @@ class PersistentHistoricalDecisionInputReplayRunner(
     only prefix fingerprints plus a reference to that exact object. Native/supporting
     engine checkpoints remain the continuation state used to process future closed bars.
     """
-
-    def load_cached(
-        self,
-        symbol: str,
-        *,
-        config: HistoricalDecisionInputConfig | None = None,
-    ) -> SinglePassHistoricalDecisionInputReplay:
-        """Load only the exact frozen DecisionInput timeline; never replay domains.
-
-        This is the BUY/SELL/backtest fast path. A missing or stale exact cache is an
-        explicit error instead of silently falling back to native/supporting replay.
-        Call ``replay`` separately when the timeline must be built or refreshed.
-        """
-
-        cfg = config or HistoricalDecisionInputConfig()
-        clean_symbol = normalize_symbol(symbol)
-        self.last_assembly_breakdown = {}
-        self.last_persistent_cache_status = "MISS_CACHE_ONLY"
-        self.last_native_checkpoint_status = "NOT_TOUCHED"
-        self.last_supporting_checkpoint_status = "NOT_TOUCHED"
-        self.last_decision_append_status = "NOT_TOUCHED"
-
-        persistent = PersistentObjectStore(self.store.root)
-        exact_identity = self._cache_identity(symbol=clean_symbol, config=cfg)
-        cached = persistent.load(exact_identity)
-        if not isinstance(cached, SinglePassHistoricalDecisionInputReplay):
-            raise DecisionTimelineCacheMiss(
-                "exact frozen DecisionInput timeline is unavailable for the current "
-                f"symbol/config/source identity: {clean_symbol}"
-            )
-
-        self.last_persistent_cache_status = "HIT_EXACT_CACHE_ONLY"
-        self.last_assembly_breakdown = {
-            "views": 0.0,
-            "evidence": 0.0,
-            "dedup": 0.0,
-            "targeting": 0.0,
-            "semantic_targeting": 0.0,
-            "cross_domain": 0.0,
-            "decision_input": 0.0,
-        }
-        return SinglePassHistoricalDecisionInputReplay(
-            symbol=cached.symbol,
-            decision_timeframe=cached.decision_timeframe,
-            cutoffs=cached.cutoffs,
-            snapshots=cached.snapshots,
-            timings=_zero_timings(),
-        )
 
     def _decision_checkpoint_identity(
         self,
@@ -201,7 +147,6 @@ class PersistentHistoricalDecisionInputReplayRunner(
 
 
 __all__ = [
-    "DecisionTimelineCacheMiss",
     "DecisionTimelineReference",
     "PersistentHistoricalDecisionInputReplayRunner",
 ]
