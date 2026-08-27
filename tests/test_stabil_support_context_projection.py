@@ -52,6 +52,7 @@ def test_stabil_projection_exposes_behavior_without_reinterpreting_lifecycle() -
         bars_since_rebase=2,
         cross_count=1,
         last_rebase_step_atr=-0.8,
+        distance_delta_atr=0.25,
         reclaim_active=True,
     )
 
@@ -66,6 +67,7 @@ def test_stabil_projection_exposes_behavior_without_reinterpreting_lifecycle() -
     assert projection.behavior.bars_since_rebase == 2
     assert projection.behavior.cross_count == 1
     assert projection.behavior.last_rebase_step_atr == -0.8
+    assert projection.behavior.distance_delta_atr == 0.25
     assert projection.behavior.reclaim_active is True
 
 
