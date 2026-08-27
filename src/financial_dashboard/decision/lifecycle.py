@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .composer import DecisionAction, FinalDecision
+from .position_metadata import PositionEntryMetadata, build_position_entry_metadata
+
+if TYPE_CHECKING:
+    from financial_dashboard.decision_input import DecisionInputSnapshot
+    from .entry import EntryDecision
+    from .execution import ExecutionTriggerEvent
 
 
 class PositionState(StrEnum):
@@ -28,13 +34,21 @@ class TradeLifecycleState:
     exit_stage: ExitStage | None = None
     trade_id: str | None = None
     entry_as_of: Any | None = None
+    entry_metadata: PositionEntryMetadata | None = None
 
     def __post_init__(self) -> None:
         if self.position is PositionState.FLAT:
-            if self.exit_stage is not None or self.trade_id is not None or self.entry_as_of is not None:
+            if (
+                self.exit_stage is not None
+                or self.trade_id is not None
+                or self.entry_as_of is not None
+                or self.entry_metadata is not None
+            ):
                 raise ValueError("FLAT lifecycle state cannot carry open-trade metadata")
         elif self.exit_stage is None or self.trade_id is None or self.entry_as_of is None:
             raise ValueError("OPEN lifecycle state requires exit stage and entry metadata")
+        elif self.entry_metadata is not None and self.entry_metadata.entry_as_of != self.entry_as_of:
+            raise ValueError("position entry metadata must share lifecycle entry_as_of")
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +76,7 @@ def _open_state_with_stage(state: TradeLifecycleState, stage: ExitStage) -> Trad
         exit_stage=stage,
         trade_id=state.trade_id,
         entry_as_of=state.entry_as_of,
+        entry_metadata=state.entry_metadata,
     )
 
 
@@ -72,13 +87,14 @@ def transition_trade_lifecycle(
     as_of: Any,
     exit_stage: ExitStage | None = None,
     exit_execution_confirmed: bool = False,
+    entry_metadata: PositionEntryMetadata | None = None,
 ) -> TradeLifecycleTransition:
     """Fold one market decision through persistent long-only ownership.
 
-    FLAT uses the existing long entry decision. OPEN never treats a bearish market
-    decision as a sell by itself: its action space is owned by the dedicated exit
-    assessment. A SELL can execute only when the exit path is EXIT_READY and a fresh
-    exit execution event has been confirmed by that separate contract.
+    The optional ``entry_metadata`` is a compatibility bridge for the new Turn 7
+    entry path. Legacy replay callers may omit it until Turn 9 migration. When
+    supplied on the opening BUY it is frozen into the position and is never replaced
+    by later repeated BUY decisions.
     """
 
     requested = final.action
@@ -86,12 +102,17 @@ def transition_trade_lifecycle(
     if state.position is PositionState.FLAT:
         if exit_execution_confirmed:
             raise ValueError("exit execution cannot be confirmed while lifecycle is FLAT")
+        if entry_metadata is not None and requested is not DecisionAction.BUY:
+            raise ValueError("entry metadata may be attached only to an opening BUY")
         if requested is DecisionAction.BUY:
+            if entry_metadata is not None and entry_metadata.entry_as_of != as_of:
+                raise ValueError("entry metadata must be fresh at lifecycle as_of")
             current = TradeLifecycleState(
                 position=PositionState.OPEN,
                 exit_stage=ExitStage.MONITOR,
                 trade_id=_trade_id(as_of),
                 entry_as_of=as_of,
+                entry_metadata=entry_metadata,
             )
             return TradeLifecycleTransition(
                 state,
@@ -121,6 +142,9 @@ def transition_trade_lifecycle(
             as_of,
         )
 
+    # OPEN ownership is immutable. Any metadata supplied by a later/repeated entry
+    # decision is deliberately ignored rather than backfilling or promoting the
+    # original entry horizon from later market information.
     target_stage = exit_stage or state.exit_stage or ExitStage.MONITOR
     if exit_execution_confirmed:
         if target_stage is not ExitStage.EXIT_READY:
@@ -158,10 +182,45 @@ def transition_trade_lifecycle(
     )
 
 
+def transition_entry_lifecycle(
+    state: TradeLifecycleState,
+    entry: "EntryDecision",
+    snapshot: "DecisionInputSnapshot",
+    *,
+    execution_event: "ExecutionTriggerEvent | None" = None,
+) -> TradeLifecycleTransition:
+    """Apply one Turn 6 entry result without reinterpreting its market semantics.
+
+    Only a FLAT->BUY transition creates metadata. Repeated BUY while OPEN is handled
+    by the existing suppression rule and cannot overwrite the original entry record.
+    """
+
+    if snapshot.as_of is None:
+        raise ValueError("entry lifecycle snapshot as_of must be known")
+
+    metadata: PositionEntryMetadata | None = None
+    if state.position is PositionState.FLAT and entry.action is DecisionAction.BUY:
+        if execution_event is None:
+            raise ValueError("opening BUY requires raw execution event for position metadata")
+        metadata = build_position_entry_metadata(
+            snapshot,
+            entry,
+            execution_event=execution_event,
+        )
+
+    return transition_trade_lifecycle(
+        state,
+        entry,  # EntryDecision and FinalDecision share the action contract.
+        as_of=snapshot.as_of,
+        entry_metadata=metadata,
+    )
+
+
 __all__ = [
     "ExitStage",
     "PositionState",
     "TradeLifecycleState",
     "TradeLifecycleTransition",
+    "transition_entry_lifecycle",
     "transition_trade_lifecycle",
 ]

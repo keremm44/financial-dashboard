@@ -57,6 +57,7 @@ from .lifecycle import (
     PositionState,
     TradeLifecycleState,
     TradeLifecycleTransition,
+    transition_entry_lifecycle,
     transition_trade_lifecycle,
 )
 from .market_state import (
@@ -83,6 +84,7 @@ from .participation import (
     ParticipationState,
     assess_participation,
 )
+from .position_metadata import PositionEntryMetadata, build_position_entry_metadata
 from .reaction import ReactionAssessment, ReactionState, assess_reaction
 from .scenario import (
     EntryScenarioAssessment,
@@ -184,6 +186,7 @@ __all__ = [
     "ParticipationAssessment",
     "ParticipationPropagationState",
     "ParticipationState",
+    "PositionEntryMetadata",
     "PositionHealth",
     "PositionState",
     "ReactionAssessment",
@@ -239,11 +242,13 @@ __all__ = [
     "build_horizon_structural_map",
     "build_horizon_structural_snapshot",
     "build_market_state",
+    "build_position_entry_metadata",
     "build_target_path",
     "build_target_path_from_snapshot",
     "classify_horizon_relation",
     "compose_entry_decision",
     "compose_final_decision",
     "decision_events_from_snapshot_stream",
+    "transition_entry_lifecycle",
     "transition_trade_lifecycle",
 ]
