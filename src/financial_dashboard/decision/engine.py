@@ -91,9 +91,7 @@ def _permission_policy(horizon: DecisionHorizon) -> tuple[str, tuple[str, ...]]:
     return "1h", ("30m",)
 
 
-def _decision_structure_projection(
-    structural: StructuralFactsProjection,
-) -> StructuralFactsProjection:
+def _decision_structure_projection(structural):
     """Normalize price-only Structure quality for Decision without mutating source diagnostics.
 
     Generic OHLCV quality marks a batch DATA_LIMITED for warnings such as zero volume
@@ -101,7 +99,14 @@ def _decision_structure_projection(
     already excludes unsafe candles, so those generic limitations must not erase 1D/1H
     structural authority inside the Decision layer. Other domain projections retain
     their native quality unchanged.
+
+    Some unit tests intentionally pass opaque pipeline doubles while monkeypatching the
+    downstream structural builder. Preserve those doubles unchanged; production calls
+    always provide ``StructuralFactsProjection``.
     """
+
+    if not isinstance(structural, StructuralFactsProjection):
+        return structural
 
     changed = False
     rows = []
@@ -134,7 +139,7 @@ def _decision_structure_projection(
 def _horizon_permission(
     snapshot: DecisionInputSnapshot,
     horizon: DecisionHorizon,
-    structural: StructuralFactsProjection,
+    structural,
 ) -> PermissionEnvelope:
     anchor_timeframe, trigger_timeframes = _permission_policy(horizon)
     axes = evaluate_context_axes(
