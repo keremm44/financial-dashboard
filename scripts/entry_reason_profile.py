@@ -10,13 +10,13 @@ import pandas as pd
 from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES
 from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
-from financial_dashboard.decision.arbiter import arbitrate_entry_scenarios
+from financial_dashboard.decision.arbiter import assess_entry_arbitration
 from financial_dashboard.decision.engine import assess_horizon_decision
-from financial_dashboard.decision.entry import compose_entry_decision
+from financial_dashboard.decision.entry import assess_entry_decision
 from financial_dashboard.decision.history_replay import HistoricalDecisionInputReplayRunner
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
 from financial_dashboard.decision.persistent_state import PersistentObjectStore
-from financial_dashboard.decision.scenario import ScenarioStage, assess_entry_scenario
+from financial_dashboard.decision.scenario import assess_entry_scenario
 from financial_dashboard.decision.structural import DecisionHorizon
 from financial_dashboard.decision.timeline_cache import load_frozen_decision_timeline
 from financial_dashboard.structure_location_replay import CausalBarClock
@@ -212,24 +212,13 @@ def main() -> None:
                 reason_counter=conflict_reasons,
             )
 
-        arbitration = arbitrate_entry_scenarios(lt, st)
+        arbitration = assess_entry_arbitration(snapshot)
         arbiter_state[_value(arbitration.state)] += 1
         arbiter_selection[_value(arbitration.selection)] += 1
         _add_many(arbiter_reasons, arbitration.reasons)
         _add_many(arbiter_waiting, arbitration.waiting_for)
 
-        selected_assessment = None
-        if arbitration.selected_scenario is not None and arbitration.selected_scenario.stage is ScenarioStage.QUALIFIED:
-            selected_assessment = (
-                lt_decision
-                if arbitration.selected_horizon is DecisionHorizon.LONG_TERM
-                else st_decision
-            )
-        entry = compose_entry_decision(
-            arbitration,
-            selected_assessment=selected_assessment,
-            execution_event_consumed=False,
-        )
+        entry = assess_entry_decision(snapshot, execution_event=None)
         entry_action[_value(entry.action)] += 1
         entry_stage["NONE" if entry.scenario_stage is None else _value(entry.scenario_stage)] += 1
         entry_horizon["NONE" if entry.selected_horizon is None else _value(entry.selected_horizon)] += 1
