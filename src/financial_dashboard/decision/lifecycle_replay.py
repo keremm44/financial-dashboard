@@ -3,15 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
+from .composer import DecisionAction
 from .entry import EntryDecision
-from .execution import ExecutionTriggerEvent
+from .execution import ExecutionTriggerEvent, ExecutionTriggerState
 from .exit import PositionExitDecision, transition_position_exit_lifecycle
 from .lifecycle import (
+    ExitStage,
     PositionState,
     TradeLifecycleState,
     TradeLifecycleTransition,
     transition_entry_lifecycle,
 )
+from .structural import StructuralDirection
 
 if TYPE_CHECKING:
     from financial_dashboard.decision_input import DecisionInputSnapshot
@@ -28,6 +31,7 @@ class CanonicalLifecycleReplayRow:
     transition: TradeLifecycleTransition
     entry_decision: EntryDecision | None
     exit_decision: PositionExitDecision | None
+    execution_proxy_used: bool = False
 
     def __post_init__(self) -> None:
         if self.previous_state != self.transition.previous:
@@ -40,6 +44,8 @@ class CanonicalLifecycleReplayRow:
             raise ValueError("FLAT replay row must be owned by entry decision")
         if self.previous_state.position is PositionState.OPEN and self.exit_decision is None:
             raise ValueError("OPEN replay row must be owned by position exit decision")
+        if self.execution_proxy_used and not self.event_consumed:
+            raise ValueError("canonical readiness proxy must be consumed on the same bar")
 
     @property
     def action(self):
@@ -72,12 +78,22 @@ class CanonicalLifecycleReplayResult:
 
 
 def _validate_initial_state(state: TradeLifecycleState) -> None:
-    # Tur 7 intentionally allowed metadata-less OPEN states as a temporary compatibility
-    # bridge. The canonical Tur 9 replay must not guess their horizon from later bars.
     if state.position is PositionState.OPEN and state.entry_metadata is None:
         raise ValueError(
             "canonical lifecycle replay requires entry metadata for an initial OPEN position"
         )
+
+
+def _proxy_event(as_of: Any, *, side: StructuralDirection, reason: str) -> ExecutionTriggerEvent:
+    return ExecutionTriggerEvent(
+        state=ExecutionTriggerState.CONFIRMED,
+        side=side,
+        timeframe="30m",
+        observed_at=as_of,
+        available_at=as_of,
+        reason=reason,
+        source_refs=(),
+    )
 
 
 def replay_canonical_trade_lifecycle(
@@ -87,6 +103,7 @@ def replay_canonical_trade_lifecycle(
     entry_execution_events: Mapping[Any, ExecutionTriggerEvent] | None = None,
     exit_execution_events: Mapping[Any, ExecutionTriggerEvent] | None = None,
     initial_state: TradeLifecycleState | None = None,
+    readiness_execution_proxy: bool = False,
 ) -> CanonicalLifecycleReplayResult:
     """Replay the canonical long-only ownership path over frozen snapshots.
 
@@ -94,6 +111,12 @@ def replay_canonical_trade_lifecycle(
     metadata transition. OPEN bars evaluate only the Turn 8 exit path. Entry and exit
     execution maps are intentionally separate and looked up only at the current bar;
     no event is cached or carried into a later snapshot.
+
+    ``readiness_execution_proxy`` is hindsight-audit infrastructure only. When no raw
+    execution event exists, it substitutes a same-bar confirmed 30m event exactly at
+    an already-computed READY or EXIT_READY boundary. It does not change scenario,
+    structure, eligibility, target, or exit-stage semantics and is explicitly marked
+    on the replay row so audit output cannot be confused with production execution.
     """
 
     state = initial_state or TradeLifecycleState()
@@ -125,6 +148,7 @@ def replay_canonical_trade_lifecycle(
         previous = state
         entry: EntryDecision | None = None
         exit_decision: PositionExitDecision | None = None
+        proxy_used = False
 
         if state.position is PositionState.FLAT:
             raw_entry_event = entry_events.get(snapshot.as_of)
@@ -132,6 +156,21 @@ def replay_canonical_trade_lifecycle(
                 config=config,
                 execution_event=raw_entry_event,
             )
+            if (
+                readiness_execution_proxy
+                and raw_entry_event is None
+                and entry.action is DecisionAction.READY
+            ):
+                raw_entry_event = _proxy_event(
+                    snapshot.as_of,
+                    side=StructuralDirection.LONG,
+                    reason="AUDIT_PROXY_CANONICAL_ENTRY_READY",
+                )
+                entry = snapshot.entry_decision(
+                    config=config,
+                    execution_event=raw_entry_event,
+                )
+                proxy_used = entry.action is DecisionAction.BUY
             transition = transition_entry_lifecycle(
                 state,
                 entry,
@@ -144,6 +183,22 @@ def replay_canonical_trade_lifecycle(
                 state,
                 execution_event=raw_exit_event,
             )
+            if (
+                readiness_execution_proxy
+                and raw_exit_event is None
+                and exit_decision.stage is ExitStage.EXIT_READY
+                and exit_decision.action is DecisionAction.HOLD
+            ):
+                raw_exit_event = _proxy_event(
+                    snapshot.as_of,
+                    side=StructuralDirection.SHORT,
+                    reason="AUDIT_PROXY_CANONICAL_EXIT_READY",
+                )
+                exit_decision = snapshot.position_exit_decision(
+                    state,
+                    execution_event=raw_exit_event,
+                )
+                proxy_used = exit_decision.action is DecisionAction.SELL
             transition = transition_position_exit_lifecycle(state, exit_decision)
 
         state = transition.current
@@ -155,6 +210,7 @@ def replay_canonical_trade_lifecycle(
                 transition=transition,
                 entry_decision=entry,
                 exit_decision=exit_decision,
+                execution_proxy_used=proxy_used,
             )
         )
         previous_as_of = snapshot.as_of
