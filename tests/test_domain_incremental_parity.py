@@ -22,17 +22,15 @@ from financial_dashboard.structure_location_replay import CausalBarClock
 
 
 def _semantic(value: Any) -> Any:
-    """Normalize immutable replay objects for causal parity assertions.
-
-    Dataclass equality is not suitable for these snapshots because NaN compares
-    unequal to itself and some frozen points contain pandas DataFrames whose direct
-    equality is element-wise. Normalize both cases without weakening numeric values.
-    """
+    """Normalize replay objects for deterministic causal parity assertions."""
     if isinstance(value, pd.DataFrame):
-        return tuple(
-            tuple((str(column), _semantic(row[column])) for column in value.columns)
-            for _, row in value.iterrows()
+        return (
+            "__DataFrame__",
+            tuple(str(column) for column in value.columns),
+            tuple(tuple(_semantic(item) for item in row) for row in value.itertuples(index=False, name=None)),
         )
+    if isinstance(value, pd.Series):
+        return ("__Series__", tuple((str(key), _semantic(item)) for key, item in value.items()))
     if isinstance(value, pd.Timestamp):
         return value.isoformat()
     if isinstance(value, float) and math.isnan(value):
@@ -45,6 +43,19 @@ def _semantic(value: Any) -> Any:
         return tuple(sorted((str(key), _semantic(item)) for key, item in value.items()))
     if isinstance(value, (tuple, list)):
         return tuple(_semantic(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return tuple(sorted((_semantic(item) for item in value), key=repr))
+    if hasattr(value, "__dict__") and not isinstance(value, type):
+        return tuple(sorted((str(key), _semantic(item)) for key, item in vars(value).items()))
+    slots = getattr(type(value), "__slots__", ())
+    if slots and not isinstance(value, type):
+        if isinstance(slots, str):
+            slots = (slots,)
+        return tuple(
+            (str(slot), _semantic(getattr(value, slot)))
+            for slot in slots
+            if hasattr(value, slot)
+        )
     return value
 
 
