@@ -23,6 +23,7 @@ from .coverage import CoverageAssessment, CoverageFamily, assess_coverage
 from .durability import DurabilityAssessment, DurabilityState, assess_durability
 from .eligibility import EligibilityAssessment, EligibilityState, assess_eligibility
 from .engine import DecisionEngineConfig, HorizonDecisionAssessment, assess_horizon_decision
+from .entry import EntryDecision, assess_entry_decision, compose_entry_decision
 from .environment import (
     EnvironmentAlignment,
     EnvironmentAssessment,
@@ -151,6 +152,7 @@ __all__ = [
     "DurabilityState",
     "EligibilityAssessment",
     "EligibilityState",
+    "EntryDecision",
     "EntryScenarioArbitration",
     "EntryScenarioAssessment",
     "EnvironmentAlignment",
@@ -218,6 +220,7 @@ __all__ = [
     "assess_durability",
     "assess_eligibility",
     "assess_entry_arbitration",
+    "assess_entry_decision",
     "assess_entry_scenario",
     "assess_environment",
     "assess_execution_trigger",
@@ -239,6 +242,7 @@ __all__ = [
     "build_target_path",
     "build_target_path_from_snapshot",
     "classify_horizon_relation",
+    "compose_entry_decision",
     "compose_final_decision",
     "decision_events_from_snapshot_stream",
     "transition_trade_lifecycle",
