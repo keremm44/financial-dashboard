@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from financial_dashboard.context.break_relations import (
+    CrossDomainBreakRelations,
+    build_cross_domain_break_relations,
+)
 from financial_dashboard.context.builder import CrossDomainBuildResult
 from financial_dashboard.context.envelope import ContextDataQuality, FactRef
 from financial_dashboard.context.fvg_engulfing_projection import FvgEngulfingLifecycleProjection
@@ -105,6 +109,16 @@ class DecisionInputSnapshot:
         return build_structural_level_view(
             self.structure,
             current_price=self.current_price,
+        )
+
+    @property
+    def break_relations(self) -> CrossDomainBreakRelations:
+        """Derived break-overlap view used to prevent cross-domain vote stacking."""
+
+        return build_cross_domain_break_relations(
+            structure=self.structure,
+            pattern=self.pattern_behavior,
+            support_resistance=self.support_resistance,
         )
 
     def quality_for_timeframe(self, timeframe: str) -> ContextDataQuality:
