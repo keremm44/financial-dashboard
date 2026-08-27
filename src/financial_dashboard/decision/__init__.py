@@ -36,6 +36,12 @@ from .execution import (
     ExecutionTriggerState,
     assess_execution_trigger,
 )
+from .exit import (
+    PositionExitDecision,
+    assess_position_exit_decision,
+    compose_position_exit_decision,
+    transition_position_exit_lifecycle,
+)
 from .historical_stream import (
     HistoricalDecisionStreamConfig,
     apply_readiness_position_proxy,
@@ -187,6 +193,7 @@ __all__ = [
     "ParticipationPropagationState",
     "ParticipationState",
     "PositionEntryMetadata",
+    "PositionExitDecision",
     "PositionHealth",
     "PositionState",
     "ReactionAssessment",
@@ -233,6 +240,7 @@ __all__ = [
     "assess_long_term_structure",
     "assess_opportunity",
     "assess_participation",
+    "assess_position_exit_decision",
     "assess_reaction",
     "assess_setup_trigger",
     "assess_short_term_structure",
@@ -248,7 +256,9 @@ __all__ = [
     "classify_horizon_relation",
     "compose_entry_decision",
     "compose_final_decision",
+    "compose_position_exit_decision",
     "decision_events_from_snapshot_stream",
     "transition_entry_lifecycle",
+    "transition_position_exit_lifecycle",
     "transition_trade_lifecycle",
 ]

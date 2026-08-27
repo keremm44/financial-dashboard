@@ -165,6 +165,17 @@ class DecisionInputSnapshot:
             execution_event=execution_event,
         )
 
+    def position_exit_decision(self, state, *, execution_event=None):
+        """Resolve one OPEN position through its frozen entry-horizon exit contract."""
+
+        from financial_dashboard.decision.exit import assess_position_exit_decision
+
+        return assess_position_exit_decision(
+            self,
+            state,
+            execution_event=execution_event,
+        )
+
     def quality_for_timeframe(self, timeframe: str) -> ContextDataQuality:
         normalized = timeframe.strip().lower()
         for key, quality in self.data_quality_by_timeframe:
