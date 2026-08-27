@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from itertools import combinations
 
-from .envelope import ContextDomain, FactRef
+from .envelope import ContextDataQuality, ContextDomain, FactRef
 from .pattern_behavior_projection import PatternBehaviorProjection, PatternBehaviorPhase
 from .projections import StructuralFactsProjection
 from .support_resistance_projection import SupportResistanceProjection
@@ -56,24 +56,32 @@ def classify_break_pair(left: BreakEvidence, right: BreakEvidence) -> BreakRelat
             reasons=("SAME_DOMAIN_PAIR_NOT_CROSS_DOMAIN",),
         )
 
-    if (
-        left.ref.lineage_id is not None
-        and right.ref.lineage_id is not None
-        and left.ref.lineage_id == right.ref.lineage_id
-    ):
-        return BreakRelation(
-            left=left,
-            right=right,
-            relation=BreakRelationKind.SAME_EVENT,
-            reasons=("EXPLICIT_SHARED_LINEAGE",),
-        )
-
     if left.direction not in {-1, 1} or right.direction not in {-1, 1}:
         return BreakRelation(
             left=left,
             right=right,
             relation=BreakRelationKind.UNRESOLVED,
             reasons=("BREAK_DIRECTION_UNAVAILABLE",),
+        )
+
+    shared_lineage = (
+        left.ref.lineage_id is not None
+        and right.ref.lineage_id is not None
+        and left.ref.lineage_id == right.ref.lineage_id
+    )
+    if shared_lineage:
+        if left.direction != right.direction:
+            return BreakRelation(
+                left=left,
+                right=right,
+                relation=BreakRelationKind.UNRESOLVED,
+                reasons=("SHARED_LINEAGE_DIRECTION_CONFLICT",),
+            )
+        return BreakRelation(
+            left=left,
+            right=right,
+            relation=BreakRelationKind.SAME_EVENT,
+            reasons=("EXPLICIT_SHARED_LINEAGE",),
         )
 
     if left.direction != right.direction:
@@ -136,12 +144,19 @@ def classify_break_pair(left: BreakEvidence, right: BreakEvidence) -> BreakRelat
 def _structure_breaks(structure: StructuralFactsProjection) -> list[BreakEvidence]:
     rows: list[BreakEvidence] = []
     for timeframe_fact in structure.timeframe_facts:
+        if timeframe_fact.data_quality is not ContextDataQuality.VALID:
+            continue
         for event in timeframe_fact.events:
+            if event.ref.data_quality is not ContextDataQuality.VALID:
+                continue
             if event.event_type not in {"EVENT_BOS", "EVENT_CHOCH", "BOS", "CHOCH"}:
                 continue
             if event.confirmation_status != "CONFIRMED":
                 continue
-            if event.validity != "VALID" or event.relevance not in {"CURRENT", "SUPERSEDED"}:
+            # This view describes evidence usable at the current decision snapshot;
+            # superseded/historical structure remains auditable elsewhere but must
+            # not participate in current cross-domain deduplication.
+            if event.validity != "VALID" or event.relevance != "CURRENT":
                 continue
             rows.append(
                 BreakEvidence(
@@ -166,9 +181,10 @@ def _pattern_breaks(pattern: PatternBehaviorProjection | None) -> list[BreakEvid
         PatternBehaviorPhase.BREAK_CONFIRMED,
         PatternBehaviorPhase.POST_BREAK_RETEST,
         PatternBehaviorPhase.RETEST_HELD,
-        PatternBehaviorPhase.COMPLETED,
     }
     for item in pattern.timeframe_facts:
+        if item.ref.data_quality is not ContextDataQuality.VALID:
+            continue
         if item.phase not in active_phases:
             continue
         if item.break_state_code is None or item.break_state_code == 0:
@@ -196,6 +212,8 @@ def _support_resistance_breaks(
     rows: list[BreakEvidence] = []
     active_states = {"RANGE_BREAK_CANDIDATE", "RANGE_BREAK_CONFIRMED"}
     for item in support_resistance.timeframe_facts:
+        if item.ref.data_quality is not ContextDataQuality.VALID:
+            continue
         if item.state not in active_states or item.break_direction not in {-1, 1}:
             continue
         rows.append(
