@@ -80,6 +80,11 @@ def _patch_pipeline(monkeypatch, *, side=StructuralDirection.LONG, calls=None):
     )
     monkeypatch.setattr(
         engine_module,
+        "_horizon_permission",
+        lambda snapshot, horizon: _permission(PermittedSide.LONG if side is StructuralDirection.LONG else PermittedSide.SHORT),
+    )
+    monkeypatch.setattr(
+        engine_module,
         "assess_durability",
         lambda stabil: DurabilityAssessment(DurabilityState.HEALTHY, ContextDataQuality.VALID, ("HEALTHY",), ()),
     )
@@ -136,6 +141,17 @@ def _patch_pipeline(monkeypatch, *, side=StructuralDirection.LONG, calls=None):
         engine_module,
         "assess_eligibility",
         lambda *args, **kwargs: EligibilityAssessment(EligibilityState.ELIGIBLE, ("ELIGIBLE",), (), ()),
+    )
+
+
+def test_permission_policy_uses_actual_horizon_structural_authorities():
+    assert engine_module._permission_policy(DecisionHorizon.LONG_TERM) == (
+        "1d",
+        ("4h", "2h", "1h"),
+    )
+    assert engine_module._permission_policy(DecisionHorizon.SHORT_TERM) == (
+        "1h",
+        ("30m",),
     )
 
 

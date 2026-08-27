@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from financial_dashboard.context.axes import evaluate_context_axes
 from financial_dashboard.context.envelope import ContextDataQuality, FactRef
-from financial_dashboard.context.permissions import PermissionEnvelope
+from financial_dashboard.context.permissions import PermissionEnvelope, resolve_permission_axes
 from financial_dashboard.decision_input import DecisionInputSnapshot
 
 from .composer import ActionPolicy, FinalDecision, compose_final_decision
@@ -74,6 +75,38 @@ def _timeframe_policy(horizon: DecisionHorizon) -> tuple[tuple[str, ...], str, s
         return _LT_REACTION_TIMEFRAMES, "4h", "4h", "1h"
     # ST Structure remains 1H-owned. 30m is setup timing / trigger context.
     return _ST_REACTION_TIMEFRAMES, "1h", "1h", "30m"
+
+
+def _permission_policy(horizon: DecisionHorizon) -> tuple[str, tuple[str, ...]]:
+    """Return the structural anchor and subordinate context TFs for permission.
+
+    Permission is derived cheaply from already-frozen read models. It must follow the
+    horizon's actual structural authority rather than reusing the workspace's generic
+    4H context anchor for both LT and ST decisions.
+    """
+
+    if horizon is DecisionHorizon.LONG_TERM:
+        return "1d", ("4h", "2h", "1h")
+    return "1h", ("30m",)
+
+
+def _horizon_permission(
+    snapshot: DecisionInputSnapshot,
+    horizon: DecisionHorizon,
+) -> PermissionEnvelope:
+    anchor_timeframe, trigger_timeframes = _permission_policy(horizon)
+    axes = evaluate_context_axes(
+        structural=snapshot.structure,
+        zones=snapshot.qualified_zones,
+        anchor_timeframe=anchor_timeframe,
+        liquidity=snapshot.liquidity,
+        participation=snapshot.participation,
+        pattern=snapshot.pattern,
+        volatility=snapshot.volatility,
+        ham=snapshot.ham,
+        trigger_timeframes=trigger_timeframes,
+    )
+    return resolve_permission_axes(axes)
 
 
 def _pattern_quality(snapshot: DecisionInputSnapshot, timeframe: str) -> ContextDataQuality:
@@ -193,6 +226,7 @@ def assess_horizon_decision(
         else structural_snapshot.short_term
     )
     reaction_timeframes, participation_tf, environment_tf, timing_tf = _timeframe_policy(horizon)
+    permission = _horizon_permission(snapshot, horizon)
 
     durability = assess_durability(snapshot.stabil_support)
     reaction = assess_reaction(
@@ -247,7 +281,7 @@ def assess_horizon_decision(
     )
     eligibility = assess_eligibility(
         structural,
-        permission=snapshot.permission,
+        permission=permission,
         timing=timing,
         opportunity=opportunity,
         conflict=conflict,
@@ -282,7 +316,7 @@ def assess_horizon_decision(
         as_of=snapshot.as_of,
         structural_snapshot=structural_snapshot,
         structural=structural,
-        permission=snapshot.permission,
+        permission=permission,
         durability=durability,
         reaction=reaction,
         timing_reaction=timing_reaction,

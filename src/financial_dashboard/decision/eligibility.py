@@ -65,17 +65,19 @@ def assess_eligibility(
     if structural.thesis_state in {ThesisState.INVALIDATED, ThesisState.UNRESOLVED}:
         blockers.append(f"STRUCTURAL_THESIS_{structural.thesis_state.value}")
 
-    # G4: Permission is a gate/summary, not evidence.
+    # G4: Only Permission BLOCKED is an accepted hard gate. A permission side that
+    # differs from the horizon Structure side describes a scope/context mismatch
+    # (commonly a counter-reaction), not proof that the structural thesis is invalid.
     expected_permission_side = _permission_side(structural.direction)
     if permission.gate_state is GateState.BLOCKED:
         blockers.extend(permission.blocking_reasons or ("PERMISSION_BLOCKED",))
     elif permission.permitted_side not in {expected_permission_side, PermittedSide.NONE}:
-        blockers.append("PERMISSION_SIDE_MISMATCH")
+        waiting.append("PERMISSION_SCOPE_SIDE_TO_RECONCILE")
     elif permission.permitted_side is PermittedSide.NONE and permission.gate_state in {
         GateState.OPEN,
         GateState.CONDITIONAL,
     }:
-        blockers.append("PERMISSION_SIDE_UNRESOLVED")
+        waiting.append("PERMISSION_SIDE_TO_RESOLVE")
 
     # G5/G6/G7.
     if environment.risk is EnvironmentRisk.HARD_BLOCK:

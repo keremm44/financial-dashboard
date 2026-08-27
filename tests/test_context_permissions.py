@@ -1,11 +1,27 @@
 from __future__ import annotations
 
-from financial_dashboard.context.axes import evaluate_context_axes
+from financial_dashboard.context.axes import (
+    ConflictState,
+    ContextAxes,
+    ContextDirection,
+    ContinuationContext,
+    HamReadinessContext,
+    MTFContext,
+    ObjectiveContext,
+    ParticipationContext,
+    PatternReadiness,
+    ReactionContext,
+    ReversalContext,
+    StructuralThesis,
+    VolatilityContext,
+    evaluate_context_axes,
+)
 from financial_dashboard.context.permissions import (
     GateState,
     PermissionScope,
     PermittedSide,
     resolve_permission,
+    resolve_permission_axes,
 )
 from financial_dashboard.context.snapshot import build_context_snapshot
 from financial_dashboard.context.zone_interaction import ZoneInteractionState
@@ -121,3 +137,30 @@ def test_unresolved_canonical_structure_blocks_permission() -> None:
     assert envelope.permitted_side is PermittedSide.NONE
     assert envelope.gate_state is GateState.BLOCKED
     assert envelope.blocking_reasons == ("CANONICAL_STRUCTURE_UNRESOLVED",)
+
+
+def test_unresolved_context_conflict_is_wait_not_hard_block() -> None:
+    axes = ContextAxes(
+        anchor_timeframe="1h",
+        structural_thesis=StructuralThesis.UP,
+        structural_direction=ContextDirection.UP,
+        continuation=ContinuationContext.ALIGNED,
+        reaction=ReactionContext.NONE,
+        reaction_direction=ContextDirection.NONE,
+        reversal=ReversalContext.NOT_PRESENT,
+        reversal_direction=ContextDirection.NONE,
+        objective=ObjectiveContext.NONE,
+        participation=ParticipationContext.NEUTRAL,
+        volatility=VolatilityContext.BALANCED,
+        pattern_readiness=PatternReadiness.NO_PATTERN,
+        mtf=MTFContext.UNRESOLVED,
+        ham_readiness=HamReadinessContext.DEGRADED,
+        conflict=ConflictState.UNRESOLVED,
+        reasons=(),
+    )
+    envelope = resolve_permission_axes(axes)
+
+    assert envelope.gate_state is GateState.WAITING
+    assert envelope.permitted_side is PermittedSide.LONG
+    assert envelope.blocking_reasons == ()
+    assert envelope.waiting_for == ("CONTEXT_CONFLICT_TO_RESOLVE",)

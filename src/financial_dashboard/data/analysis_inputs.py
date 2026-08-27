@@ -13,6 +13,9 @@ from .identity import normalize_symbol
 from .parquet_store import ParquetOHLCVStore
 
 
+ANALYSIS_MAX_BARS_BY_TIMEFRAME = MappingProxyType({"1d": 200})
+
+
 @dataclass(frozen=True, slots=True)
 class TimeframeInputSnapshot:
     timeframe: str
@@ -85,6 +88,9 @@ def load_analysis_inputs(
     snapshots: dict[str, TimeframeInputSnapshot] = {}
     for timeframe in normalized_timeframes:
         raw = store.load(normalized_symbol, timeframe)
+        max_bars = ANALYSIS_MAX_BARS_BY_TIMEFRAME.get(timeframe)
+        if max_bars is not None and len(raw) > max_bars:
+            raw = raw.tail(max_bars).reset_index(drop=True)
         batch = prepare_engine_input(raw)
         snapshots[timeframe] = TimeframeInputSnapshot(
             timeframe=timeframe,
@@ -109,6 +115,7 @@ def load_analysis_inputs(
 
 
 __all__ = [
+    "ANALYSIS_MAX_BARS_BY_TIMEFRAME",
     "AnalysisInputSnapshot",
     "TimeframeInputSnapshot",
     "cache_fingerprint",

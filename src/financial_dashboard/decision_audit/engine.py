@@ -4,17 +4,19 @@ from collections import Counter
 from dataclasses import replace
 from math import prod
 from statistics import mean, median
-from typing import Iterable
+from typing import Iterable, Mapping
 
 import pandas as pd
 
 from .models import (
     AggregateTradeMetrics,
+    CensoredTradeAudit,
     DecisionAction,
     DecisionAuditConfig,
     DecisionAuditReport,
     DecisionEvent,
     DecisionSide,
+    LifecycleAudit,
     MissedOpportunity,
     SignalStabilityAudit,
     TradeAudit,
@@ -22,6 +24,7 @@ from .models import (
 
 _REQUIRED_BAR_COLUMNS = {"timestamp", "high", "low", "close"}
 _EPS = 1e-12
+_EXIT_STAGES = frozenset({"MONITOR", "EXIT_WATCH", "EXIT_READY"})
 
 
 def _as_timestamp(value: object) -> pd.Timestamp:
@@ -111,6 +114,11 @@ def _max_with_index(bars: pd.DataFrame, start: int, end: int) -> tuple[float, in
     series = bars.loc[start:end, "high"]
     index = int(series.idxmax())
     return float(series.loc[index]), index
+
+
+def _mean_or_none(values: Iterable[float | None]) -> float | None:
+    clean = [float(value) for value in values if value is not None]
+    return None if not clean else mean(clean)
 
 
 def _audit_long_trade(
@@ -219,14 +227,47 @@ def _audit_long_trade(
     )
 
 
+def _audit_censored_long_trade(
+    symbol: str,
+    entry_event: DecisionEvent,
+    entry_index: int,
+    bars: pd.DataFrame,
+    *,
+    latest_snapshot: Mapping[str, object],
+) -> CensoredTradeAudit:
+    entry_price = _event_price(entry_event, bars, entry_index)
+    end_index = len(bars) - 1
+    end_price = float(bars.iloc[end_index]["close"])
+    open_slice = bars.loc[entry_index:end_index]
+    peak = float(open_slice["high"].max())
+    trough = float(open_slice["low"].min())
+    return CensoredTradeAudit(
+        symbol=symbol,
+        side=DecisionSide.LONG,
+        entry_time=entry_event.timestamp,
+        sample_end_time=bars.iloc[end_index]["timestamp"],
+        entry_price=entry_price,
+        sample_end_price=end_price,
+        bars_open=max(1, end_index - entry_index + 1),
+        unrealized_return_pct=_pct(end_price - entry_price, entry_price) or 0.0,
+        mfe_pct=_pct(peak - entry_price, entry_price) or 0.0,
+        mae_pct=_pct(trough - entry_price, entry_price) or 0.0,
+        entry_reasons=entry_event.reasons,
+        entry_source_lineage=entry_event.source_lineage,
+        entry_snapshot=entry_event.snapshot,
+        latest_snapshot=latest_snapshot,
+    )
+
+
 def _pair_long_trades(
     symbol: str,
     events: tuple[DecisionEvent, ...],
     bars: pd.DataFrame,
     config: DecisionAuditConfig,
-) -> tuple[tuple[TradeAudit, ...], int, int]:
+) -> tuple[tuple[TradeAudit, ...], tuple[CensoredTradeAudit, ...], int, int]:
     open_entry: tuple[DecisionEvent, int] | None = None
     audits: list[TradeAudit] = []
+    censored: list[CensoredTradeAudit] = []
     unmatched_buy = 0
     unmatched_sell = 0
 
@@ -258,13 +299,18 @@ def _pair_long_trades(
             open_entry = None
 
     if open_entry is not None:
-        unmatched_buy += 1
-    return tuple(audits), unmatched_buy, unmatched_sell
-
-
-def _mean_or_none(values: Iterable[float | None]) -> float | None:
-    clean = [float(value) for value in values if value is not None]
-    return None if not clean else mean(clean)
+        entry_event, entry_index = open_entry
+        latest_snapshot = {} if not events else events[-1].snapshot
+        censored.append(
+            _audit_censored_long_trade(
+                symbol,
+                entry_event,
+                entry_index,
+                bars,
+                latest_snapshot=latest_snapshot,
+            )
+        )
+    return tuple(audits), tuple(censored), unmatched_buy, unmatched_sell
 
 
 def _aggregate(trades: tuple[TradeAudit, ...]) -> AggregateTradeMetrics:
@@ -384,6 +430,183 @@ def _signal_stability(events: tuple[DecisionEvent, ...], bars: pd.DataFrame) -> 
     )
 
 
+def _mapping(value: object) -> Mapping[str, object] | None:
+    return value if isinstance(value, Mapping) else None
+
+
+def _lifecycle_metadata(event: DecisionEvent) -> Mapping[str, object] | None:
+    return _mapping(event.snapshot.get("trade_lifecycle"))
+
+
+def _long_exit_metadata(event: DecisionEvent) -> Mapping[str, object] | None:
+    return _mapping(event.snapshot.get("long_exit"))
+
+
+def _stage_episodes(rows: list[tuple[int, str]], stage: str) -> list[tuple[int, int]]:
+    episodes: list[tuple[int, int]] = []
+    start: int | None = None
+    previous: int | None = None
+    for index, value in rows:
+        if value == stage:
+            if start is None or previous is None or index != previous + 1:
+                if start is not None and previous is not None:
+                    episodes.append((start, previous))
+                start = index
+            previous = index
+        elif start is not None and previous is not None:
+            episodes.append((start, previous))
+            start = None
+            previous = None
+    if start is not None and previous is not None:
+        episodes.append((start, previous))
+    return episodes
+
+
+def _lifecycle_audit(
+    events: tuple[DecisionEvent, ...],
+    bars: pd.DataFrame,
+    *,
+    censored_count: int,
+    unmatched_buy: int,
+    unmatched_sell: int,
+) -> LifecycleAudit:
+    metadata_rows: list[tuple[int, DecisionEvent, Mapping[str, object]]] = []
+    for event in events:
+        metadata = _lifecycle_metadata(event)
+        if metadata is not None:
+            metadata_rows.append((_event_index(bars, event.timestamp), event, metadata))
+
+    violations: list[str] = []
+    if metadata_rows and len(metadata_rows) != len(events):
+        violations.append("LIFECYCLE_METADATA_PARTIAL_STREAM")
+    if metadata_rows and unmatched_buy:
+        violations.append(f"LIFECYCLE_REPEATED_BUY_EVENTS:{unmatched_buy}")
+    if metadata_rows and unmatched_sell:
+        violations.append(f"LIFECYCLE_FLAT_SELL_EVENTS:{unmatched_sell}")
+
+    previous_current: str | None = None
+    previous_trade_id: object | None = None
+    completed_cycles = 0
+    hold_bars = 0
+    protected_hold_bars = 0
+    pressured_hold_bars = 0
+    stage_rows: list[tuple[int, str]] = []
+
+    for ordinal, (index, event, metadata) in enumerate(metadata_rows):
+        previous_position = metadata.get("previous_position")
+        current_position = metadata.get("position_state")
+        snapshot_action = metadata.get("action")
+        exit_stage = metadata.get("exit_stage")
+        trade_id = metadata.get("trade_id")
+        readiness_proxy = bool(event.snapshot.get("lifecycle_readiness_proxy"))
+
+        if snapshot_action != event.action.value:
+            violations.append(f"LIFECYCLE_ACTION_MISMATCH:{ordinal}")
+        if previous_position not in {"FLAT", "OPEN"} or current_position not in {"FLAT", "OPEN"}:
+            violations.append(f"LIFECYCLE_POSITION_INVALID:{ordinal}")
+            continue
+        if previous_current is not None and previous_position != previous_current:
+            violations.append(f"LIFECYCLE_POSITION_DISCONTINUITY:{ordinal}")
+
+        if current_position == "FLAT":
+            if exit_stage is not None or trade_id is not None:
+                violations.append(f"LIFECYCLE_FLAT_CARRIES_OPEN_METADATA:{ordinal}")
+        else:
+            if exit_stage not in _EXIT_STAGES or not trade_id:
+                violations.append(f"LIFECYCLE_OPEN_METADATA_INVALID:{ordinal}")
+            if previous_position == "OPEN" and previous_trade_id is not None and trade_id != previous_trade_id:
+                violations.append(f"LIFECYCLE_TRADE_ID_CHANGED_WHILE_OPEN:{ordinal}")
+
+        if event.action is DecisionAction.BUY:
+            if not (previous_position == "FLAT" and current_position == "OPEN"):
+                violations.append(f"LIFECYCLE_BUY_TRANSITION_INVALID:{ordinal}")
+            execution = _mapping(event.snapshot.get("execution"))
+            if (
+                not readiness_proxy
+                and execution is not None
+                and execution.get("state") != "CONFIRMED"
+            ):
+                violations.append(f"LIFECYCLE_BUY_WITHOUT_CONFIRMED_EXECUTION:{ordinal}")
+        elif event.action is DecisionAction.SELL:
+            completed_cycles += 1
+            if not (previous_position == "OPEN" and current_position == "FLAT"):
+                violations.append(f"LIFECYCLE_SELL_TRANSITION_INVALID:{ordinal}")
+            long_exit = _long_exit_metadata(event)
+            exit_execution = None if long_exit is None else _mapping(long_exit.get("execution"))
+            if long_exit is None or long_exit.get("stage") != "EXIT_READY":
+                violations.append(f"LIFECYCLE_SELL_WITHOUT_EXIT_READY:{ordinal}")
+            if (
+                not readiness_proxy
+                and (exit_execution is None or exit_execution.get("state") != "CONFIRMED")
+            ):
+                violations.append(f"LIFECYCLE_SELL_WITHOUT_CONFIRMED_EXIT_EVENT:{ordinal}")
+        elif event.action is DecisionAction.HOLD:
+            hold_bars += 1
+            if not (previous_position == "OPEN" and current_position == "OPEN"):
+                violations.append(f"LIFECYCLE_HOLD_OUTSIDE_OPEN_POSITION:{ordinal}")
+        elif event.action in {DecisionAction.WAIT, DecisionAction.READY, DecisionAction.NO_TRADE}:
+            if current_position == "OPEN":
+                violations.append(f"LIFECYCLE_ENTRY_ACTION_LEAKED_WHILE_OPEN:{ordinal}")
+
+        long_exit = _long_exit_metadata(event)
+        if long_exit is not None:
+            stage = long_exit.get("stage")
+            if isinstance(stage, str) and stage in _EXIT_STAGES:
+                stage_rows.append((index, stage))
+            health = long_exit.get("position_health")
+            if event.action is DecisionAction.HOLD and health == "PROTECTED":
+                protected_hold_bars += 1
+            if event.action is DecisionAction.HOLD and health == "PRESSURED":
+                pressured_hold_bars += 1
+
+        previous_current = str(current_position)
+        previous_trade_id = trade_id if current_position == "OPEN" else None
+
+    watch_episodes = _stage_episodes(stage_rows, "EXIT_WATCH")
+    ready_episodes = _stage_episodes(stage_rows, "EXIT_READY")
+    watch_to_monitor = sum(
+        1
+        for (_, previous), (_, current) in zip(stage_rows, stage_rows[1:])
+        if previous == "EXIT_WATCH" and current == "MONITOR"
+    )
+    ready_to_watch = sum(
+        1
+        for (_, previous), (_, current) in zip(stage_rows, stage_rows[1:])
+        if previous == "EXIT_READY" and current == "EXIT_WATCH"
+    )
+
+    ready_to_sell_delays: list[int] = []
+    ready_start: int | None = None
+    stage_by_index = {index: stage for index, stage in stage_rows}
+    for index, event, _ in metadata_rows:
+        stage = stage_by_index.get(index)
+        if stage == "EXIT_READY" and ready_start is None:
+            ready_start = index
+        if event.action is DecisionAction.SELL and ready_start is not None:
+            ready_to_sell_delays.append(max(0, index - ready_start))
+            ready_start = None
+        elif ready_start is not None and stage not in {None, "EXIT_READY"}:
+            ready_start = None
+
+    return LifecycleAudit(
+        metadata_events=len(metadata_rows),
+        lifecycle_valid=not violations,
+        violations=tuple(violations),
+        completed_cycles=completed_cycles,
+        censored_open_trades=censored_count,
+        hold_bars=hold_bars,
+        protected_hold_bars=protected_hold_bars,
+        pressured_hold_bars=pressured_hold_bars,
+        exit_watch_episode_count=len(watch_episodes),
+        exit_ready_episode_count=len(ready_episodes),
+        average_exit_watch_duration_bars=_mean_or_none(end - start + 1 for start, end in watch_episodes),
+        average_exit_ready_duration_bars=_mean_or_none(end - start + 1 for start, end in ready_episodes),
+        average_exit_ready_to_sell_delay_bars=_mean_or_none(ready_to_sell_delays),
+        exit_watch_to_monitor_reversions=watch_to_monitor,
+        exit_ready_to_watch_reversions=ready_to_watch,
+    )
+
+
 def _meaningful_long_opportunities(
     events: tuple[DecisionEvent, ...],
     bars: pd.DataFrame,
@@ -460,9 +683,14 @@ def audit_decisions(
 ) -> DecisionAuditReport:
     """Run causal-decision/hindsight-quality audit over one decision stream.
 
-    Decisions are treated as immutable causal outputs. Future bars are consulted only
-    after the fact to grade timing, MAE/MFE, giveback and missed opportunities.
-    Nothing calculated here is intended to feed the decision that produced the event.
+    Decisions are immutable causal outputs. Future bars are consulted only after the
+    fact to grade timing, MAE/MFE, giveback and missed opportunities. Lifecycle
+    metadata is validated rather than reconstructed when present. An entry still open
+    at sample end is reported as right-censored, never as a failed/unmatched BUY.
+
+    Audit-only readiness-proxy events remain explicitly marked in the snapshot and
+    are validated against their proxy contract rather than falsely requiring a real
+    fresh execution event that the proxy deliberately substitutes.
     """
 
     cfg = config or DecisionAuditConfig()
@@ -476,13 +704,20 @@ def audit_decisions(
             key=lambda item: _as_timestamp(item.timestamp),
         )
     )
-    trades, unmatched_buy, unmatched_sell = _pair_long_trades(
+    trades, censored, unmatched_buy, unmatched_sell = _pair_long_trades(
         symbol,
         events,
         prepared,
         cfg,
     )
     opportunities = _meaningful_long_opportunities(events, prepared, cfg)
+    lifecycle = _lifecycle_audit(
+        events,
+        prepared,
+        censored_count=len(censored),
+        unmatched_buy=unmatched_buy,
+        unmatched_sell=unmatched_sell,
+    )
     return DecisionAuditReport(
         symbol=symbol,
         timeframe=timeframe,
@@ -490,7 +725,9 @@ def audit_decisions(
         end_time=None if prepared.empty else prepared.iloc[-1]["timestamp"],
         metrics=_aggregate(trades),
         signal_stability=_signal_stability(events, prepared),
+        lifecycle=lifecycle,
         trades=trades,
+        censored_trades=censored,
         missed_opportunities=opportunities,
         unmatched_buy_events=unmatched_buy,
         unmatched_sell_events=unmatched_sell,

@@ -122,6 +122,30 @@ class TradeAudit:
 
 
 @dataclass(frozen=True, slots=True)
+class CensoredTradeAudit:
+    """A causally opened long trade still open at the end of the audit sample.
+
+    It is right-censored, not an unmatched BUY and not a completed trade. Hindsight
+    metrics stop at the final available audit bar and never feed the decision layer.
+    """
+
+    symbol: str
+    side: DecisionSide
+    entry_time: Any
+    sample_end_time: Any
+    entry_price: float
+    sample_end_price: float
+    bars_open: int
+    unrealized_return_pct: float
+    mfe_pct: float
+    mae_pct: float
+    entry_reasons: tuple[str, ...] = ()
+    entry_source_lineage: tuple[str, ...] = ()
+    entry_snapshot: Mapping[str, Any] = field(default_factory=dict)
+    latest_snapshot: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
 class SignalStabilityAudit:
     action_counts: Mapping[str, int]
     ready_to_wait_reversals: int
@@ -130,6 +154,27 @@ class SignalStabilityAudit:
     average_wait_duration_bars: float | None
     average_ready_duration_bars: float | None
     average_ready_to_buy_delay_bars: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class LifecycleAudit:
+    """Validation and stability measurements for lifecycle-aware decision streams."""
+
+    metadata_events: int
+    lifecycle_valid: bool
+    violations: tuple[str, ...]
+    completed_cycles: int
+    censored_open_trades: int
+    hold_bars: int
+    protected_hold_bars: int
+    pressured_hold_bars: int
+    exit_watch_episode_count: int
+    exit_ready_episode_count: int
+    average_exit_watch_duration_bars: float | None
+    average_exit_ready_duration_bars: float | None
+    average_exit_ready_to_sell_delay_bars: float | None
+    exit_watch_to_monitor_reversions: int
+    exit_ready_to_watch_reversions: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,7 +238,9 @@ class DecisionAuditReport:
     end_time: Any | None
     metrics: AggregateTradeMetrics
     signal_stability: SignalStabilityAudit
+    lifecycle: LifecycleAudit
     trades: tuple[TradeAudit, ...]
+    censored_trades: tuple[CensoredTradeAudit, ...] = ()
     missed_opportunities: tuple[MissedOpportunity, ...] = ()
     unmatched_buy_events: int = 0
     unmatched_sell_events: int = 0
@@ -201,11 +248,13 @@ class DecisionAuditReport:
 
 __all__ = [
     "AggregateTradeMetrics",
+    "CensoredTradeAudit",
     "DecisionAction",
     "DecisionAuditConfig",
     "DecisionAuditReport",
     "DecisionEvent",
     "DecisionSide",
+    "LifecycleAudit",
     "MissedOpportunity",
     "SignalStabilityAudit",
     "TradeAudit",

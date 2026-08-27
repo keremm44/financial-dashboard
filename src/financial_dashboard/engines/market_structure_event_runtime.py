@@ -13,29 +13,31 @@ from .market_structure_state import EVENT_BOS, EVENT_CHOCH, EVENT_TRANSITION_FAI
 
 
 class RuntimeMarketStructureEventLedger(MarketStructureEventLedger):
-    """Event ledger with exact annotation parity and bar-local caching.
+    """Event ledger with exact annotation parity and lazy dynamic ages.
 
     Event lifecycle annotations change only when a new Structure event is appended.
-    The canonical ledger historically rebuilt those annotations on every closed bar.
-    We cache the static annotation graph and only refresh the mathematically dynamic
-    `age_bars` field per bar. Repeated reads at the same bar return the same tuple.
+    The static annotation graph is therefore cached across ordinary bars. Dynamic
+    ``age_bars`` values are materialized only for external reads that require them.
     """
 
     def __init__(self) -> None:
         super().__init__()
         self._static_cache: tuple[MarketStructureEventRecord, ...] | None = ()
+        self._latest_by_scope: dict[str, MarketStructureEventRecord] = {}
         self._snapshot_bar: int | None = None
         self._snapshot_cache: tuple[MarketStructureEventRecord, ...] = ()
 
     def reset(self) -> None:
         super().reset()
         self._static_cache = ()
+        self._latest_by_scope = {}
         self._snapshot_bar = None
         self._snapshot_cache = ()
 
     def append(self, event, rows):
         record = super().append(event, rows)
         self._static_cache = None
+        self._latest_by_scope = {}
         self._snapshot_bar = None
         self._snapshot_cache = ()
         return record
@@ -104,14 +106,49 @@ class RuntimeMarketStructureEventLedger(MarketStructureEventLedger):
                 ).append(index)
 
         self._static_cache = tuple(annotated)
+        latest_by_scope: dict[str, MarketStructureEventRecord] = {}
+        for record in reversed(self._static_cache):
+            latest_by_scope.setdefault(record.scope, record)
+        self._latest_by_scope = latest_by_scope
         return self._static_cache
+
+    def static_snapshot(self) -> tuple[MarketStructureEventRecord, ...]:
+        """Return annotated records without recomputing dynamic ``age_bars``."""
+        return self._static_snapshot()
+
+    def latest_static(self, *, scope: str) -> MarketStructureEventRecord | None:
+        self._static_snapshot()
+        return self._latest_by_scope.get(scope)
+
+    @staticmethod
+    def _with_age(
+        record: MarketStructureEventRecord | None,
+        *,
+        current_bar: int,
+    ) -> MarketStructureEventRecord | None:
+        if record is None:
+            return None
+        age = max(0, current_bar - record.event_bar)
+        if record.age_bars == age:
+            return record
+        return replace(record, age_bars=age)
+
+    def latest_for_scope(
+        self,
+        *,
+        current_bar: int,
+        scope: str,
+    ) -> MarketStructureEventRecord | None:
+        return self._with_age(self.latest_static(scope=scope), current_bar=current_bar)
 
     def snapshot(self, *, current_bar: int) -> tuple[MarketStructureEventRecord, ...]:
         if self._snapshot_bar == current_bar:
             return self._snapshot_cache
         static = self._static_snapshot()
         self._snapshot_cache = tuple(
-            replace(record, age_bars=max(0, current_bar - record.event_bar))
+            record
+            if record.age_bars == max(0, current_bar - record.event_bar)
+            else replace(record, age_bars=max(0, current_bar - record.event_bar))
             for record in static
         )
         self._snapshot_bar = current_bar

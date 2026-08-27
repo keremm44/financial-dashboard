@@ -81,28 +81,36 @@ def assess_participation(
         )
 
     quality = row.ref.data_quality
+    same_side_unsupported_break = (
+        row.break_participation is BreakParticipationBehavior.UNSUPPORTED
+        and row.break_direction == direction
+    )
+    opposing_unsupported_break = (
+        row.break_participation is BreakParticipationBehavior.UNSUPPORTED
+        and row.break_direction == -direction
+    )
+
     if quality is not ContextDataQuality.VALID or row.participation_trend is ParticipationTrend.UNAVAILABLE:
         return ParticipationAssessment(
             ParticipationState.UNKNOWN,
             bool(row.heavy_conflict),
-            row.break_participation is BreakParticipationBehavior.UNSUPPORTED,
+            same_side_unsupported_break,
             quality,
             (f"PARTICIPATION_DATA_{quality.value}:{normalized}",),
             (row.ref,),
         )
 
-    break_unsupported = row.break_participation is BreakParticipationBehavior.UNSUPPORTED
     reasons: list[str] = []
 
     # Heavy conflict is an explicit native severity flag and remains OPPOSING even
     # if other volume fields are weak. Ordinary LOW_PARTICIPATION, fading/ended
-    # participation, weak effort/result and an unsupported same-side break are WEAK
-    # before generic directional evidence is considered.
+    # participation, weak effort/result and an unsupported break only weaken the
+    # structural path when that unsupported break is on the structural side.
     if row.heavy_conflict:
         return ParticipationAssessment(
             ParticipationState.OPPOSING,
             True,
-            break_unsupported,
+            same_side_unsupported_break,
             quality,
             ("PARTICIPATION_HEAVY_CONFLICT",),
             (row.ref,),
@@ -112,7 +120,7 @@ def assess_participation(
         row.status.strip().upper() == "LOW_PARTICIPATION"
         or row.participation_trend in {ParticipationTrend.FADING, ParticipationTrend.ENDED}
         or row.effort_result is EffortResultBehavior.WEAK_RESULT
-        or break_unsupported
+        or same_side_unsupported_break
     )
     if weak:
         if row.status.strip().upper() == "LOW_PARTICIPATION":
@@ -121,12 +129,12 @@ def assess_participation(
             reasons.append(f"PARTICIPATION_{row.participation_trend.value}")
         if row.effort_result is EffortResultBehavior.WEAK_RESULT:
             reasons.append("WEAK_EFFORT_RESULT")
-        if break_unsupported:
-            reasons.append("UNSUPPORTED_BREAK")
+        if same_side_unsupported_break:
+            reasons.append("UNSUPPORTED_BREAK_ALIGNS_STRUCTURE")
         return ParticipationAssessment(
             ParticipationState.WEAK,
             False,
-            break_unsupported,
+            same_side_unsupported_break,
             quality,
             tuple(reasons),
             (row.ref,),
@@ -177,12 +185,24 @@ def assess_participation(
             reasons.append("SUPPORTED_BREAK_ALIGNS_STRUCTURE")
         if aligned_evidence:
             reasons.append("PARTICIPATION_EVIDENCE_ALIGNS_STRUCTURE")
+        if opposing_unsupported_break:
+            reasons.append("OPPOSING_BREAK_UNSUPPORTED")
         return ParticipationAssessment(
             ParticipationState.SUPPORTIVE,
             False,
             False,
             quality,
             tuple(reasons),
+            (row.ref,),
+        )
+
+    if opposing_unsupported_break:
+        return ParticipationAssessment(
+            ParticipationState.NEUTRAL,
+            False,
+            False,
+            quality,
+            ("OPPOSING_BREAK_UNSUPPORTED",),
             (row.ref,),
         )
 

@@ -42,6 +42,10 @@ def _unique_refs(refs: list[FactRef]) -> tuple[FactRef, ...]:
     return tuple(sorted(by_key.values(), key=lambda ref: ref.deterministic_key))
 
 
+def _ranges_overlap(lower_a: float, upper_a: float, lower_b: float, upper_b: float) -> bool:
+    return max(float(lower_a), float(lower_b)) <= min(float(upper_a), float(upper_b))
+
+
 def assess_reaction(
     side: StructuralDirection,
     *,
@@ -52,8 +56,10 @@ def assess_reaction(
     """Assess reaction lifecycle relative to an already-established Structure side.
 
     OB/FVG can describe whether a reaction is developing, confirmed or failed.
-    Engulfing may confirm an existing reaction path but cannot create one when no
-    reaction-zone interaction exists. No supporting fact can change ``side``.
+    Engulfing is confirmation-only and is consumed here only when it belongs to the
+    same timeframe and spatially overlaps an already-usable same-side OB/FVG zone.
+    This prevents an unrelated same-direction engulfing elsewhere on the chart from
+    manufacturing confirmation for a different reaction path.
     """
 
     direction = _direction_value(side)
@@ -76,16 +82,19 @@ def assess_reaction(
     usable_zone_seen = False
     unavailable_seen = False
     reasons: list[str] = []
+    usable_zone_ranges: list[tuple[str, float, float]] = []
 
     if order_blocks is not None:
         for item in order_blocks.observations:
-            if item.timeframe not in allowed_tfs or (1 if item.bullish else -1) != direction:
+            timeframe = item.timeframe.strip().lower()
+            if timeframe not in allowed_tfs or (1 if item.bullish else -1) != direction:
                 continue
             refs.append(item.ref)
             if item.ref.data_quality is not ContextDataQuality.VALID:
                 unavailable_seen = True
                 continue
             usable_zone_seen = True
+            usable_zone_ranges.append((timeframe, float(item.bottom), float(item.top)))
             state = item.state.strip().upper()
             interaction = item.interaction.strip().upper()
             if interaction == "REACTION_CONFIRMED" or state == "REACTION_CONFIRMED":
@@ -106,13 +115,17 @@ def assess_reaction(
 
     if fvg_engulfing is not None:
         for item in fvg_engulfing.fvg:
-            if item.ref.timeframe not in allowed_tfs or int(item.direction) != direction:
+            timeframe = item.ref.timeframe.strip().lower()
+            if timeframe not in allowed_tfs or int(item.direction) != direction:
                 continue
             refs.append(item.ref)
             if item.ref.data_quality is not ContextDataQuality.VALID:
                 unavailable_seen = True
                 continue
             usable_zone_seen = True
+            usable_zone_ranges.append(
+                (timeframe, float(item.lower_boundary), float(item.upper_boundary))
+            )
             if item.failed_reaction or item.invalid or item.full_fill:
                 failed = True
                 reasons.append(f"FVG_FAILED:{item.ref.timeframe}:{item.identity}")
@@ -123,25 +136,37 @@ def assess_reaction(
                 developing = True
                 reasons.append(f"FVG_DEVELOPING:{item.ref.timeframe}:{item.identity}")
 
-        # Engulfing is confirmation-only. It can strengthen an already-existing
-        # reaction path but may not manufacture reaction by itself.
-        if usable_zone_seen:
-            for item in fvg_engulfing.engulfing:
-                if item.ref.timeframe not in allowed_tfs or int(item.direction) != direction:
-                    continue
-                refs.append(item.ref)
-                if item.ref.data_quality is not ContextDataQuality.VALID:
-                    unavailable_seen = True
-                    continue
-                if item.invalid:
-                    failed = True
-                    reasons.append(f"ENGULFING_FAILED:{item.ref.timeframe}:{item.identity}")
-                elif item.continuation_confirmed:
-                    confirmed = True
-                    reasons.append(f"ENGULFING_CONFIRMED:{item.ref.timeframe}:{item.identity}")
-                elif item.first_test_index is not None and not item.weakened:
-                    developing = True
-                    reasons.append(f"ENGULFING_DEVELOPING:{item.ref.timeframe}:{item.identity}")
+        # Engulfing is confirmation-only. Require a real same-TF spatial relation to
+        # an already-usable zone; side agreement alone is not a causal relationship.
+        for item in fvg_engulfing.engulfing:
+            timeframe = item.ref.timeframe.strip().lower()
+            if timeframe not in allowed_tfs or int(item.direction) != direction:
+                continue
+            related = any(
+                zone_tf == timeframe
+                and _ranges_overlap(
+                    item.lower_boundary,
+                    item.upper_boundary,
+                    zone_lower,
+                    zone_upper,
+                )
+                for zone_tf, zone_lower, zone_upper in usable_zone_ranges
+            )
+            if not related:
+                continue
+            refs.append(item.ref)
+            if item.ref.data_quality is not ContextDataQuality.VALID:
+                unavailable_seen = True
+                continue
+            if item.invalid:
+                failed = True
+                reasons.append(f"ENGULFING_FAILED:{item.ref.timeframe}:{item.identity}")
+            elif item.continuation_confirmed:
+                confirmed = True
+                reasons.append(f"ENGULFING_CONFIRMED:{item.ref.timeframe}:{item.identity}")
+            elif item.first_test_index is not None and not item.weakened:
+                developing = True
+                reasons.append(f"ENGULFING_DEVELOPING:{item.ref.timeframe}:{item.identity}")
 
     source_refs = _unique_refs(refs)
     quality = (

@@ -26,9 +26,9 @@ from financial_dashboard.engines.volume_structure_link_runtime import (
 )
 from financial_dashboard.engines.volume_participation_engine import VolumeParticipationConfig
 from financial_dashboard.engines.volume_participation_lifecycle import ParticipationLifecycleConfig
-from financial_dashboard.engines.volume_round2 import (
-    VolumeRound2Assessment,
-    build_volume_round2_assessment,
+from financial_dashboard.engines.volume_round2 import VolumeRound2Assessment
+from financial_dashboard.engines.volume_round2_runtime import (
+    build_volume_round2_assessment_runtime,
 )
 from financial_dashboard.mtf_replay import CachedMarketStructureMTFRunner, MTFReplayResult
 from financial_dashboard.structure_location_replay import (
@@ -282,7 +282,7 @@ class VolumeMTFEvidenceReplayRunner:
             )
 
         replay_tuple = tuple(timeframe_replays)
-        round2 = build_volume_round2_assessment(
+        round2 = build_volume_round2_assessment_runtime(
             symbol=normalized_symbol,
             timeframe_replays=replay_tuple,
             structure_snapshots=self._structure_snapshots(

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
+from json import dumps
 from pathlib import Path
 from time import perf_counter
+from typing import Any
 
 import pandas as pd
 
@@ -12,10 +15,11 @@ from financial_dashboard.decision.historical_stream import (
     HistoricalDecisionStreamConfig,
     decision_events_from_snapshot_stream,
 )
-from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
-from financial_dashboard.decision.history_single_pass import (
-    SinglePassHistoricalDecisionInputReplayRunner,
+from financial_dashboard.decision.history_replay import (
+    HistoricalDecisionInputReplayRunner,
+    LegacyHistoricalDecisionInputReplayRunner,
 )
+from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
 from financial_dashboard.decision.opportunity import OpportunityCalibration
 from financial_dashboard.decision.structural import DecisionHorizon
 from financial_dashboard.decision_audit import DecisionAuditConfig, audit_decisions, render_json, render_text
@@ -61,12 +65,7 @@ def _causal_warmup_start(
     requested_start: str | None,
     decision_timeframe: str = "1h",
 ) -> pd.Timestamp:
-    """Return the first decision-bar timestamp with all MTF inputs causally available.
-
-    Early 1h bars can exist before the first closed/available 4h or 1d bar. Those bars
-    are warmup, not invalid market history. They must be skipped rather than passed to
-    ``_capture_indices`` where no causal index can exist yet.
-    """
+    """Return the first decision-bar timestamp with all MTF inputs causally available."""
 
     clock = CausalBarClock()
     first_available: list[pd.Timestamp] = []
@@ -99,11 +98,27 @@ def _causal_warmup_start(
     return max(warmup_start, requested)
 
 
+def _json_default(value: Any) -> str:
+    if hasattr(value, "isoformat"):
+        return str(value.isoformat())
+    enum_value = getattr(value, "value", None)
+    return str(enum_value if enum_value is not None else value)
+
+
+def _timeline_json(decisions) -> str:
+    return dumps(
+        [asdict(event) for event in decisions],
+        ensure_ascii=False,
+        indent=2,
+        default=_json_default,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Replay each native market engine forward once, freeze causal 1h decision "
-            "states, evaluate BUY/SELL on those frozen states, then run hindsight audit."
+            "Replay native market engines through the canonical append-only causal timeline, "
+            "evaluate the long-only trade lifecycle, then run hindsight audit."
         )
     )
     parser.add_argument("cache_root", type=Path)
@@ -119,11 +134,34 @@ def main() -> None:
     )
     parser.add_argument("--pattern-profile", default=None)
     parser.add_argument(
+        "--legacy-single-pass",
+        action="store_true",
+        help=(
+            "Use the retired capture-based historical implementation for equivalence/debug only. "
+            "The append-only causal timeline is the default and production-aligned path."
+        ),
+    )
+    parser.add_argument(
+        "--incremental-state-timeline",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    proxy_group = parser.add_mutually_exclusive_group()
+    proxy_group.add_argument(
         "--readiness-position-proxy",
         action="store_true",
         help=(
-            "Audit-only long position proxy: flat+LONG READY => BUY, "
-            "open-long+SHORT READY => SELL. Not a production execution trigger."
+            "Legacy audit-only proxy: flat+LONG READY => BUY and open-long+SHORT READY => SELL. "
+            "Bypasses the dedicated long-exit lifecycle; retained only for historical comparison."
+        ),
+    )
+    proxy_group.add_argument(
+        "--lifecycle-readiness-proxy",
+        action="store_true",
+        help=(
+            "Audit-only structural lifecycle baseline: LONG READY substitutes entry execution, "
+            "and dedicated EXIT_READY substitutes exit execution. The real FLAT/OPEN lifecycle "
+            "and long-exit assessment still run; no production execution trigger is invented."
         ),
     )
     parser.add_argument("--opportunity-none-max-atr", type=float, default=None)
@@ -139,7 +177,19 @@ def main() -> None:
     parser.add_argument("--capture-entry-window-bars", type=int, default=5)
     parser.add_argument("--worst-trades", type=int, default=5)
     parser.add_argument("--json-out", type=Path, default=None)
+    parser.add_argument(
+        "--timeline-json-out",
+        type=Path,
+        default=None,
+        help=(
+            "Write every causal decision bar with lifecycle phase, permission, typed domain "
+            "states, reasons, blockers and waiting/next-condition diagnostics."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.legacy_single_pass and args.incremental_state_timeline:
+        raise SystemExit("--legacy-single-pass and --incremental-state-timeline are mutually exclusive")
 
     horizon = DecisionHorizon.LONG_TERM if args.horizon == "lt" else DecisionHorizon.SHORT_TERM
     calibration = _calibration(args)
@@ -150,8 +200,13 @@ def main() -> None:
         requested_start=args.start,
     )
 
+    replay_runner = (
+        LegacyHistoricalDecisionInputReplayRunner(store)
+        if args.legacy_single_pass
+        else HistoricalDecisionInputReplayRunner(store)
+    )
     started = perf_counter()
-    input_replay = SinglePassHistoricalDecisionInputReplayRunner(store).replay(
+    input_replay = replay_runner.replay(
         args.symbol,
         config=HistoricalDecisionInputConfig(
             pattern_profile=args.pattern_profile,
@@ -171,6 +226,7 @@ def main() -> None:
             horizon=horizon,
             opportunity_calibration=calibration,
             readiness_position_proxy=bool(args.readiness_position_proxy),
+            lifecycle_readiness_proxy=bool(args.lifecycle_readiness_proxy),
         ),
     )
     decision_seconds = perf_counter() - started
@@ -200,6 +256,10 @@ def main() -> None:
     print(f"CAUSAL_WARMUP_START\t{effective_start}")
     print(f"CAUSAL_SNAPSHOTS\t{len(input_replay.snapshots)}")
     print(f"DECISION_EVENTS\t{len(decisions)}")
+    print(
+        "INPUT_REPLAY_PATH\t"
+        + ("LEGACY_SINGLE_PASS" if args.legacy_single_pass else "CANONICAL_CAUSAL_TIMELINE")
+    )
     print(f"LOAD_INPUTS_SECONDS\t{timings.load_inputs_seconds:.2f}")
     print(f"NATIVE_CAPTURE_PASS_SECONDS\t{timings.native_capture_pass_seconds:.2f}")
     print(f"HAM_REPLAY_SECONDS\t{timings.ham_seconds:.2f}")
@@ -211,10 +271,13 @@ def main() -> None:
     print(f"DOMAIN_REPLAY_AND_SNAPSHOT_SECONDS\t{input_seconds:.2f}")
     print(f"DECISION_LAYER_SECONDS\t{decision_seconds:.2f}")
     print(f"HINDSIGHT_AUDIT_SECONDS\t{audit_seconds:.2f}")
-    print(
-        "REPLAY_MODE\t"
-        + ("READINESS_POSITION_PROXY" if args.readiness_position_proxy else "RAW_DECISION_TIMELINE")
-    )
+    if args.readiness_position_proxy:
+        replay_mode = "LEGACY_READINESS_POSITION_PROXY"
+    elif args.lifecycle_readiness_proxy:
+        replay_mode = "LIFECYCLE_READINESS_PROXY"
+    else:
+        replay_mode = "CAUSAL_TRADE_LIFECYCLE"
+    print(f"REPLAY_MODE\t{replay_mode}")
     if calibration is None:
         print("OPPORTUNITY_CALIBRATION\tUNSET")
     print(render_text(report, worst_trade_limit=max(1, args.worst_trades)))
@@ -223,6 +286,10 @@ def main() -> None:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(render_json(report), encoding="utf-8")
         print(f"JSON_REPORT\t{args.json_out}")
+    if args.timeline_json_out is not None:
+        args.timeline_json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.timeline_json_out.write_text(_timeline_json(decisions), encoding="utf-8")
+        print(f"TIMELINE_JSON\t{args.timeline_json_out}")
     print("DECISION_BACKTEST_OK")
 
 

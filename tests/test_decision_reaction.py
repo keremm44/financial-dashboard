@@ -99,14 +99,14 @@ def _fvg(*, confirmed: bool = False, failed: bool = False, first_test: int | Non
     )
 
 
-def _engulf(*, confirmed: bool) -> EngulfingLifecycleProjection:
+def _engulf(*, confirmed: bool, lower: float = 99.0, upper: float = 101.0) -> EngulfingLifecycleProjection:
     return EngulfingLifecycleProjection(
-        ref=_ref(ContextDomain.ENGULFING, f"ENG:{confirmed}"),
+        ref=_ref(ContextDomain.ENGULFING, f"ENG:{confirmed}:{lower}:{upper}"),
         identity="ENG:1",
         direction=1,
         state="ACTIVE",
-        lower_boundary=99.0,
-        upper_boundary=101.0,
+        lower_boundary=lower,
+        upper_boundary=upper,
         quality=80.0,
         body_atr=0.8,
         formation_index=5,
@@ -162,15 +162,29 @@ def test_engulfing_cannot_manufacture_reaction_without_zone() -> None:
     assert not result.confirmation_present
 
 
-def test_engulfing_can_confirm_existing_reaction_path() -> None:
+def test_engulfing_can_confirm_spatially_related_existing_reaction_path() -> None:
     lifecycle = FvgEngulfingLifecycleProjection(
         symbol="THYAO",
         timeframes=("1h",),
         fvg=(_fvg(first_test=10),),
-        engulfing=(_engulf(confirmed=True),),
+        engulfing=(_engulf(confirmed=True, lower=99.5, upper=100.5),),
     )
     result = assess_reaction(StructuralDirection.LONG, fvg_engulfing=lifecycle)
     assert result.state is ReactionState.CONFIRMED
+    assert result.confirmation_present
+
+
+def test_unrelated_same_side_engulfing_does_not_confirm_different_zone() -> None:
+    lifecycle = FvgEngulfingLifecycleProjection(
+        symbol="THYAO",
+        timeframes=("1h",),
+        fvg=(_fvg(first_test=10),),
+        engulfing=(_engulf(confirmed=True, lower=110.0, upper=111.0),),
+    )
+    result = assess_reaction(StructuralDirection.LONG, fvg_engulfing=lifecycle)
+    assert result.state is ReactionState.DEVELOPING
+    assert not result.confirmation_present
+    assert all(not reason.startswith("ENGULFING_CONFIRMED") for reason in result.reasons)
 
 
 def test_mixed_confirmed_and_failed_lineages_are_not_averaged_away() -> None:
