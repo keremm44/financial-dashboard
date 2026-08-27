@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from time import perf_counter
 from typing import Any
+from uuid import uuid4
 
 import pandas as pd
 
@@ -37,8 +38,8 @@ import financial_dashboard.decision.history_native_timeline as native_history
 
 
 _ALIGNMENT_ERROR = "native checkpoint delta is not aligned with the persisted decision prefix"
-_BOOTSTRAP_NATIVE_VERSION_SUFFIX = "-decision-bootstrap-full-v1"
-_BOOTSTRAP_SUPPORTING_VERSION_SUFFIX = "-decision-bootstrap-full-v1"
+_BOOTSTRAP_NATIVE_VERSION_PREFIX = "-decision-bootstrap-full-v2-"
+_BOOTSTRAP_SUPPORTING_VERSION_PREFIX = "-decision-bootstrap-full-v2-"
 
 
 def _align_requested_start(value: str, reference: pd.Timestamp) -> pd.Timestamp:
@@ -90,15 +91,22 @@ def _causal_warmup_start(
 
 @contextmanager
 def _cold_domain_checkpoint_scope():
-    """Force one canonical full domain run without deleting or trusting old checkpoints."""
+    """Force one truly fresh canonical domain run without deleting production checkpoints.
+
+    Bootstrap checkpoint identities are unique per invocation. A prior interrupted or
+    completed bootstrap therefore can never be mistaken for the start of a new rebuild,
+    which would otherwise return only a native delta while the DecisionInput prefix is
+    empty. Production native/supporting checkpoint identities are restored afterwards.
+    """
 
     native_version = native_history._NATIVE_PERSISTENCE_SEMANTIC_VERSION
     supporting_version = incremental_history._SUPPORTING_PERSISTENCE_SEMANTIC_VERSION
+    nonce = uuid4().hex
     native_history._NATIVE_PERSISTENCE_SEMANTIC_VERSION = (
-        native_version + _BOOTSTRAP_NATIVE_VERSION_SUFFIX
+        native_version + _BOOTSTRAP_NATIVE_VERSION_PREFIX + nonce
     )
     incremental_history._SUPPORTING_PERSISTENCE_SEMANTIC_VERSION = (
-        supporting_version + _BOOTSTRAP_SUPPORTING_VERSION_SUFFIX
+        supporting_version + _BOOTSTRAP_SUPPORTING_VERSION_PREFIX + nonce
     )
     try:
         yield
