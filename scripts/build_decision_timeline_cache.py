@@ -4,6 +4,7 @@ import argparse
 from contextlib import contextmanager
 from pathlib import Path
 from time import perf_counter
+from typing import Any
 
 import pandas as pd
 
@@ -12,11 +13,23 @@ from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.decision.history_replay import HistoricalDecisionInputReplayRunner
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
+from financial_dashboard.decision.native_domain_runtime import IncrementalNativeDomainRuntime
 from financial_dashboard.decision.persistent_state import PersistentObjectStore
+from financial_dashboard.decision.supporting_replay_runtime import IncrementalSupportingReplayRuntime
 from financial_dashboard.decision.timeline_cache import (
     DecisionTimelineCacheMiss,
     load_frozen_decision_timeline,
 )
+from financial_dashboard.engines.fvg_engulfing import FvgEngulfingEngine
+from financial_dashboard.engines.ham_evidence import HamEvidenceEngine
+from financial_dashboard.engines.liquidity_engine import LiquidityEngine
+from financial_dashboard.engines.market_structure_engine import MarketStructureEngine
+from financial_dashboard.engines.order_block import OrderBlockEngine
+from financial_dashboard.engines.order_block_behavior import OrderBlockBehaviorTracker
+from financial_dashboard.engines.pattern_compression_runtime_engine import RuntimePatternCompressionEngine
+from financial_dashboard.engines.support_resistance_runtime_engine import RuntimeSupportResistanceRangeEngine
+from financial_dashboard.engines.volume_evidence import VolumeEvidenceEngine
+from financial_dashboard.engines.volatility_direction_runtime import RuntimeVolatilityDirectionTransitionEngine
 from financial_dashboard.structure_location_replay import CausalBarClock
 
 import financial_dashboard.decision.history_incremental as incremental_history
@@ -77,14 +90,7 @@ def _causal_warmup_start(
 
 @contextmanager
 def _cold_domain_checkpoint_scope():
-    """Force one canonical full domain run without deleting or trusting old checkpoints.
-
-    This changes checkpoint *identity only* for the duration of the explicit builder
-    process. Domain semantics/config stay unchanged. The canonical runners therefore
-    execute every required historical row once, then the normal DecisionInput runner
-    immediately persists the resulting frozen DecisionInput timeline. Existing native
-    and supporting checkpoints are left untouched for later append-only continuation.
-    """
+    """Force one canonical full domain run without deleting or trusting old checkpoints."""
 
     native_version = native_history._NATIVE_PERSISTENCE_SEMANTIC_VERSION
     supporting_version = incremental_history._SUPPORTING_PERSISTENCE_SEMANTIC_VERSION
@@ -101,6 +107,109 @@ def _cold_domain_checkpoint_scope():
         incremental_history._SUPPORTING_PERSISTENCE_SEMANTIC_VERSION = supporting_version
 
 
+@contextmanager
+def _live_domain_timing_scope():
+    """Print real per-timeframe engine update time while the explicit builder runs.
+
+    Instrumentation is process-local and builder-only. Every patched class method and
+    runtime constructor is restored in ``finally`` so production/live semantics remain
+    untouched. Timings are accumulated from the actual engine ``update`` calls; no
+    estimated or synthetic durations are printed.
+    """
+
+    registry: dict[int, dict[str, Any]] = {}
+    originals: dict[type, Any] = {}
+    native_init = IncrementalNativeDomainRuntime.__init__
+    supporting_init = IncrementalSupportingReplayRuntime.__init__
+
+    def register(engine: Any, timeframe: str, domain: str, expected: int) -> None:
+        if engine is None:
+            return
+        registry[id(engine)] = {
+            "timeframe": timeframe,
+            "domain": domain,
+            "expected": int(expected),
+            "count": 0,
+            "seconds": 0.0,
+            "started": False,
+        }
+
+    def install_update_wrapper(cls: type) -> None:
+        original = cls.update
+        originals[cls] = original
+
+        def wrapped(self, *args, __original=original, **kwargs):
+            meta = registry.get(id(self))
+            if meta is None:
+                return __original(self, *args, **kwargs)
+            if not meta["started"]:
+                meta["started"] = True
+                print(
+                    f"DOMAIN_START\t{meta['timeframe']}\t{meta['domain']}\t"
+                    f"bars={meta['expected']}",
+                    flush=True,
+                )
+            started = perf_counter()
+            result = __original(self, *args, **kwargs)
+            meta["seconds"] += perf_counter() - started
+            meta["count"] += 1
+            if meta["count"] == meta["expected"]:
+                print(
+                    f"DOMAIN_DONE\t{meta['timeframe']}\t{meta['domain']}\t"
+                    f"{meta['seconds']:.3f}s\tbars={meta['expected']}",
+                    flush=True,
+                )
+            return result
+
+        cls.update = wrapped
+
+    def timed_native_init(self, *args, **kwargs):
+        native_init(self, *args, **kwargs)
+        for timeframe, runtime in self._runtimes.items():
+            expected = len(self.inputs.for_timeframe(timeframe).input_batch.frame)
+            register(runtime.market, timeframe, "market_structure", expected)
+            register(runtime.support, timeframe, "support_resistance", expected)
+            register(runtime.pattern, timeframe, "pattern", expected)
+            register(runtime.liquidity, timeframe, "liquidity", expected)
+            register(runtime.order_block, timeframe, "order_block", expected)
+            register(runtime.order_block_behavior, timeframe, "order_block_behavior", expected)
+            register(runtime.fvg, timeframe, "fvg_engulfing", expected)
+
+    def timed_supporting_init(self, *args, **kwargs):
+        supporting_init(self, *args, **kwargs)
+        for timeframe in self.inputs.timeframes:
+            expected = len(self.inputs.for_timeframe(timeframe).input_batch.frame)
+            register(self._ham[timeframe].engine, timeframe, "ham", expected)
+            register(self._volume[timeframe].engine, timeframe, "volume", expected)
+            if timeframe in self._volatility:
+                register(self._volatility[timeframe].engine, timeframe, "volatility", expected)
+
+    classes = (
+        MarketStructureEngine,
+        RuntimeSupportResistanceRangeEngine,
+        RuntimePatternCompressionEngine,
+        LiquidityEngine,
+        OrderBlockEngine,
+        OrderBlockBehaviorTracker,
+        FvgEngulfingEngine,
+        HamEvidenceEngine,
+        VolumeEvidenceEngine,
+        RuntimeVolatilityDirectionTransitionEngine,
+    )
+    for cls in classes:
+        install_update_wrapper(cls)
+    IncrementalNativeDomainRuntime.__init__ = timed_native_init
+    IncrementalSupportingReplayRuntime.__init__ = timed_supporting_init
+    print("DOMAIN_TIMING\tLIVE", flush=True)
+    try:
+        yield
+    finally:
+        IncrementalNativeDomainRuntime.__init__ = native_init
+        IncrementalSupportingReplayRuntime.__init__ = supporting_init
+        for cls, original in originals.items():
+            cls.update = original
+
+
 def _decision_prefix_exists(
     store: ParquetOHLCVStore,
     *,
@@ -111,6 +220,11 @@ def _decision_prefix_exists(
     persistent = PersistentObjectStore(store.root)
     identity = runner._decision_checkpoint_identity(symbol=symbol, config=config)
     return persistent.load_checkpoint(identity) is not None
+
+
+def _run_with_live_timings(runner, symbol: str, config: HistoricalDecisionInputConfig):
+    with _live_domain_timing_scope():
+        return runner.replay(symbol, config=config)
 
 
 def _build_timeline_once(
@@ -132,22 +246,19 @@ def _build_timeline_once(
     ):
         print("BUILD_MODE\tCANONICAL_COLD_DOMAIN_ONCE")
         with _cold_domain_checkpoint_scope():
-            built = runner.replay(clean_symbol, config=config)
+            built = _run_with_live_timings(runner, clean_symbol, config)
         return runner, built
 
     print("BUILD_MODE\tCANONICAL_INCREMENTAL_OR_EXACT")
     try:
-        built = runner.replay(clean_symbol, config=config)
+        built = _run_with_live_timings(runner, clean_symbol, config)
     except RuntimeError as exc:
         if _ALIGNMENT_ERROR not in str(exc):
             raise
-        # A stale/incompatible decision prefix must never push the builder into the
-        # retired legacy replay. Re-run canonical native/supporting engines once from
-        # their true cold state, then persist the exact DecisionInput timeline.
         print("BUILD_RECOVERY\tCANONICAL_COLD_DOMAIN_ONCE")
         runner = HistoricalDecisionInputReplayRunner(store)
         with _cold_domain_checkpoint_scope():
-            built = runner.replay(clean_symbol, config=config)
+            built = _run_with_live_timings(runner, clean_symbol, config)
     return runner, built
 
 
