@@ -520,6 +520,111 @@ def load_opportunity_calibration(path: Path) -> OpportunityCalibrationRecord
 
 ---
 
+## BÖLÜM  7 — Kalan Kapılar: Detaylı Onarım Planı (2026-08-27, ilk ASELS ölçümünden sonra)
+
+> **Girdi ölçümleri (ASELS, relevance AÇIK, kalibrasyonsuz):**
+> `LT:REACTION:MATERIAL 1080/1263 (%85)`, `ST:PARTICIPATION:MATERIAL 1030`,
+> `heavy_conflict` TRUE=987, RUNS=2 (325 ve 662 bar), `OPPORTUNITY UNKNOWN 1263`,
+> room_atr medyan 1.48 ATR. Profil 199 s → 39 s; clear-rate > 0 (Faz 1 ✓).
+
+### 7.0 Kod okumasından kesinleşen üç mekanizma
+
+**M1 — `heavy_conflict` latched bayrak DEĞİL, her bar yeniden hesaplanan 5 bileşenli predikat**
+(`engines/volume_participation_final.py::_heavy_conflict`):
+`directional_proxy ∨ confirmed_absorption ∨ breakout_absorption ∨ direction_breakout ∨ capital_price`.
+"Release yokluğu" değil, **predikatın aşırı kalıcılığı** söz konusu: 662 bar (≈4 ay)
+aynı disjunct True dönüyor. Export yalnız `heavy_conflict: bool` veriyor —
+**hangi bileşenin tetiklediği ölçülemiyor** (görünmezlik). Karar katmanı
+(`decision/participation.py`) heavy'yi koşulsuz `OPPOSING + MATERIAL` yapıyor.
+
+**M2 — Kalan REACTION MATERIAL'nın kaynağı terminal OB'ler; ama her terminal = failure DEĞİL**
+(`engines/order_block_behavior.py`): terminal durumlar taşıyor:
+`terminal_reason ∈ {IMBALANCE_NOT_CONFIRMED, GAP_THROUGH, FILL_THRESHOLD, REMOVED_BY_CANONICAL_ENGINE}`
+ve state `CONSUMED` (onaylandıktan sonra öldü) vs `EXPIRED_CANDIDATE` (hiç onaylanmadan öldü).
+`assess_reaction` bugün **hepsini** failure sayıyor. Oysa semantik ayrım:
+- `CONSUMED + GAP_THROUGH` → fiyat bölgeyi ters yönden sıyırdı → **gerçek failure** ✓
+- `interaction == FAILED` → **gerçek failure** ✓
+- `EXPIRED_CANDIDATE` / `IMBALANCE_NOT_CONFIRMED` → hiç kanıt oluşmadı, teyitsizlik → **failure değil**
+- `FILL_THRESHOLD` → bölge kullanıldı/doldu → yaşam döngüsü tamamı, yönsel çelişki yok → **failure değil**
+- `REMOVED_BY_CANONICAL_ENGINE` → native motorun kendi temizliği → **nötr**
+Genç+yakın bucket'lardaki on binlerce kayıt (ör. `OB:4h:age:<=50:dist:<=5atr` 7765) bu
+grupların karışımı; failure-dışı terminalleri ayırmak %85'i büyük ölçüde düşürmeli.
+
+**M3 — Opportunity kapısı hâlâ `CLOSED_BY_SYSTEM`**: `OPPORTUNITY_CALIBRATION NONE`
+koşuldu, `UNKNOWN 1263` garantiydi. Kapı piyasa ile korelasyonsuz `p=0` üretti.
+Room dağılımı artık ölçülmüş durumda (min 0.017 / med 1.48 / p90 3.73 / max 7.78 ATR).
+
+### 7.1 Düzeltme D1 — KN-2 bağlama (kullanıcı aksiyonu + küçük kod konforu)
+
+1. **Koşu (kullanıcı):** `build_opportunity_calibration.py storage/cache ASELS` →
+   `entry_reason_profile.py ... --opportunity-calibration .../ASELS.json`.
+2. **Kod:** profile `--auto-calibration` flag'i: `<cache>/calibration/opportunity/{symbol}.json`
+   varsa otomatik yükler ve başlıkta yolunu basar (yoksa `NONE`, fail-closed aynı).
+3. **Kod (raporlama):** `LT/ST OPPORTUNITY` bölümünde `UNKNOWN`'un alt nedenleri ayrılır:
+   `SYSTEM:NO_CALIBRATION` vs `MARKET:NO_TARGET` — CLOSED_BY_SYSTEM ≠ CLOSED_BY_MARKET.
+
+### 7.2 Düzeltme D2 — KN-4: instrument → yaş-bazlı şiddet → (koşullu) predikat sıkılaştırma
+
+**Adım 1 — Native instrumentasyon (ölçmeden düzeltme yok):**
+- `UnifiedParticipationExport`'a `heavy_conflict_reasons: tuple[str, ...]` ve
+  `heavy_conflict_bars: int` (onset'ten bu yana bar sayısı; motor state'inde
+  `heavy_conflict_since_index` takibi) eklenir; projeksiyon satırına aynen akar.
+- Profile yeni bölüm: `HEAVY_CONFLICT REASONS` (disjunct bazlı sayaç + yaş dağılımı).
+
+**Adım 2 — Karar katmanında yaş-bazlı şiddet eşlemesi (native predikat bozulmadan):**
+- `DecisionEngineConfig.participation_conflict_max_age_bars: int = 24` (kalibrasyon parametresi).
+- `decision/participation.py`: heavy_conflict yaşı ≤ K → `OPPOSING + MATERIAL` (mevcut);
+  yaşı > K → `WEAK` + reason `PARTICIPATION_HEAVY_CONFLICT_STALE` (kalıcı belirsizlik =
+  çelişki değil, zayıf katılım). Yönlü oy eklenmez; yalnızca şiddet sınıfı.
+- Gerekçe: 4 ay süren "ağır çelişki" piyasa koşulu olamaz; taze çelişki enformatif,
+  bayat çelişki gürültü. Bu mimarinin "calibratable rule" sınıfına girer.
+
+**Adım 3 — (yalnız Adım 1 verisi "gerçek dengeli piyasa" derse) native sıkılaştırma:**
+- Örn. `directional_proxy`'ye tazelik koşulu (evidence dengesi son K bar içinde oluşmuş
+  olmalı), `capital_price` referans penceresi daraltması. Native tarafa ait; karara değil.
+
+### 7.3 Düzeltme D3 — REACTION terminal semantiği (kalan %85'in asıl açılımı)
+
+- `reaction.py`'de terminal sınıflaması: `_ob_terminal_failure(observation)` =
+  `interaction == FAILED` ∨ (`terminal` ∧ `state == CONSUMED` ∧ `terminal_reason == "GAP_THROUGH"`).
+  Diğer terminaller (`EXPIRED_CANDIDATE`, `IMBALANCE_NOT_CONFIRMED`, `FILL_THRESHOLD`,
+  `REMOVED_BY_CANONICAL_ENGINE`) failure oyu vermez; kapsam/diğer kurallar aynı kalır.
+- `ReactionRelevancePolicy.ob_failure_modes` (config'e bağlı küme; default yukarıdaki;
+  legacy tam küme seçilebilir A/B için).
+- FVG tarafında v1'de değişiklik yok (`failed_reaction`/`invalid` canlı failure;
+  `full_fill` konservatif kalır — ayrı bir gözden geçirme maddesi olarak not edilir).
+- Beklenti (ölçülecek): genç+yakın OB bucket'larının anlamlı kısmı failure-dışı
+  terminallerden geliyorsa `LT:REACTION:MATERIAL` %85 → anlamlı biçimde düşer;
+  düşmezse kalan failure **gerçek piyasa** demektir (o zaman dokunulmaz).
+
+### 7.4 Küçük düzeltmeler
+
+- `FIRST SINGLE-GATE SNAPSHOT`: warmup (LT presence UNKNOWN) snapshot'ları hariç.
+- Profil başlığında `READY` aksiyon sayacı zaten görünüyor; değişiklik yok.
+
+### 7.5 Uygulama sırası, test matrisi, kabul kriterleri
+
+Sıra: **D1 (5 dk) → D2 Adım1+2 → D3 → yeniden ölçüm → D2 Adım 3 (koşullu)**
+
+| Test | Dosya | Beklenen |
+|---|---|---|
+| heavy reasons export + yaş sayacı | `tests/test_participation_heavy_conflict_release.py` (yeni) | onset'te reasons dolar; sürerse `heavy_conflict_bars` artar; biterse 0'a döner |
+| karar katmanı yaş eşiği | aynı dosya | yaş ≤ K → OPPOSING/MATERIAL; yaş > K → WEAK + `..._STALE` |
+| OB terminal failure modları | `tests/test_decision_reaction_relevance.py` (genişletme) | GAP_THROUGH/FAILED → failure; FILL_THRESHOLD/EXPIRED/REMOVED/IMBALANCE_NOT_CONFIRMED → değil |
+| auto-calibration + alt neden ayrımı | `tests/test_entry_reason_profile` ekleri | varsa yükler+yol basar; yoksa NONE + SYSTEM alt nedeni |
+| warmup hariç single-gate | profil testi | INDEX 0 yerine ilk gerçek tek-kapı snapshot |
+
+**Kabul kriterleri (bir sonraki ASELS ölçümünde):**
+1. `LT OPPORTUNITY UNKNOWN` → yalnız hedef gerçekten yokken (SYSTEM alt nedeni 0).
+2. `HEAVY_CONFLICT RUN LENGTHS`: 2 dev run → çok sayıda kısa run; `ST:PARTICIPATION:MATERIAL` 1030 → < %35.
+3. `LT:REACTION:MATERIAL` ek düşüş (D3); kalan kısmın `REACTION FAILURE SOURCES`
+   bucket'larıyla tutarlı, "gerçek" olarak kabul edilmesi.
+4. `ENTRY ACTION`'da ilk `READY`'ler görünür (BUY yine imkânsız: execution_event yok).
+5. Tam test paketi yeşil; `--legacy-reaction` A/B karşılaştırması raporlanır.
+
+---
+
+
 ## Ek A — Önerilen yeni dosyalar
 
 ```
