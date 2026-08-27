@@ -631,6 +631,34 @@ Sıra: **D1 (5 dk) → D2 Adım1+2 → D3 → yeniden ölçüm → D2 Adım 3 (k
 ---
 
 
+## BÖLÜM 8 — Cache Koruma: Kod Değişiminde Geçersizleştirme Daraltması (2026-08-28)
+
+> **Sorun:** `git pull` sonrası `CACHE_STATUS MISS_BUILDING / CANONICAL_COLD_DOMAIN_ONCE`.
+> **Teşhis:** timeline kimlik digests'ine `namespace_semantic_fingerprint` üzerinden
+> **kod hash'i** giriyor ve `_DECISION_INPUT_IMPLEMENTATION_PATHS` kümesi, timeline'ı
+> inşa ETMEYEN değerlendirme modüllerini (`decision/reaction.py`,
+> `decision/participation.py`) de içeriyordu. Decision-layer bir düzeltme çekmek →
+> hash değişir → exact cache + append checkpoint kimlikleri değişir → tam soğuk rebuild.
+> **Düzeltmeler:**
+> 1. Değerlendirme modülleri parmak izi kümesinden çıkarıldı (yeni contract testleri
+>    `tests/test_decision_cache_preservation.py` ile kilitlendi). İçerik üreten kod
+>    (`engines/`, `context/`, `targeting/`, history composition) değişmeye devam ederse
+>    geçersizleştirme korunur (fail-closed; eski pickle'lar yeni snapshot alanlarıyla
+>    açılamaz).
+> 2. `evict_stale_exact_caches`: her veri yenilemesinde biriken ~491 MB'lık bayat
+>    exact-cache dosyaları, yeni kayıt sonrası aynı sembol+config için silinir
+>    (sidecar `.identity.json` ile; farklı config'e ait olanlar ve sidecar'sız
+>    legacy dosyalar asla silinmez; checkpoint'ler isim kalıbıyla korunur).
+> **Beklenen davranış:** bu düzeltmeyi çekmek parmak izi KÜMESİNİ değiştirdiği için
+> **bir kez daha** rebuild tetikler (son kez). Sonrasında: decision-layer pull'lar
+> cache'i korur; veri yenilemeleri bilinçli miss + artımlı üretim + bayat dosya temizliği.
+> **Bilinen sınırlar:** `engines/`+`context/` değişimleri hâlâ tam rebuild ister
+> (doğru); soğuk bootstrap nonce kapsamı üretim native checkpoint'lerini tohumlamadığı
+> için ilk veri yenilemesi native'i baştan çalar, sonrası artımlıdır (iyileştirme
+> maddesi olarak açık).
+
+---
+
 ## Ek A — Önerilen yeni dosyalar
 
 ```

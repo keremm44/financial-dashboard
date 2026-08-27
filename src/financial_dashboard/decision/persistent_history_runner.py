@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 import pickle
 
@@ -19,6 +20,8 @@ from .persistent_state import (
 
 
 _DECISION_APPEND_REFERENCE_SEMANTIC_VERSION = "decision-input-append-reference-v2"
+_EXACT_CACHE_SUFFIX = ".pkl"
+_IDENTITY_SIDECAR_SUFFIX = ".identity.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +63,91 @@ def _save_rebuildable_exact_cache(
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
+    _write_identity_sidecar(path, identity)
+
+
+def _write_identity_sidecar(cache_path, identity: PersistentCacheIdentity) -> None:
+    """Persist a tiny JSON identity record next to one exact cache file.
+
+    The sidecar lets stale-cache eviction inspect an identity without
+    unpickling a multi-hundred-MB payload. Best-effort: a failed sidecar
+    write only leaves a legacy-style cache file that eviction will skip.
+    """
+
+    sidecar = cache_path.with_name(
+        cache_path.name[: -len(_EXACT_CACHE_SUFFIX)] + _IDENTITY_SIDECAR_SUFFIX
+    )
+    try:
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "namespace": identity.namespace,
+                    "symbol": identity.symbol,
+                    "semantic_fingerprint": identity.semantic_fingerprint,
+                    "config_fingerprint": identity.config_fingerprint,
+                    "source_fingerprint": [list(row) for row in identity.source_fingerprint],
+                    "digest": identity.digest,
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def _safe_namespace_prefix(namespace: str) -> str:
+    from .persistent_state import _safe_part
+
+    return f"{_safe_part(namespace)}__"
+
+
+def evict_stale_exact_caches(
+    persistent: PersistentObjectStore,
+    identity: PersistentCacheIdentity,
+) -> int:
+    """Delete superseded exact caches for the same symbol/config; return count.
+
+    Each source-data refresh produces a new exact DecisionInput cache under a
+    new digest while the previous file remained on disk, growing storage by
+    ~one full timeline per refresh. After a successful save, stale files whose
+    sidecar reports the SAME namespace and config fingerprint are removed:
+    they can no longer be referenced by the append checkpoint (which now points
+    at the freshly saved cache). Different-config caches and legacy files
+    without a sidecar are never touched, and checkpoint files are excluded by
+    name pattern.
+    """
+
+    kept_path = persistent.path_for(identity)
+    symbol_dir = kept_path.parent
+    removed = 0
+    try:
+        candidates = sorted(
+            symbol_dir.glob(f"{_safe_namespace_prefix(identity.namespace)}*{_EXACT_CACHE_SUFFIX}")
+        )
+    except OSError:
+        return 0
+    for candidate in candidates:
+        if candidate == kept_path or "__checkpoint__" in candidate.name:
+            continue
+        sidecar = candidate.with_name(
+            candidate.name[: -len(_EXACT_CACHE_SUFFIX)] + _IDENTITY_SIDECAR_SUFFIX
+        )
+        try:
+            record = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue  # legacy or unreadable: never delete unknown caches
+        if record.get("namespace") != identity.namespace:
+            continue
+        if record.get("config_fingerprint") != identity.config_fingerprint:
+            continue  # a different config product owns this cache
+        try:
+            candidate.unlink(missing_ok=True)
+            sidecar.unlink(missing_ok=True)
+            removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 class PersistentHistoricalDecisionInputReplayRunner(
@@ -126,6 +214,10 @@ class PersistentHistoricalDecisionInputReplayRunner(
 
         if exact_saved:
             try:
+                evict_stale_exact_caches(persistent, exact_identity)
+            except Exception:
+                pass
+            try:
                 watermarks = {
                     timeframe: len(inputs.for_timeframe(timeframe).input_batch.frame) - 1
                     for timeframe in inputs.timeframes
@@ -149,4 +241,5 @@ class PersistentHistoricalDecisionInputReplayRunner(
 __all__ = [
     "DecisionTimelineReference",
     "PersistentHistoricalDecisionInputReplayRunner",
+    "evict_stale_exact_caches",
 ]
