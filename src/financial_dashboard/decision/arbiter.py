@@ -160,11 +160,20 @@ def assess_entry_arbitration(
     snapshot: "DecisionInputSnapshot",
     *,
     config: "DecisionEngineConfig | None" = None,
+    scenarios: tuple[EntryScenarioAssessment, EntryScenarioAssessment] | None = None,
 ) -> EntryScenarioArbitration:
-    """Build both causal scenarios then apply strict horizon ownership."""
+    """Build both causal scenarios then apply strict horizon ownership.
 
-    long_term = snapshot.entry_scenario(DecisionHorizon.LONG_TERM, config=config)
-    short_term = snapshot.entry_scenario(DecisionHorizon.SHORT_TERM, config=config)
+    ``scenarios`` allows callers that already built the two entry scenarios for this
+    snapshot/config to inject them as ``(long_term, short_term)`` instead of forcing
+    a second full evaluation chain.
+    """
+
+    if scenarios is None:
+        long_term = snapshot.entry_scenario(DecisionHorizon.LONG_TERM, config=config)
+        short_term = snapshot.entry_scenario(DecisionHorizon.SHORT_TERM, config=config)
+    else:
+        long_term, short_term = scenarios
     return arbitrate_entry_scenarios(long_term, short_term)
 
 

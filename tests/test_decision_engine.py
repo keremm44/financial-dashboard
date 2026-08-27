@@ -55,6 +55,7 @@ def _permission(side=PermittedSide.LONG):
 def _snapshot(side=StructuralDirection.LONG):
     return SimpleNamespace(
         as_of=10,
+        current_price=100.0,
         structure=object(),
         stabil_support=None,
         order_block_behavior=None,
