@@ -25,7 +25,16 @@ from financial_dashboard.decision.history_source import HistoricalDecisionInputC
 from financial_dashboard.decision.lifecycle_replay import replay_canonical_trade_lifecycle
 from financial_dashboard.decision.opportunity import OpportunityCalibration
 from financial_dashboard.decision.structural import DecisionHorizon
-from financial_dashboard.decision_audit import DecisionAuditConfig, audit_decisions, render_json, render_text
+from financial_dashboard.decision_audit import (
+    DecisionAuditConfig,
+    TradeQualityAuditConfig,
+    audit_decisions,
+    audit_trade_quality,
+    render_json,
+    render_text,
+    render_trade_quality_json,
+    render_trade_quality_text,
+)
 from financial_dashboard.structure_location_replay import CausalBarClock
 
 
@@ -121,8 +130,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Replay native market engines through the append-only causal timeline, "
-            "run the canonical Turn 4-9 long-only lifecycle, then grade it with a "
-            "strictly downstream hindsight audit."
+            "run the canonical Turn 4-9 long-only lifecycle, then grade it with "
+            "strictly downstream hindsight audits."
         )
     )
     parser.add_argument("cache_root", type=Path)
@@ -180,14 +189,19 @@ def main() -> None:
     parser.add_argument("--opportunity-moderate-max-atr", type=float, default=None)
 
     parser.add_argument("--audit-timeframe", default="30m")
-    parser.add_argument("--lookback-bars", type=int, default=10)
-    parser.add_argument("--lookahead-bars", type=int, default=10)
+    parser.add_argument("--lookback-bars", type=int, default=10, help="Legacy/fallback hindsight lookback.")
+    parser.add_argument("--lookahead-bars", type=int, default=10, help="Legacy/fallback hindsight lookahead.")
+    parser.add_argument("--short-lookback-bars", type=int, default=6)
+    parser.add_argument("--short-lookahead-bars", type=int, default=6)
+    parser.add_argument("--long-lookback-bars", type=int, default=20)
+    parser.add_argument("--long-lookahead-bars", type=int, default=20)
     parser.add_argument("--meaningful-move-atr", type=float, default=None)
     parser.add_argument("--opportunity-horizon-bars", type=int, default=20)
     parser.add_argument("--swing-radius-bars", type=int, default=3)
     parser.add_argument("--capture-entry-window-bars", type=int, default=5)
     parser.add_argument("--worst-trades", type=int, default=5)
     parser.add_argument("--json-out", type=Path, default=None)
+    parser.add_argument("--quality-json-out", type=Path, default=None)
     parser.add_argument(
         "--timeline-json-out",
         type=Path,
@@ -283,6 +297,23 @@ def main() -> None:
     )
     audit_seconds = perf_counter() - started
 
+    started = perf_counter()
+    quality_report = audit_trade_quality(
+        symbol=args.symbol,
+        timeframe=args.audit_timeframe,
+        bars=bars,
+        decisions=decisions,
+        config=TradeQualityAuditConfig(
+            short_lookback_bars=args.short_lookback_bars,
+            short_lookahead_bars=args.short_lookahead_bars,
+            long_lookback_bars=args.long_lookback_bars,
+            long_lookahead_bars=args.long_lookahead_bars,
+            fallback_lookback_bars=args.lookback_bars,
+            fallback_lookahead_bars=args.lookahead_bars,
+        ),
+    )
+    quality_seconds = perf_counter() - started
+
     timings = input_replay.timings
     print(f"CAUSAL_WARMUP_START\t{effective_start}")
     print(f"CAUSAL_SNAPSHOTS\t{len(input_replay.snapshots)}")
@@ -302,15 +333,22 @@ def main() -> None:
     print(f"DOMAIN_REPLAY_AND_SNAPSHOT_SECONDS\t{input_seconds:.2f}")
     print(f"DECISION_LAYER_SECONDS\t{decision_seconds:.2f}")
     print(f"HINDSIGHT_AUDIT_SECONDS\t{audit_seconds:.2f}")
+    print(f"HORIZON_TRADE_QUALITY_SECONDS\t{quality_seconds:.2f}")
     print(f"REPLAY_MODE\t{replay_mode}")
     if calibration is None:
         print("OPPORTUNITY_CALIBRATION\tUNSET")
     print(render_text(report, worst_trade_limit=max(1, args.worst_trades)))
+    print()
+    print(render_trade_quality_text(quality_report, worst_trade_limit=max(1, args.worst_trades)))
 
     if args.json_out is not None:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(render_json(report), encoding="utf-8")
         print(f"JSON_REPORT\t{args.json_out}")
+    if args.quality_json_out is not None:
+        args.quality_json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.quality_json_out.write_text(render_trade_quality_json(quality_report), encoding="utf-8")
+        print(f"QUALITY_JSON_REPORT\t{args.quality_json_out}")
     if args.timeline_json_out is not None:
         args.timeline_json_out.parent.mkdir(parents=True, exist_ok=True)
         args.timeline_json_out.write_text(_timeline_json(decisions), encoding="utf-8")
