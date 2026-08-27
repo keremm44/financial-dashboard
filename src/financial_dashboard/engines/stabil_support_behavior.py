@@ -69,6 +69,7 @@ class StabilSupportBehaviorSnapshot:
     bars_since_rebase: int | None = None
     cross_count: int = 0
     last_rebase_step_atr: float | None = None
+    distance_delta_atr: float | None = None
     reclaim_active: bool = False
 
 
@@ -311,6 +312,7 @@ def build_support_behavior(
         bars_since_rebase=bars_since_rebase,
         cross_count=cross_count,
         last_rebase_step_atr=last_rebase_step_atr,
+        distance_delta_atr=distance_delta_atr,
         reclaim_active=reclaim_active,
     )
 
