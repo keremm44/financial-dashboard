@@ -33,6 +33,10 @@ def prepare_engine_input(frame: pd.DataFrame) -> EngineInputBatch:
     for example zero volume is acceptable for a price-only engine such as Market
     Structure, while incomplete/open candles are excluded from confirmed replay.
 
+    ``source_quality`` describes the actual filtered frame handed to engines, not the
+    caller's pre-filter tail. This prevents one open/incomplete candle that is removed
+    here from marking every causal replay snapshot DATA_LIMITED downstream.
+
     The caller-owned input is never mutated. The common parquet-cache path is already
     timestamp-sorted, closed and complete, so this function avoids unconditional full
     DataFrame copies, boolean filtering, stable sorting and index rebuilding when those
@@ -65,4 +69,4 @@ def prepare_engine_input(frame: pd.DataFrame) -> EngineInputBatch:
     if structural.status is DataQualityStatus.INVALID:
         raise EngineInputError("; ".join(structural.errors) or "Invalid filtered market data")
 
-    return EngineInputBatch(frame=safe, source_quality=report)
+    return EngineInputBatch(frame=safe, source_quality=structural)
