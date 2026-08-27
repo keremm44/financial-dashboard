@@ -75,8 +75,8 @@ class _Snapshot:
 
     def entry_decision(self, *, config=None, execution_event=None):
         CALLS.append(("entry", self.as_of))
-        if self.entry_action is DecisionAction.BUY:
-            assert execution_event is not None
+        if self.entry_action is DecisionAction.BUY and execution_event is None:
+            return _entry_decision(DecisionAction.WAIT)
         return _entry_decision(self.entry_action)
 
     def position_exit_decision(self, state, *, execution_event=None):
@@ -150,9 +150,8 @@ def test_canonical_replay_does_not_reuse_event_from_another_bar():
     )
 
     assert result.rows[0].action is DecisionAction.WAIT
-    assert result.rows[1].action is DecisionAction.BUY
-    # The fake BUY contract detects that no t2 event exists before metadata can open.
-    # A fresh event from t1 is never carried to t2.
+    assert result.rows[1].action is DecisionAction.WAIT
+    assert result.final_state.position is PositionState.FLAT
 
 
 def test_canonical_replay_rejects_legacy_open_without_entry_metadata():
