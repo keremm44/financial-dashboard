@@ -16,8 +16,8 @@ from financial_dashboard.decision.structural import StructuralDirection
 
 def _environment() -> EnvironmentAssessment:
     return EnvironmentAssessment(
-        regime=VolatilityRangeRegime.NORMAL,
-        character=ExpansionCharacter.BALANCED,
+        regime=VolatilityRangeRegime.BALANCED,
+        character=ExpansionCharacter.NEUTRAL,
         alignment=EnvironmentAlignment.NEUTRAL,
         risk=EnvironmentRisk.NORMAL,
         data_quality=ContextDataQuality.VALID,
