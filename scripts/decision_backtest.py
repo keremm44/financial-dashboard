@@ -24,7 +24,6 @@ from financial_dashboard.decision.history_replay import (
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
 from financial_dashboard.decision.lifecycle_replay import replay_canonical_trade_lifecycle
 from financial_dashboard.decision.opportunity import OpportunityCalibration
-from financial_dashboard.decision.persistent_history_runner import DecisionTimelineCacheMiss
 from financial_dashboard.decision.structural import DecisionHorizon
 from financial_dashboard.decision_audit import (
     DecisionAuditConfig,
@@ -130,7 +129,7 @@ def _timeline_json(decisions) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Load the exact frozen DecisionInput timeline without replaying domains, "
+            "Replay native market engines through the append-only causal timeline, "
             "run the canonical Turn 4-9 long-only lifecycle, then grade it with "
             "strictly downstream hindsight audits."
         )
@@ -144,18 +143,15 @@ def main() -> None:
         "--max-bars",
         type=int,
         default=None,
-        help=(
-            "Use the exact frozen timeline built with the same max-bars setting. "
-            "The cache-only path never rebuilds domains."
-        ),
+        help="Smoke/debug only: keep the last N 1h decision points; native history is still replayed once.",
     )
     parser.add_argument("--pattern-profile", default=None)
     parser.add_argument(
         "--legacy-single-pass",
         action="store_true",
         help=(
-            "Explicit compatibility/debug path that may replay domains. "
-            "Normal BUY/SELL tests must not use this flag."
+            "Use the retired capture-based historical input implementation for equivalence/debug only. "
+            "The append-only causal input timeline remains the default."
         ),
     )
     parser.add_argument(
@@ -229,38 +225,25 @@ def main() -> None:
         symbol=args.symbol,
         requested_start=args.start,
     )
-    history_config = HistoricalDecisionInputConfig(
-        pattern_profile=args.pattern_profile,
-        max_bars=args.max_bars,
-        start_at=effective_start,
-        end_at=args.end,
+
+    replay_runner = (
+        LegacyHistoricalDecisionInputReplayRunner(store)
+        if args.legacy_single_pass
+        else HistoricalDecisionInputReplayRunner(store)
     )
-
     started = perf_counter()
-    if args.legacy_single_pass:
-        replay_runner = LegacyHistoricalDecisionInputReplayRunner(store)
-        input_replay = replay_runner.replay(args.symbol, config=history_config)
-        input_replay_path = "LEGACY_SINGLE_PASS_DOMAIN_REPLAY"
-        domain_replay_seconds = perf_counter() - started
-        frozen_timeline_load_seconds = 0.0
-    else:
-        replay_runner = HistoricalDecisionInputReplayRunner(store)
-        try:
-            input_replay = replay_runner.load_cached(args.symbol, config=history_config)
-        except DecisionTimelineCacheMiss as exc:
-            raise SystemExit(
-                "FROZEN_DECISION_TIMELINE_CACHE_MISS\n"
-                "BUY/SELL backtest is cache-only and will not replay domains.\n"
-                "Build the frozen timeline first with:\n"
-                f"  python scripts/build_decision_timeline_cache.py {args.cache_root} {args.symbol}\n"
-                "Use the same --start/--end/--max-bars/--pattern-profile options on both commands."
-            ) from exc
-        frozen_timeline_load_seconds = perf_counter() - started
-        domain_replay_seconds = 0.0
-        input_replay_path = "FROZEN_DECISION_TIMELINE_CACHE_ONLY"
-
+    input_replay = replay_runner.replay(
+        args.symbol,
+        config=HistoricalDecisionInputConfig(
+            pattern_profile=args.pattern_profile,
+            max_bars=args.max_bars,
+            start_at=effective_start,
+            end_at=args.end,
+        ),
+    )
+    input_seconds = perf_counter() - started
     if not input_replay.snapshots:
-        raise SystemExit("Frozen historical DecisionInput timeline contains no causal snapshots")
+        raise SystemExit("Historical input replay produced no causal decision snapshots")
 
     started = perf_counter()
     if args.legacy_decision_stream:
@@ -335,9 +318,10 @@ def main() -> None:
     print(f"CAUSAL_WARMUP_START\t{effective_start}")
     print(f"CAUSAL_SNAPSHOTS\t{len(input_replay.snapshots)}")
     print(f"DECISION_EVENTS\t{len(decisions)}")
-    print(f"INPUT_REPLAY_PATH\t{input_replay_path}")
-    print(f"FROZEN_TIMELINE_LOAD_SECONDS\t{frozen_timeline_load_seconds:.2f}")
-    print(f"DOMAIN_REPLAY_AND_SNAPSHOT_SECONDS\t{domain_replay_seconds:.2f}")
+    print(
+        "INPUT_REPLAY_PATH\t"
+        + ("LEGACY_SINGLE_PASS" if args.legacy_single_pass else "CANONICAL_CAUSAL_TIMELINE")
+    )
     print(f"LOAD_INPUTS_SECONDS\t{timings.load_inputs_seconds:.2f}")
     print(f"NATIVE_CAPTURE_PASS_SECONDS\t{timings.native_capture_pass_seconds:.2f}")
     print(f"HAM_REPLAY_SECONDS\t{timings.ham_seconds:.2f}")
@@ -346,6 +330,7 @@ def main() -> None:
     print(f"STABIL_REPLAY_SECONDS\t{timings.stabil_seconds:.2f}")
     print(f"NATIVE_REPLAY_SECONDS\t{timings.native_replay_seconds:.2f}")
     print(f"SNAPSHOT_ASSEMBLY_SECONDS\t{timings.snapshot_assembly_seconds:.2f}")
+    print(f"DOMAIN_REPLAY_AND_SNAPSHOT_SECONDS\t{input_seconds:.2f}")
     print(f"DECISION_LAYER_SECONDS\t{decision_seconds:.2f}")
     print(f"HINDSIGHT_AUDIT_SECONDS\t{audit_seconds:.2f}")
     print(f"HORIZON_TRADE_QUALITY_SECONDS\t{quality_seconds:.2f}")
