@@ -9,8 +9,13 @@ from financial_dashboard.context.permissions import (
     PermissionScope,
     PermittedSide,
 )
+from financial_dashboard.context.projections import (
+    StructuralFactsProjection,
+    StructuralTimeframeProjection,
+)
 from financial_dashboard.decision.conflict import ConflictState
 from financial_dashboard.decision.eligibility import EligibilityState, assess_eligibility
+from financial_dashboard.decision.engine import _decision_structure_projection
 from financial_dashboard.decision.environment import EnvironmentRisk
 from financial_dashboard.decision.opportunity import OpportunityState
 from financial_dashboard.decision.structural import StructuralDirection, ThesisState
@@ -49,6 +54,27 @@ def _kwargs(*, permission, conflict_state: ConflictState):
         environment=SimpleNamespace(risk=EnvironmentRisk.NORMAL),
         coverage=SimpleNamespace(critical_path_missing=()),
     )
+
+
+def test_decision_structure_treats_generic_limited_quality_as_price_usable() -> None:
+    row = StructuralTimeframeProjection(
+        timeframe="1h",
+        as_of=None,
+        data_quality=ContextDataQuality.DATA_LIMITED,
+        external=None,
+        internal=None,
+        events=(),
+    )
+    source = StructuralFactsProjection(
+        symbol="ASELS",
+        timeframes=("1h",),
+        timeframe_facts=(row,),
+    )
+
+    normalized = _decision_structure_projection(source)
+
+    assert source.for_timeframe("1h").data_quality is ContextDataQuality.DATA_LIMITED
+    assert normalized.for_timeframe("1h").data_quality is ContextDataQuality.VALID
 
 
 def test_context_conflict_high_is_not_a_second_hard_veto() -> None:
