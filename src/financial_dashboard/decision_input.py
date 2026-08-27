@@ -147,6 +147,13 @@ class DecisionInputSnapshot:
 
         return assess_entry_scenario(self, horizon, config=config)
 
+    def entry_arbitration(self, *, config=None):
+        """Select LT/ST scenario ownership without producing an entry action."""
+
+        from financial_dashboard.decision.arbiter import assess_entry_arbitration
+
+        return assess_entry_arbitration(self, config=config)
+
     def quality_for_timeframe(self, timeframe: str) -> ContextDataQuality:
         normalized = timeframe.strip().lower()
         for key, quality in self.data_quality_by_timeframe:

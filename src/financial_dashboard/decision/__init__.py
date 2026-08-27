@@ -1,3 +1,10 @@
+from .arbiter import (
+    ArbiterSelection,
+    ArbiterState,
+    EntryScenarioArbitration,
+    arbitrate_entry_scenarios,
+    assess_entry_arbitration,
+)
 from .composer import (
     ActionPolicy,
     ActionSide,
@@ -128,6 +135,8 @@ from .trade_exit import (
 __all__ = [
     "ActionPolicy",
     "ActionSide",
+    "ArbiterSelection",
+    "ArbiterState",
     "BridgeState",
     "ConflictAssessment",
     "ConflictFamilyEvidence",
@@ -142,6 +151,7 @@ __all__ = [
     "DurabilityState",
     "EligibilityAssessment",
     "EligibilityState",
+    "EntryScenarioArbitration",
     "EntryScenarioAssessment",
     "EnvironmentAlignment",
     "EnvironmentAssessment",
@@ -202,10 +212,12 @@ __all__ = [
     "TradeLifecycleTransition",
     "apply_readiness_position_proxy",
     "apply_trade_lifecycle",
+    "arbitrate_entry_scenarios",
     "assess_conflict",
     "assess_coverage",
     "assess_durability",
     "assess_eligibility",
+    "assess_entry_arbitration",
     "assess_entry_scenario",
     "assess_environment",
     "assess_execution_trigger",
