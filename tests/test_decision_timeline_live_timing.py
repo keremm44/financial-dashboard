@@ -31,3 +31,31 @@ def test_builder_exposes_live_start_done_timeframe_domain_contract():
     assert "meta['seconds']" in source
     assert "flush=True" in source
     assert "LegacyHistoricalDecisionInputReplayRunner" not in source
+
+
+def test_cold_bootstrap_uses_fresh_checkpoint_identity_and_restores_versions():
+    module = _builder_module()
+    scope = module["_cold_domain_checkpoint_scope"]
+    native_history = module["native_history"]
+    incremental_history = module["incremental_history"]
+
+    native_original = native_history._NATIVE_PERSISTENCE_SEMANTIC_VERSION
+    supporting_original = incremental_history._SUPPORTING_PERSISTENCE_SEMANTIC_VERSION
+
+    with scope():
+        native_first = native_history._NATIVE_PERSISTENCE_SEMANTIC_VERSION
+        supporting_first = incremental_history._SUPPORTING_PERSISTENCE_SEMANTIC_VERSION
+        assert native_first != native_original
+        assert supporting_first != supporting_original
+
+    assert native_history._NATIVE_PERSISTENCE_SEMANTIC_VERSION == native_original
+    assert incremental_history._SUPPORTING_PERSISTENCE_SEMANTIC_VERSION == supporting_original
+
+    with scope():
+        native_second = native_history._NATIVE_PERSISTENCE_SEMANTIC_VERSION
+        supporting_second = incremental_history._SUPPORTING_PERSISTENCE_SEMANTIC_VERSION
+
+    assert native_second != native_first
+    assert supporting_second != supporting_first
+    assert native_history._NATIVE_PERSISTENCE_SEMANTIC_VERSION == native_original
+    assert incremental_history._SUPPORTING_PERSISTENCE_SEMANTIC_VERSION == supporting_original
