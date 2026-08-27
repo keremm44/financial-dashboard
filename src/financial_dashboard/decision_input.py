@@ -133,6 +133,13 @@ class DecisionInputSnapshot:
             participation=self.participation_behavior,
         )
 
+    def target_path(self, direction):
+        """Build the causal target path for one already-resolved structural side."""
+
+        from financial_dashboard.decision.target_path import build_target_path_from_snapshot
+
+        return build_target_path_from_snapshot(self, direction)
+
     def quality_for_timeframe(self, timeframe: str) -> ContextDataQuality:
         normalized = timeframe.strip().lower()
         for key, quality in self.data_quality_by_timeframe:
