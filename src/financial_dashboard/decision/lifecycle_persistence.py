@@ -27,25 +27,33 @@ class LifecycleCheckpointStatus(StrEnum):
     INVALID = "INVALID"
 
 
+def _validate_sha256(value: str, *, field: str) -> None:
+    if len(value) != 64:
+        raise ValueError(f"{field} must be sha256 hex")
+    try:
+        int(value, 16)
+    except ValueError as exc:
+        raise ValueError(f"{field} must be sha256 hex") from exc
+
+
 @dataclass(frozen=True, slots=True)
 class TradeLifecycleCheckpoint:
+    """Persistent ownership plus the exact causal prefix that produced it."""
+
     symbol: str
     state: TradeLifecycleState
     prefix_count: int
     last_as_of: Any | None
-    snapshot_prefix_digest: str
+    causal_prefix_digest: str
+    decision_config_digest: str
 
     def __post_init__(self) -> None:
         if not self.symbol.strip():
             raise ValueError("trade lifecycle checkpoint symbol must be non-empty")
         if self.prefix_count < 0:
             raise ValueError("trade lifecycle checkpoint prefix_count must be non-negative")
-        if len(self.snapshot_prefix_digest) != 64:
-            raise ValueError("trade lifecycle checkpoint digest must be sha256 hex")
-        try:
-            int(self.snapshot_prefix_digest, 16)
-        except ValueError as exc:
-            raise ValueError("trade lifecycle checkpoint digest must be sha256 hex") from exc
+        _validate_sha256(self.causal_prefix_digest, field="causal_prefix_digest")
+        _validate_sha256(self.decision_config_digest, field="decision_config_digest")
         if self.prefix_count == 0:
             if self.last_as_of is not None:
                 raise ValueError("empty lifecycle prefix cannot carry last_as_of")
@@ -180,14 +188,31 @@ def deserialize_trade_lifecycle_state(payload: Mapping[str, Any]) -> TradeLifecy
     )
 
 
-def snapshot_prefix_digest(snapshots: Iterable[Any]) -> str:
-    """Hash the deterministic representation of the consumed frozen snapshot prefix."""
+def decision_config_digest(config: Any) -> str:
+    return sha256(repr(config).encode("utf-8")).hexdigest()
 
+
+def causal_prefix_digest(
+    snapshots: Iterable[Any],
+    *,
+    entry_execution_events: Mapping[Any, Any] | None = None,
+    exit_execution_events: Mapping[Any, Any] | None = None,
+) -> str:
+    """Hash snapshots and same-bar execution inputs consumed by the lifecycle replay."""
+
+    entry_events = entry_execution_events or {}
+    exit_events = exit_execution_events or {}
     digest = sha256()
     for snapshot in snapshots:
-        payload = repr(snapshot).encode("utf-8")
-        digest.update(len(payload).to_bytes(8, "big"))
-        digest.update(payload)
+        parts = (
+            repr(snapshot),
+            repr(entry_events.get(snapshot.as_of)),
+            repr(exit_events.get(snapshot.as_of)),
+        )
+        for part in parts:
+            payload = part.encode("utf-8")
+            digest.update(len(payload).to_bytes(8, "big"))
+            digest.update(payload)
     return digest.hexdigest()
 
 
@@ -198,7 +223,8 @@ def serialize_trade_lifecycle_checkpoint(checkpoint: TradeLifecycleCheckpoint) -
         "symbol": checkpoint.symbol,
         "prefix_count": checkpoint.prefix_count,
         "last_as_of": _timestamp_payload(checkpoint.last_as_of),
-        "snapshot_prefix_digest": checkpoint.snapshot_prefix_digest,
+        "causal_prefix_digest": checkpoint.causal_prefix_digest,
+        "decision_config_digest": checkpoint.decision_config_digest,
         "state": serialize_trade_lifecycle_state(checkpoint.state),
     }
 
@@ -219,9 +245,10 @@ def deserialize_trade_lifecycle_checkpoint(payload: Mapping[str, Any], *, expect
     last_as_of = _timestamp_from_payload(payload.get("last_as_of"), field="last_as_of", required=prefix_count > 0)
     if prefix_count == 0 and payload.get("last_as_of") is not None:
         raise ValueError("empty lifecycle checkpoint cannot carry last_as_of")
-    prefix_digest = payload.get("snapshot_prefix_digest")
-    if not isinstance(prefix_digest, str):
-        raise ValueError("trade lifecycle checkpoint digest is invalid")
+    causal_digest = payload.get("causal_prefix_digest")
+    config_digest = payload.get("decision_config_digest")
+    if not isinstance(causal_digest, str) or not isinstance(config_digest, str):
+        raise ValueError("trade lifecycle checkpoint digests are invalid")
     state_payload = payload.get("state")
     if not isinstance(state_payload, Mapping):
         raise ValueError("trade lifecycle checkpoint state is invalid")
@@ -230,7 +257,8 @@ def deserialize_trade_lifecycle_checkpoint(payload: Mapping[str, Any], *, expect
         state=deserialize_trade_lifecycle_state(state_payload),
         prefix_count=prefix_count,
         last_as_of=last_as_of,
-        snapshot_prefix_digest=prefix_digest,
+        causal_prefix_digest=causal_digest,
+        decision_config_digest=config_digest,
     )
 
 
@@ -288,9 +316,10 @@ __all__ = [
     "PersistentTradeLifecycleStore",
     "TRADE_LIFECYCLE_STATE_SCHEMA_VERSION",
     "TradeLifecycleCheckpoint",
+    "causal_prefix_digest",
+    "decision_config_digest",
     "deserialize_trade_lifecycle_checkpoint",
     "deserialize_trade_lifecycle_state",
     "serialize_trade_lifecycle_checkpoint",
     "serialize_trade_lifecycle_state",
-    "snapshot_prefix_digest",
 ]
