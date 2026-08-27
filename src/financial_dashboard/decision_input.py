@@ -23,6 +23,10 @@ from financial_dashboard.context.projections import (
     VolatilityProjection,
 )
 from financial_dashboard.context.snapshot import CrossDomainContextSnapshot, KnowledgeBoundary
+from financial_dashboard.context.structural_levels import (
+    StructuralLevelView,
+    build_structural_level_view,
+)
 from financial_dashboard.context.support_resistance_projection import SupportResistanceProjection
 from financial_dashboard.context.volatility_environment_projection import VolatilityEnvironmentProjection
 from financial_dashboard.context.zones import ZoneIntelligenceSnapshot
@@ -93,6 +97,15 @@ class DecisionInputSnapshot:
             raise ValueError("decision input cannot contain future-unavailable refs")
         if self.knowledge_boundary.as_of != self.as_of:
             raise ValueError("decision input knowledge boundary must share as_of")
+
+    @property
+    def structural_levels(self) -> StructuralLevelView:
+        """Derived weak-objective/protected-boundary view; never independent evidence."""
+
+        return build_structural_level_view(
+            self.structure,
+            current_price=self.current_price,
+        )
 
     def quality_for_timeframe(self, timeframe: str) -> ContextDataQuality:
         normalized = timeframe.strip().lower()
