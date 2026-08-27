@@ -85,7 +85,9 @@ def canonical_decision_events_from_replay(
     ready_since: Any | None = None
     ready_price: float | None = None
     exit_watch_since: Any | None = None
+    exit_watch_price: float | None = None
     exit_ready_since: Any | None = None
+    exit_ready_price: float | None = None
 
     for row in replay.rows:
         snapshot = row.snapshot
@@ -117,17 +119,23 @@ def canonical_decision_events_from_replay(
                 ready_since = None
                 ready_price = None
             exit_watch_since = None
+            exit_watch_price = None
             exit_ready_since = None
+            exit_ready_price = None
         else:
             if exit_decision is not None:
                 if exit_decision.stage.value == "EXIT_WATCH" and exit_watch_since is None:
                     exit_watch_since = snapshot.as_of
+                    exit_watch_price = float(snapshot.current_price)
                 elif exit_decision.stage.value == "MONITOR":
                     exit_watch_since = None
+                    exit_watch_price = None
                 if exit_decision.stage.value == "EXIT_READY" and exit_ready_since is None:
                     exit_ready_since = snapshot.as_of
+                    exit_ready_price = float(snapshot.current_price)
                 elif exit_decision.stage.value != "EXIT_READY":
                     exit_ready_since = None
+                    exit_ready_price = None
 
         metadata = row.current_state.entry_metadata or row.previous_state.entry_metadata
         selected_scenario = None if entry is None else entry.arbitration.selected_scenario
@@ -175,6 +183,20 @@ def canonical_decision_events_from_replay(
                 "waiting_for": list(exit_decision.waiting_for),
             }
 
+        target_path = snapshot.target_path(StructuralDirection.LONG) if hasattr(snapshot, "target_path") else None
+        target_path_payload = None if target_path is None else {
+            "status": target_path.status.value,
+            "active_identity": None if target_path.active_node is None else target_path.active_node.identity,
+            "nodes": [
+                {
+                    "identity": node.identity,
+                    "state": node.state.value,
+                    "roles": [role.value for role in node.roles],
+                    "sources": [source.value for source in node.sources],
+                }
+                for node in target_path.nodes
+            ],
+        }
         snapshot_payload = {
             "canonical_lifecycle": True,
             "canonical_readiness_proxy": bool(row.execution_proxy_used),
@@ -200,8 +222,11 @@ def canonical_decision_events_from_replay(
                 "ready_for_execution_at": ready_since,
                 "ready_for_execution_price": ready_price,
                 "exit_watch_at": exit_watch_since,
+                "exit_watch_price": exit_watch_price,
                 "exit_ready_at": exit_ready_since,
+                "exit_ready_price": exit_ready_price,
             },
+            "target_path": target_path_payload,
             "decision": {
                 "action": row.action.value,
                 "reasons": list(reasons),
@@ -239,7 +264,9 @@ def canonical_decision_events_from_replay(
             ready_price = None
         if row.action is DecisionAction.SELL:
             exit_watch_since = None
+            exit_watch_price = None
             exit_ready_since = None
+            exit_ready_price = None
 
     return tuple(events)
 
