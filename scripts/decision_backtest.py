@@ -11,6 +11,8 @@ import pandas as pd
 
 from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
+from financial_dashboard.decision.canonical_events import canonical_decision_events_from_replay
+from financial_dashboard.decision.engine import DecisionEngineConfig
 from financial_dashboard.decision.historical_stream import (
     HistoricalDecisionStreamConfig,
     decision_events_from_snapshot_stream,
@@ -20,6 +22,7 @@ from financial_dashboard.decision.history_replay import (
     LegacyHistoricalDecisionInputReplayRunner,
 )
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
+from financial_dashboard.decision.lifecycle_replay import replay_canonical_trade_lifecycle
 from financial_dashboard.decision.opportunity import OpportunityCalibration
 from financial_dashboard.decision.structural import DecisionHorizon
 from financial_dashboard.decision_audit import DecisionAuditConfig, audit_decisions, render_json, render_text
@@ -117,13 +120,14 @@ def _timeline_json(decisions) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Replay native market engines through the canonical append-only causal timeline, "
-            "evaluate the long-only trade lifecycle, then run hindsight audit."
+            "Replay native market engines through the append-only causal timeline, "
+            "run the canonical Turn 4-9 long-only lifecycle, then grade it with a "
+            "strictly downstream hindsight audit."
         )
     )
     parser.add_argument("cache_root", type=Path)
     parser.add_argument("symbol")
-    parser.add_argument("--horizon", choices=("lt", "st"), default="st")
+    parser.add_argument("--horizon", choices=("lt", "st"), default="st", help="Legacy decision-stream mode only.")
     parser.add_argument("--start", default=None)
     parser.add_argument("--end", default=None)
     parser.add_argument(
@@ -137,8 +141,22 @@ def main() -> None:
         "--legacy-single-pass",
         action="store_true",
         help=(
-            "Use the retired capture-based historical implementation for equivalence/debug only. "
-            "The append-only causal timeline is the default and production-aligned path."
+            "Use the retired capture-based historical input implementation for equivalence/debug only. "
+            "The append-only causal input timeline remains the default."
+        ),
+    )
+    parser.add_argument(
+        "--legacy-decision-stream",
+        action="store_true",
+        help="Use the pre-Turn-10 single-horizon decision stream instead of canonical lifecycle integration.",
+    )
+    parser.add_argument(
+        "--canonical-readiness-proxy",
+        action="store_true",
+        help=(
+            "Audit-only: substitute a same-bar confirmed 30m execution event exactly when the canonical "
+            "entry is READY or the open position is EXIT_READY. This measures setup/exit readiness, not "
+            "production execution quality."
         ),
     )
     parser.add_argument(
@@ -150,19 +168,12 @@ def main() -> None:
     proxy_group.add_argument(
         "--readiness-position-proxy",
         action="store_true",
-        help=(
-            "Legacy audit-only proxy: flat+LONG READY => BUY and open-long+SHORT READY => SELL. "
-            "Bypasses the dedicated long-exit lifecycle; retained only for historical comparison."
-        ),
+        help="Legacy decision-stream proxy retained only for historical comparison.",
     )
     proxy_group.add_argument(
         "--lifecycle-readiness-proxy",
         action="store_true",
-        help=(
-            "Audit-only structural lifecycle baseline: LONG READY substitutes entry execution, "
-            "and dedicated EXIT_READY substitutes exit execution. The real FLAT/OPEN lifecycle "
-            "and long-exit assessment still run; no production execution trigger is invented."
-        ),
+        help="Legacy decision-stream lifecycle proxy retained only for historical comparison.",
     )
     parser.add_argument("--opportunity-none-max-atr", type=float, default=None)
     parser.add_argument("--opportunity-compressed-max-atr", type=float, default=None)
@@ -181,15 +192,16 @@ def main() -> None:
         "--timeline-json-out",
         type=Path,
         default=None,
-        help=(
-            "Write every causal decision bar with lifecycle phase, permission, typed domain "
-            "states, reasons, blockers and waiting/next-condition diagnostics."
-        ),
+        help="Write every causal canonical/legacy decision event with audit metadata.",
     )
     args = parser.parse_args()
 
     if args.legacy_single_pass and args.incremental_state_timeline:
         raise SystemExit("--legacy-single-pass and --incremental-state-timeline are mutually exclusive")
+    if (args.readiness_position_proxy or args.lifecycle_readiness_proxy) and not args.legacy_decision_stream:
+        raise SystemExit("legacy readiness proxies require --legacy-decision-stream")
+    if args.canonical_readiness_proxy and args.legacy_decision_stream:
+        raise SystemExit("--canonical-readiness-proxy cannot be combined with --legacy-decision-stream")
 
     horizon = DecisionHorizon.LONG_TERM if args.horizon == "lt" else DecisionHorizon.SHORT_TERM
     calibration = _calibration(args)
@@ -220,15 +232,34 @@ def main() -> None:
         raise SystemExit("Historical input replay produced no causal decision snapshots")
 
     started = perf_counter()
-    decisions = decision_events_from_snapshot_stream(
-        input_replay.snapshots,
-        config=HistoricalDecisionStreamConfig(
-            horizon=horizon,
-            opportunity_calibration=calibration,
-            readiness_position_proxy=bool(args.readiness_position_proxy),
-            lifecycle_readiness_proxy=bool(args.lifecycle_readiness_proxy),
-        ),
-    )
+    if args.legacy_decision_stream:
+        decisions = decision_events_from_snapshot_stream(
+            input_replay.snapshots,
+            config=HistoricalDecisionStreamConfig(
+                horizon=horizon,
+                opportunity_calibration=calibration,
+                readiness_position_proxy=bool(args.readiness_position_proxy),
+                lifecycle_readiness_proxy=bool(args.lifecycle_readiness_proxy),
+            ),
+        )
+        if args.readiness_position_proxy:
+            replay_mode = "LEGACY_READINESS_POSITION_PROXY"
+        elif args.lifecycle_readiness_proxy:
+            replay_mode = "LEGACY_LIFECYCLE_READINESS_PROXY"
+        else:
+            replay_mode = "LEGACY_SINGLE_HORIZON_DECISION_STREAM"
+    else:
+        canonical_replay = replay_canonical_trade_lifecycle(
+            input_replay.snapshots,
+            config=DecisionEngineConfig(opportunity_calibration=calibration),
+            readiness_execution_proxy=bool(args.canonical_readiness_proxy),
+        )
+        decisions = canonical_decision_events_from_replay(canonical_replay)
+        replay_mode = (
+            "CANONICAL_TURN4_9_READINESS_PROXY"
+            if args.canonical_readiness_proxy
+            else "CANONICAL_TURN4_9_REAL_EXECUTION_ONLY"
+        )
     decision_seconds = perf_counter() - started
 
     bars = store.load(args.symbol, args.audit_timeframe)
@@ -271,12 +302,6 @@ def main() -> None:
     print(f"DOMAIN_REPLAY_AND_SNAPSHOT_SECONDS\t{input_seconds:.2f}")
     print(f"DECISION_LAYER_SECONDS\t{decision_seconds:.2f}")
     print(f"HINDSIGHT_AUDIT_SECONDS\t{audit_seconds:.2f}")
-    if args.readiness_position_proxy:
-        replay_mode = "LEGACY_READINESS_POSITION_PROXY"
-    elif args.lifecycle_readiness_proxy:
-        replay_mode = "LIFECYCLE_READINESS_PROXY"
-    else:
-        replay_mode = "CAUSAL_TRADE_LIFECYCLE"
     print(f"REPLAY_MODE\t{replay_mode}")
     if calibration is None:
         print("OPPORTUNITY_CALIBRATION\tUNSET")
