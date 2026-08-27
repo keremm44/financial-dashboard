@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from financial_dashboard.context.envelope import ContextDataQuality, FactRef
 from financial_dashboard.context.pattern_behavior_projection import (
     PatternBehaviorPhase,
     PatternBehaviorProjection,
+    _phase as _native_pattern_phase,
 )
 
 from .reaction import ReactionAssessment, ReactionState
@@ -60,9 +61,24 @@ def _pattern_row(pattern: PatternBehaviorProjection | None, timeframe: str):
     if pattern is None:
         return None
     try:
-        return pattern.for_timeframe(timeframe)
+        row = pattern.for_timeframe(timeframe)
     except KeyError:
         return None
+
+    # Pattern Compression is price-derived and consumes the already-filtered
+    # closed+complete engine frame. Generic source-quality diagnostics can still be
+    # DATA_LIMITED because of an open source tail or volume-only warnings. Those
+    # diagnostics remain intact on the frozen projection, but must not erase a known
+    # native Pattern state inside the Decision timing layer. This mirrors the
+    # Decision-only Structure quality normalization and never mutates domain state.
+    if row.ref.data_quality is ContextDataQuality.DATA_LIMITED:
+        native_phase = _native_pattern_phase(row.native_state, unavailable=False)
+        return replace(
+            row,
+            ref=replace(row.ref, data_quality=ContextDataQuality.VALID),
+            phase=native_phase,
+        )
+    return row
 
 
 def _unique_refs(*groups: tuple[FactRef, ...]) -> tuple[FactRef, ...]:
@@ -184,8 +200,6 @@ def assess_setup_trigger(
             refs,
         )
 
-    # Validly observed absence is distinct from missing evidence. Pattern is not a
-    # critical dependency: a known reaction path can establish ABSENT by itself.
     if reaction_known or pattern_available:
         if reaction.state is ReactionState.ABSENT:
             reasons.append("REACTION_SETUP_ABSENT")
@@ -245,9 +259,6 @@ def assess_timing(
             refs,
         )
 
-    # For a long-horizon continuation, an established lower-horizon counter move or
-    # an early structural transition means the immediate entry is still premature.
-    # The ST assessment remains independent and may itself be actionable.
     if horizon is DecisionHorizon.LONG_TERM and relation in {
         HorizonRelation.COUNTER_REACTION,
         HorizonRelation.EARLY_TRANSITION,
