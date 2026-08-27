@@ -121,6 +121,18 @@ class DecisionInputSnapshot:
             support_resistance=self.support_resistance,
         )
 
+    @property
+    def market_state(self):
+        """Derived horizon-aware MTF state; never a fresh vote or action signal."""
+
+        from financial_dashboard.decision.market_state import build_market_state
+
+        return build_market_state(
+            self.structure,
+            volatility=self.volatility_environment,
+            participation=self.participation_behavior,
+        )
+
     def quality_for_timeframe(self, timeframe: str) -> ContextDataQuality:
         normalized = timeframe.strip().lower()
         for key, quality in self.data_quality_by_timeframe:
