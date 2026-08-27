@@ -76,6 +76,14 @@ from .participation import (
     assess_participation,
 )
 from .reaction import ReactionAssessment, ReactionState, assess_reaction
+from .scenario import (
+    EntryScenarioAssessment,
+    ScenarioKind,
+    ScenarioPresence,
+    ScenarioStage,
+    assess_entry_scenario,
+    build_entry_scenario,
+)
 from .structural import (
     DecisionHorizon,
     HorizonRelation,
@@ -134,6 +142,7 @@ __all__ = [
     "DurabilityState",
     "EligibilityAssessment",
     "EligibilityState",
+    "EntryScenarioAssessment",
     "EnvironmentAlignment",
     "EnvironmentAssessment",
     "EnvironmentRisk",
@@ -167,6 +176,9 @@ __all__ = [
     "PositionState",
     "ReactionAssessment",
     "ReactionState",
+    "ScenarioKind",
+    "ScenarioPresence",
+    "ScenarioStage",
     "SetupTriggerAssessment",
     "SetupTriggerState",
     "SinglePassHistoricalDecisionInputReplay",
@@ -194,6 +206,7 @@ __all__ = [
     "assess_coverage",
     "assess_durability",
     "assess_eligibility",
+    "assess_entry_scenario",
     "assess_environment",
     "assess_execution_trigger",
     "assess_horizon_decision",
@@ -207,6 +220,7 @@ __all__ = [
     "assess_short_term_structure",
     "assess_snapshot_stream",
     "assess_timing",
+    "build_entry_scenario",
     "build_horizon_structural_map",
     "build_horizon_structural_snapshot",
     "build_market_state",

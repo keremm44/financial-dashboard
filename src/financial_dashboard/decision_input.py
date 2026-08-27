@@ -140,6 +140,13 @@ class DecisionInputSnapshot:
 
         return build_target_path_from_snapshot(self, direction)
 
+    def entry_scenario(self, horizon, *, config=None):
+        """Build one non-action LT/ST entry scenario from this frozen snapshot."""
+
+        from financial_dashboard.decision.scenario import assess_entry_scenario
+
+        return assess_entry_scenario(self, horizon, config=config)
+
     def quality_for_timeframe(self, timeframe: str) -> ContextDataQuality:
         normalized = timeframe.strip().lower()
         for key, quality in self.data_quality_by_timeframe:
