@@ -66,6 +66,21 @@ from .lifecycle import (
     transition_entry_lifecycle,
     transition_trade_lifecycle,
 )
+from .lifecycle_persistence import (
+    CANONICAL_LIFECYCLE_CONTRACT_VERSION,
+    LifecycleCheckpointLoadResult,
+    LifecycleCheckpointStatus,
+    PersistentTradeLifecycleStore,
+    TRADE_LIFECYCLE_STATE_SCHEMA_VERSION,
+    TradeLifecycleCheckpoint,
+    causal_prefix_digest,
+    decision_config_digest,
+)
+from .lifecycle_replay import (
+    CanonicalLifecycleReplayResult,
+    CanonicalLifecycleReplayRow,
+    replay_canonical_trade_lifecycle,
+)
 from .market_state import (
     BridgeState,
     HorizonMarketState,
@@ -89,6 +104,10 @@ from .participation import (
     ParticipationAssessment,
     ParticipationState,
     assess_participation,
+)
+from .persistent_lifecycle_replay import (
+    PersistentCanonicalLifecycleReplayRunner,
+    PersistentLifecycleReplayResult,
 )
 from .position_metadata import PositionEntryMetadata, build_position_entry_metadata
 from .reaction import ReactionAssessment, ReactionState, assess_reaction
@@ -147,6 +166,9 @@ __all__ = [
     "ArbiterSelection",
     "ArbiterState",
     "BridgeState",
+    "CANONICAL_LIFECYCLE_CONTRACT_VERSION",
+    "CanonicalLifecycleReplayResult",
+    "CanonicalLifecycleReplayRow",
     "ConflictAssessment",
     "ConflictFamilyEvidence",
     "ConflictSeverity",
@@ -181,6 +203,8 @@ __all__ = [
     "HorizonStructuralMap",
     "HorizonStructuralSnapshot",
     "LegacyHistoricalDecisionInputReplayRunner",
+    "LifecycleCheckpointLoadResult",
+    "LifecycleCheckpointStatus",
     "LongExitAssessment",
     "LongExitExecutionAssessment",
     "MarketRiskRegime",
@@ -192,6 +216,9 @@ __all__ = [
     "ParticipationAssessment",
     "ParticipationPropagationState",
     "ParticipationState",
+    "PersistentCanonicalLifecycleReplayRunner",
+    "PersistentLifecycleReplayResult",
+    "PersistentTradeLifecycleStore",
     "PositionEntryMetadata",
     "PositionExitDecision",
     "PositionHealth",
@@ -208,6 +235,7 @@ __all__ = [
     "StructuralAssessment",
     "StructuralDirection",
     "StructuralRegime",
+    "TRADE_LIFECYCLE_STATE_SCHEMA_VERSION",
     "TargetPath",
     "TargetPathBoundary",
     "TargetPathNode",
@@ -220,6 +248,7 @@ __all__ = [
     "TimeframeStructuralNode",
     "TimingAssessment",
     "TimingState",
+    "TradeLifecycleCheckpoint",
     "TradeLifecycleState",
     "TradeLifecycleTransition",
     "apply_readiness_position_proxy",
@@ -253,11 +282,14 @@ __all__ = [
     "build_position_entry_metadata",
     "build_target_path",
     "build_target_path_from_snapshot",
+    "causal_prefix_digest",
     "classify_horizon_relation",
     "compose_entry_decision",
     "compose_final_decision",
     "compose_position_exit_decision",
+    "decision_config_digest",
     "decision_events_from_snapshot_stream",
+    "replay_canonical_trade_lifecycle",
     "transition_entry_lifecycle",
     "transition_position_exit_lifecycle",
     "transition_trade_lifecycle",
