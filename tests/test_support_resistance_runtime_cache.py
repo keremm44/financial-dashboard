@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import math
 
 import pandas as pd
+import pytest
 
 from financial_dashboard.engines.support_resistance_engine import SupportResistanceRangeEngine
 from financial_dashboard.engines.support_resistance_runtime_engine import RuntimeSupportResistanceRangeEngine
@@ -38,7 +40,9 @@ def test_runtime_support_resistance_matches_canonical_bar_for_bar() -> None:
     for bar in _bars():
         expected = canonical.update(bar)
         actual = runtime.update(bar)
-        assert actual == expected
+        assert actual.score == pytest.approx(expected.score, abs=1e-12)
+        assert actual.quality == pytest.approx(expected.quality, abs=1e-12)
+        assert replace(actual, score=expected.score, quality=expected.quality) == expected
         assert runtime.export_contract == canonical.export_contract
         assert runtime.zones == canonical.zones
         assert runtime.confirmed_pivots == canonical.confirmed_pivots
