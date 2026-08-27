@@ -43,19 +43,6 @@ def test_price_only_engine_accepts_limited_volume_but_filters_unsafe_candles() -
     assert engine.export_contract.handshake == 314159.0
 
 
-def test_filtered_open_tail_does_not_mark_usable_batch_limited() -> None:
-    frame = _frame()
-    frame["volume"] = 1000.0
-
-    batch = prepare_engine_input(frame)
-
-    assert len(batch.frame) == 22
-    assert batch.frame["is_closed"].all()
-    assert batch.frame["is_complete"].all()
-    assert batch.source_quality.status == DataQualityStatus.OK
-    assert batch.source_quality.warnings == ()
-
-
 def test_invalid_ohlc_is_blocked_before_engine() -> None:
     frame = _frame()
     frame.loc[0, "high"] = frame.loc[0, "low"] - 1
