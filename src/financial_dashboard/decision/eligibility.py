@@ -65,12 +65,21 @@ def assess_eligibility(
     if structural.thesis_state in {ThesisState.INVALIDATED, ThesisState.UNRESOLVED}:
         blockers.append(f"STRUCTURAL_THESIS_{structural.thesis_state.value}")
 
-    # G4: Only Permission BLOCKED is an accepted hard gate. A permission side that
-    # differs from the horizon Structure side describes a scope/context mismatch
-    # (commonly a counter-reaction), not proof that the structural thesis is invalid.
+    # G4: Permission remains scope/context only. A legacy context HIGH may describe
+    # the same structural event that is already represented by Structure, so it must
+    # not become a second hard veto here. The independent-family conflict layer below
+    # owns the hard HIGH gate. Any other Permission BLOCKED reason remains a hard gate.
     expected_permission_side = _permission_side(structural.direction)
     if permission.gate_state is GateState.BLOCKED:
-        blockers.extend(permission.blocking_reasons or ("PERMISSION_BLOCKED",))
+        permission_blockers = tuple(permission.blocking_reasons or ("PERMISSION_BLOCKED",))
+        non_context_blockers = tuple(
+            item for item in permission_blockers if item != "CONTEXT_CONFLICT_HIGH"
+        )
+        if non_context_blockers:
+            blockers.extend(non_context_blockers)
+        elif "CONTEXT_CONFLICT_HIGH" in permission_blockers:
+            reasons.append("CONTEXT_CONFLICT_DEFERRED_TO_INDEPENDENT_FAMILY_GATE")
+            waiting.append("CONTEXT_CONFLICT_TO_RECONCILE")
     elif permission.permitted_side not in {expected_permission_side, PermittedSide.NONE}:
         waiting.append("PERMISSION_SCOPE_SIDE_TO_RECONCILE")
     elif permission.permitted_side is PermittedSide.NONE and permission.gate_state in {
