@@ -1,18 +1,16 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from pathlib import Path
 from time import perf_counter
 
 import pandas as pd
 
 from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES
-from financial_dashboard.data.analysis_inputs import load_analysis_inputs
+from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
-from financial_dashboard.decision.history_replay import (
-    HistoricalDecisionInputReplayRunner,
-    LegacyHistoricalDecisionInputReplayRunner,
-)
+from financial_dashboard.decision.history_replay import HistoricalDecisionInputReplayRunner
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
 from financial_dashboard.decision.persistent_state import PersistentObjectStore
 from financial_dashboard.decision.timeline_cache import (
@@ -21,8 +19,13 @@ from financial_dashboard.decision.timeline_cache import (
 )
 from financial_dashboard.structure_location_replay import CausalBarClock
 
+import financial_dashboard.decision.history_incremental as incremental_history
+import financial_dashboard.decision.history_native_timeline as native_history
+
 
 _ALIGNMENT_ERROR = "native checkpoint delta is not aligned with the persisted decision prefix"
+_BOOTSTRAP_NATIVE_VERSION_SUFFIX = "-decision-bootstrap-full-v1"
+_BOOTSTRAP_SUPPORTING_VERSION_SUFFIX = "-decision-bootstrap-full-v1"
 
 
 def _align_requested_start(value: str, reference: pd.Timestamp) -> pd.Timestamp:
@@ -72,45 +75,88 @@ def _causal_warmup_start(
     return max(warmup_start, _align_requested_start(requested_start, warmup_start))
 
 
-def _bootstrap_full_timeline(
+@contextmanager
+def _cold_domain_checkpoint_scope():
+    """Force one canonical full domain run without deleting or trusting old checkpoints.
+
+    This changes checkpoint *identity only* for the duration of the explicit builder
+    process. Domain semantics/config stay unchanged. The canonical runners therefore
+    execute every required historical row once, then the normal DecisionInput runner
+    immediately persists the resulting frozen DecisionInput timeline. Existing native
+    and supporting checkpoints are left untouched for later append-only continuation.
+    """
+
+    native_version = native_history._NATIVE_PERSISTENCE_SEMANTIC_VERSION
+    supporting_version = incremental_history._SUPPORTING_PERSISTENCE_SEMANTIC_VERSION
+    native_history._NATIVE_PERSISTENCE_SEMANTIC_VERSION = (
+        native_version + _BOOTSTRAP_NATIVE_VERSION_SUFFIX
+    )
+    incremental_history._SUPPORTING_PERSISTENCE_SEMANTIC_VERSION = (
+        supporting_version + _BOOTSTRAP_SUPPORTING_VERSION_SUFFIX
+    )
+    try:
+        yield
+    finally:
+        native_history._NATIVE_PERSISTENCE_SEMANTIC_VERSION = native_version
+        incremental_history._SUPPORTING_PERSISTENCE_SEMANTIC_VERSION = supporting_version
+
+
+def _decision_prefix_exists(
     store: ParquetOHLCVStore,
     *,
     symbol: str,
     config: HistoricalDecisionInputConfig,
-    canonical_runner: HistoricalDecisionInputReplayRunner,
-):
-    """Build a missing DecisionInput prefix without trusting delta-only checkpoints.
-
-    This recovery is intentionally confined to the explicit cache-builder command.
-    It does not alter BUY/SELL, does not delete existing domain checkpoints, and does
-    not make the cache-only BUY/SELL backtest capable of cold replay.
-    """
-
-    cold_runner = LegacyHistoricalDecisionInputReplayRunner(store)
-    built = cold_runner.replay(symbol, config=config)
-    inputs = load_analysis_inputs(
-        store,
-        symbol=symbol,
-        timeframes=ANALYSIS_TIMEFRAMES,
-    )
+    runner: HistoricalDecisionInputReplayRunner,
+) -> bool:
     persistent = PersistentObjectStore(store.root)
-    canonical_runner._save_decision_checkpoints(
-        persistent=persistent,
-        exact_identity=canonical_runner._cache_identity(symbol=symbol, config=config),
-        append_identity=canonical_runner._decision_checkpoint_identity(symbol=symbol, config=config),
-        inputs=inputs,
-        result=built,
-    )
-    canonical_runner.last_native_checkpoint_status = "BYPASSED_FOR_COLD_DECISION_BOOTSTRAP"
-    canonical_runner.last_supporting_checkpoint_status = "BYPASSED_FOR_COLD_DECISION_BOOTSTRAP"
-    return built
+    identity = runner._decision_checkpoint_identity(symbol=symbol, config=config)
+    return persistent.load_checkpoint(identity) is not None
+
+
+def _build_timeline_once(
+    store: ParquetOHLCVStore,
+    *,
+    symbol: str,
+    config: HistoricalDecisionInputConfig,
+):
+    """Run canonical domains once and persist the exact DecisionInput read-model."""
+
+    clean_symbol = normalize_symbol(symbol)
+    runner = HistoricalDecisionInputReplayRunner(store)
+
+    if not _decision_prefix_exists(
+        store,
+        symbol=clean_symbol,
+        config=config,
+        runner=runner,
+    ):
+        print("BUILD_MODE\tCANONICAL_COLD_DOMAIN_ONCE")
+        with _cold_domain_checkpoint_scope():
+            built = runner.replay(clean_symbol, config=config)
+        return runner, built
+
+    print("BUILD_MODE\tCANONICAL_INCREMENTAL_OR_EXACT")
+    try:
+        built = runner.replay(clean_symbol, config=config)
+    except RuntimeError as exc:
+        if _ALIGNMENT_ERROR not in str(exc):
+            raise
+        # A stale/incompatible decision prefix must never push the builder into the
+        # retired legacy replay. Re-run canonical native/supporting engines once from
+        # their true cold state, then persist the exact DecisionInput timeline.
+        print("BUILD_RECOVERY\tCANONICAL_COLD_DOMAIN_ONCE")
+        runner = HistoricalDecisionInputReplayRunner(store)
+        with _cold_domain_checkpoint_scope():
+            built = runner.replay(clean_symbol, config=config)
+    return runner, built
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Build or verify the exact frozen DecisionInput timeline cache. "
-            "This is the only command that may replay domains for BUY/SELL backtests."
+            "Domains run only in this explicit preparation step; BUY/SELL backtests "
+            "read the frozen DecisionInput cache only."
         )
     )
     parser.add_argument("cache_root", type=Path)
@@ -142,20 +188,12 @@ def main() -> None:
         print(f"CACHE_PROBE_SECONDS\t{probe_seconds:.3f}")
         print("CACHE_STATUS\tMISS_BUILDING")
 
-        runner = HistoricalDecisionInputReplayRunner(store)
         started = perf_counter()
-        try:
-            built = runner.replay(args.symbol, config=config)
-        except RuntimeError as exc:
-            if _ALIGNMENT_ERROR not in str(exc):
-                raise
-            print("BUILD_RECOVERY\tCOLD_DECISION_TIMELINE_BOOTSTRAP")
-            built = _bootstrap_full_timeline(
-                store,
-                symbol=args.symbol,
-                config=config,
-                canonical_runner=runner,
-            )
+        runner, built = _build_timeline_once(
+            store,
+            symbol=args.symbol,
+            config=config,
+        )
         build_seconds = perf_counter() - started
         print(f"BUILD_SECONDS\t{build_seconds:.3f}")
         print(f"BUILD_STATUS\t{runner.last_persistent_cache_status}")
