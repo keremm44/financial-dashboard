@@ -31,7 +31,11 @@ from financial_dashboard.decision.reaction import (
 )
 from financial_dashboard.decision.scenario import assess_entry_scenario
 from financial_dashboard.decision.structural import DecisionHorizon
-from financial_dashboard.decision.timeline_cache import load_frozen_decision_timeline
+from financial_dashboard.decision.timeline_build import ensure_frozen_decision_timeline
+from financial_dashboard.decision.timeline_cache import (
+    DecisionTimelineCacheMiss,
+    load_frozen_decision_timeline,
+)
 from financial_dashboard.structure_location_replay import CausalBarClock
 
 _LT_FAILURE_TIMEFRAMES = ("1d", "4h", "2h", "1h")
@@ -288,6 +292,11 @@ def main() -> None:
         action="store_true",
         help="Disable the reaction relevance/supersession scope (pre-fix behaviour, A/B diagnostics)",
     )
+    parser.add_argument(
+        "--no-build-cache",
+        action="store_true",
+        help="Fail on a missing frozen DecisionInput timeline instead of building it in place",
+    )
     args = parser.parse_args()
 
     store = ParquetOHLCVStore(args.cache_root)
@@ -318,12 +327,39 @@ def main() -> None:
 
     runner = HistoricalDecisionInputReplayRunner(store)
     identity = runner._cache_identity(symbol=clean_symbol, config=config)
+
+    def _progress(message: str) -> None:
+        print(message, flush=True)
+
+    if args.no_build_cache:
+        started = perf_counter()
+        try:
+            frozen = load_frozen_decision_timeline(store, clean_symbol, config=config)
+        except DecisionTimelineCacheMiss as error:
+            raise SystemExit(
+                "exact frozen DecisionInput timeline is missing; build it first with "
+                f"`python scripts/build_decision_timeline_cache.py {args.cache_root} "
+                f"{clean_symbol}` or drop --no-build-cache to build it automatically"
+            ) from error
+        load_seconds = perf_counter() - started
+        timeline_built = False
+        timeline_build_seconds = 0.0
+    else:
+        # Cache miss runs the canonical domain replay once and persists the exact
+        # frozen timeline, so the profile is self-sufficient on a fresh cache root.
+        ensured = ensure_frozen_decision_timeline(
+            store,
+            clean_symbol,
+            config=config,
+            progress=_progress,
+        )
+        frozen = ensured.load
+        load_seconds = ensured.load_seconds
+        timeline_built = ensured.built
+        timeline_build_seconds = ensured.build_seconds
+
     cache_path = PersistentObjectStore(store.root).path_for(identity)
     cache_mb = cache_path.stat().st_size / (1024.0 * 1024.0) if cache_path.exists() else 0.0
-
-    started = perf_counter()
-    frozen = load_frozen_decision_timeline(store, clean_symbol, config=config)
-    load_seconds = perf_counter() - started
     snapshots = frozen.replay.snapshots
 
     horizon_state: dict[str, Counter[str]] = {
@@ -502,6 +538,8 @@ def main() -> None:
     print(f"FROZEN_TIMELINE_LOAD_SECONDS\t{load_seconds:.3f}")
     print(f"REASON_PROFILE_SECONDS\t{decision_seconds:.3f}")
     print("DOMAIN_REPLAY_SECONDS\t0.000")
+    print(f"TIMELINE_BUILT\t{1 if timeline_built else 0}")
+    print(f"TIMELINE_BUILD_SECONDS\t{timeline_build_seconds:.3f}")
     print(
         "REACTION_RELEVANCE\t"
         + ("LEGACY_UNBOUNDED" if relevance_policy is None else relevance_policy.label)

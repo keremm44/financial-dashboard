@@ -359,6 +359,12 @@ profilde `AMPLE/MODERATE/COMPRESSED` dağılımı görünür.
 > Bilinçli fixture güncellemesi: `tests/test_decision_engine.py::_snapshot`
 > gerçek sözleşmedeki `current_price` alanı ile tamamlandı.
 > Sonraki adım kullanıcı koşusu: ASELS profili yeni sayaçlarla + kalibrasyon üretimi.
+>
+> **Ek (aynı gün):** profil/kalibrasyon script'leri artık cache miss'te
+> `DecisionTimelineCacheMiss` fırlatmak yerine timeline'ı yerinde kurar
+> (`decision/timeline_build.py::ensure_frozen_decision_timeline`; ortak builder
+> mantığı pakete taşındı, `build_decision_timeline_cache.py` onu kullanır).
+> `--no-build-cache` ile eski fail-fast davranışı seçilebilir. Paket: 1143 passed.
 
 ### 6.0 Terminoloji ve ortak kurallar
 

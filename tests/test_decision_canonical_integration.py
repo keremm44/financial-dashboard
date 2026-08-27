@@ -143,7 +143,7 @@ def test_buy_sell_backtest_is_cache_only_and_uses_canonical_lifecycle():
 
 def test_timeline_builder_is_the_explicit_domain_replay_path():
     source = open("scripts/build_decision_timeline_cache.py", encoding="utf-8").read()
-    assert "load_frozen_decision_timeline(" in source
+    assert "ensure_frozen_decision_timeline(" in source
     assert "HistoricalDecisionInputReplayRunner" in source
     assert "runner.replay(" in source
     assert "DECISION_TIMELINE_CACHE_READY" in source

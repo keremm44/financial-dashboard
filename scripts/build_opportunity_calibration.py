@@ -16,10 +16,13 @@ from financial_dashboard.decision.calibration import (
 from financial_dashboard.decision.engine import assess_horizon_decision
 from financial_dashboard.decision.history_replay import HistoricalDecisionInputReplayRunner
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
-from financial_dashboard.decision.persistent_state import PersistentObjectStore
 from financial_dashboard.decision.opportunity import OpportunityCalibration
 from financial_dashboard.decision.structural import DecisionHorizon, StructuralDirection
-from financial_dashboard.decision.timeline_cache import load_frozen_decision_timeline
+from financial_dashboard.decision.timeline_build import ensure_frozen_decision_timeline
+from financial_dashboard.decision.timeline_cache import (
+    DecisionTimelineCacheMiss,
+    load_frozen_decision_timeline,
+)
 from financial_dashboard.structure_location_replay import CausalBarClock
 
 DECISION_TIMEFRAME = "1h"
@@ -131,6 +134,11 @@ def main() -> None:
     parser.add_argument("--quantiles", default="0.25,0.5,0.75")
     parser.add_argument("--min-samples", type=int, default=50)
     parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument(
+        "--no-build-cache",
+        action="store_true",
+        help="Fail on a missing frozen DecisionInput timeline instead of building it in place",
+    )
     args = parser.parse_args()
 
     if args.forward_bars < 1:
@@ -155,8 +163,29 @@ def main() -> None:
     identity = runner._cache_identity(symbol=clean_symbol, config=config)
 
     started = perf_counter()
-    frozen = load_frozen_decision_timeline(store, clean_symbol, config=config)
-    load_seconds = perf_counter() - started
+    if args.no_build_cache:
+        try:
+            frozen = load_frozen_decision_timeline(store, clean_symbol, config=config)
+        except DecisionTimelineCacheMiss as error:
+            raise SystemExit(
+                "exact frozen DecisionInput timeline is missing; build it first with "
+                f"`python scripts/build_decision_timeline_cache.py {args.cache_root} "
+                f"{clean_symbol}` or drop --no-build-cache to build it automatically"
+            ) from error
+        load_seconds = perf_counter() - started
+        timeline_built = False
+        timeline_build_seconds = 0.0
+    else:
+        ensured = ensure_frozen_decision_timeline(
+            store,
+            clean_symbol,
+            config=config,
+            progress=lambda message: print(message, flush=True),
+        )
+        frozen = ensured.load
+        load_seconds = ensured.load_seconds
+        timeline_built = ensured.built
+        timeline_build_seconds = ensured.build_seconds
     snapshots = frozen.replay.snapshots
 
     decision_frame = store.load(clean_symbol, DECISION_TIMEFRAME)
@@ -231,6 +260,8 @@ def main() -> None:
     print(f"SAMPLES\t{len(mfe_samples)}")
     print(f"SNAPSHOTS\t{len(snapshots)}")
     print(f"FROZEN_TIMELINE_LOAD_SECONDS\t{load_seconds:.3f}")
+    print(f"TIMELINE_BUILT\t{1 if timeline_built else 0}")
+    print(f"TIMELINE_BUILD_SECONDS\t{timeline_build_seconds:.3f}")
     print(f"FORWARD_BARS\t{args.forward_bars}")
     print(f"QUANTILES\t{q1},{q2},{q3}")
     print(f"NONE_MAX_ATR\t{none_max:.6g}")

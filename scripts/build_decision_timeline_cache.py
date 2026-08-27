@@ -5,22 +5,16 @@ from contextlib import contextmanager
 from pathlib import Path
 from time import perf_counter
 from typing import Any
-from uuid import uuid4
 
 import pandas as pd
 
 from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES
-from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.decision.history_replay import HistoricalDecisionInputReplayRunner
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
 from financial_dashboard.decision.native_domain_runtime import IncrementalNativeDomainRuntime
-from financial_dashboard.decision.persistent_state import PersistentObjectStore
 from financial_dashboard.decision.supporting_replay_runtime import IncrementalSupportingReplayRuntime
-from financial_dashboard.decision.timeline_cache import (
-    DecisionTimelineCacheMiss,
-    load_frozen_decision_timeline,
-)
+from financial_dashboard.decision.timeline_build import ensure_frozen_decision_timeline
 from financial_dashboard.engines.fvg_engulfing import FvgEngulfingEngine
 from financial_dashboard.engines.ham_evidence import HamEvidenceEngine
 from financial_dashboard.engines.liquidity_engine import LiquidityEngine
@@ -32,9 +26,6 @@ from financial_dashboard.engines.support_resistance_runtime_engine import Runtim
 from financial_dashboard.engines.volume_evidence import VolumeEvidenceEngine
 from financial_dashboard.engines.volatility_direction_runtime import RuntimeVolatilityDirectionTransitionEngine
 from financial_dashboard.structure_location_replay import CausalBarClock
-
-import financial_dashboard.decision.history_incremental as incremental_history
-import financial_dashboard.decision.history_native_timeline as native_history
 
 
 _ALIGNMENT_ERROR = "native checkpoint delta is not aligned with the persisted decision prefix"
@@ -87,32 +78,6 @@ def _causal_warmup_start(
     if requested_start is None:
         return warmup_start
     return max(warmup_start, _align_requested_start(requested_start, warmup_start))
-
-
-@contextmanager
-def _cold_domain_checkpoint_scope():
-    """Force one truly fresh canonical domain run without deleting production checkpoints.
-
-    Bootstrap checkpoint identities are unique per invocation. A prior interrupted or
-    completed bootstrap therefore can never be mistaken for the start of a new rebuild,
-    which would otherwise return only a native delta while the DecisionInput prefix is
-    empty. Production native/supporting checkpoint identities are restored afterwards.
-    """
-
-    native_version = native_history._NATIVE_PERSISTENCE_SEMANTIC_VERSION
-    supporting_version = incremental_history._SUPPORTING_PERSISTENCE_SEMANTIC_VERSION
-    nonce = uuid4().hex
-    native_history._NATIVE_PERSISTENCE_SEMANTIC_VERSION = (
-        native_version + _BOOTSTRAP_NATIVE_VERSION_PREFIX + nonce
-    )
-    incremental_history._SUPPORTING_PERSISTENCE_SEMANTIC_VERSION = (
-        supporting_version + _BOOTSTRAP_SUPPORTING_VERSION_PREFIX + nonce
-    )
-    try:
-        yield
-    finally:
-        native_history._NATIVE_PERSISTENCE_SEMANTIC_VERSION = native_version
-        incremental_history._SUPPORTING_PERSISTENCE_SEMANTIC_VERSION = supporting_version
 
 
 @contextmanager
@@ -218,56 +183,13 @@ def _live_domain_timing_scope():
             cls.update = original
 
 
-def _decision_prefix_exists(
-    store: ParquetOHLCVStore,
-    *,
-    symbol: str,
-    config: HistoricalDecisionInputConfig,
+def _run_with_live_timings(
     runner: HistoricalDecisionInputReplayRunner,
-) -> bool:
-    persistent = PersistentObjectStore(store.root)
-    identity = runner._decision_checkpoint_identity(symbol=symbol, config=config)
-    return persistent.load_checkpoint(identity) is not None
-
-
-def _run_with_live_timings(runner, symbol: str, config: HistoricalDecisionInputConfig):
-    with _live_domain_timing_scope():
-        return runner.replay(symbol, config=config)
-
-
-def _build_timeline_once(
-    store: ParquetOHLCVStore,
-    *,
     symbol: str,
     config: HistoricalDecisionInputConfig,
 ):
-    """Run canonical domains once and persist the exact DecisionInput read-model."""
-
-    clean_symbol = normalize_symbol(symbol)
-    runner = HistoricalDecisionInputReplayRunner(store)
-
-    if not _decision_prefix_exists(
-        store,
-        symbol=clean_symbol,
-        config=config,
-        runner=runner,
-    ):
-        print("BUILD_MODE\tCANONICAL_COLD_DOMAIN_ONCE")
-        with _cold_domain_checkpoint_scope():
-            built = _run_with_live_timings(runner, clean_symbol, config)
-        return runner, built
-
-    print("BUILD_MODE\tCANONICAL_INCREMENTAL_OR_EXACT")
-    try:
-        built = _run_with_live_timings(runner, clean_symbol, config)
-    except RuntimeError as exc:
-        if _ALIGNMENT_ERROR not in str(exc):
-            raise
-        print("BUILD_RECOVERY\tCANONICAL_COLD_DOMAIN_ONCE")
-        runner = HistoricalDecisionInputReplayRunner(store)
-        with _cold_domain_checkpoint_scope():
-            built = _run_with_live_timings(runner, clean_symbol, config)
-    return runner, built
+    with _live_domain_timing_scope():
+        return runner.replay(symbol, config=config)
 
 
 def main() -> None:
@@ -299,44 +221,26 @@ def main() -> None:
         end_at=args.end,
     )
 
-    started = perf_counter()
-    try:
-        cached_load = load_frozen_decision_timeline(store, args.symbol, config=config)
-    except DecisionTimelineCacheMiss:
-        probe_seconds = perf_counter() - started
-        print(f"CACHE_PROBE_SECONDS\t{probe_seconds:.3f}")
-        print("CACHE_STATUS\tMISS_BUILDING")
+    def _progress(message: str) -> None:
+        print(message, flush=True)
 
-        started = perf_counter()
-        runner, built = _build_timeline_once(
-            store,
-            symbol=args.symbol,
-            config=config,
-        )
-        build_seconds = perf_counter() - started
-        print(f"BUILD_SECONDS\t{build_seconds:.3f}")
-        print(f"BUILD_STATUS\t{runner.last_persistent_cache_status}")
-        print(f"APPEND_STATUS\t{runner.last_decision_append_status}")
-        print(f"NATIVE_STATUS\t{runner.last_native_checkpoint_status}")
-        print(f"SUPPORTING_STATUS\t{runner.last_supporting_checkpoint_status}")
-        print(f"SNAPSHOTS\t{len(built.snapshots)}")
-
-        started = perf_counter()
-        try:
-            cached_load = load_frozen_decision_timeline(store, args.symbol, config=config)
-        except DecisionTimelineCacheMiss as exc:
-            raise SystemExit(
-                "DecisionInput timeline was computed but exact cache verification failed; "
-                "do not run BUY/SELL backtest yet."
-            ) from exc
-        verify_seconds = perf_counter() - started
-        print(f"VERIFY_LOAD_SECONDS\t{verify_seconds:.3f}")
-        print(f"VERIFY_STATUS\t{cached_load.cache_status}")
+    report = ensure_frozen_decision_timeline(
+        store,
+        args.symbol,
+        config=config,
+        run_with=_run_with_live_timings,
+        progress=_progress,
+    )
+    if report.built:
+        print(f"BUILD_STATUS\t{report.runner.last_persistent_cache_status}")
+        print(f"APPEND_STATUS\t{report.runner.last_decision_append_status}")
+        print(f"NATIVE_STATUS\t{report.runner.last_native_checkpoint_status}")
+        print(f"SUPPORTING_STATUS\t{report.runner.last_supporting_checkpoint_status}")
+        print(f"SNAPSHOTS\t{report.snapshots_built}")
     else:
-        load_seconds = perf_counter() - started
-        print(f"CACHE_LOAD_SECONDS\t{load_seconds:.3f}")
-        print(f"CACHE_STATUS\t{cached_load.cache_status}")
-        print(f"SNAPSHOTS\t{len(cached_load.replay.snapshots)}")
+        print(f"CACHE_LOAD_SECONDS\t{report.load_seconds:.3f}")
+        print(f"CACHE_STATUS\t{report.load.cache_status}")
+        print(f"SNAPSHOTS\t{len(report.load.replay.snapshots)}")
 
     print(f"CAUSAL_WARMUP_START\t{effective_start}")
     print("DECISION_TIMELINE_CACHE_READY")
