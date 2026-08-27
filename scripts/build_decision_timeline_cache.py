@@ -7,14 +7,22 @@ from time import perf_counter
 import pandas as pd
 
 from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES
+from financial_dashboard.data.analysis_inputs import load_analysis_inputs
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
-from financial_dashboard.decision.history_replay import HistoricalDecisionInputReplayRunner
+from financial_dashboard.decision.history_replay import (
+    HistoricalDecisionInputReplayRunner,
+    LegacyHistoricalDecisionInputReplayRunner,
+)
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
+from financial_dashboard.decision.persistent_state import PersistentObjectStore
 from financial_dashboard.decision.timeline_cache import (
     DecisionTimelineCacheMiss,
     load_frozen_decision_timeline,
 )
 from financial_dashboard.structure_location_replay import CausalBarClock
+
+
+_ALIGNMENT_ERROR = "native checkpoint delta is not aligned with the persisted decision prefix"
 
 
 def _align_requested_start(value: str, reference: pd.Timestamp) -> pd.Timestamp:
@@ -64,6 +72,40 @@ def _causal_warmup_start(
     return max(warmup_start, _align_requested_start(requested_start, warmup_start))
 
 
+def _bootstrap_full_timeline(
+    store: ParquetOHLCVStore,
+    *,
+    symbol: str,
+    config: HistoricalDecisionInputConfig,
+    canonical_runner: HistoricalDecisionInputReplayRunner,
+):
+    """Build a missing DecisionInput prefix without trusting delta-only checkpoints.
+
+    This recovery is intentionally confined to the explicit cache-builder command.
+    It does not alter BUY/SELL, does not delete existing domain checkpoints, and does
+    not make the cache-only BUY/SELL backtest capable of cold replay.
+    """
+
+    cold_runner = LegacyHistoricalDecisionInputReplayRunner(store)
+    built = cold_runner.replay(symbol, config=config)
+    inputs = load_analysis_inputs(
+        store,
+        symbol=symbol,
+        timeframes=ANALYSIS_TIMEFRAMES,
+    )
+    persistent = PersistentObjectStore(store.root)
+    canonical_runner._save_decision_checkpoints(
+        persistent=persistent,
+        exact_identity=canonical_runner._cache_identity(symbol=symbol, config=config),
+        append_identity=canonical_runner._decision_checkpoint_identity(symbol=symbol, config=config),
+        inputs=inputs,
+        result=built,
+    )
+    canonical_runner.last_native_checkpoint_status = "BYPASSED_FOR_COLD_DECISION_BOOTSTRAP"
+    canonical_runner.last_supporting_checkpoint_status = "BYPASSED_FOR_COLD_DECISION_BOOTSTRAP"
+    return built
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -102,11 +144,24 @@ def main() -> None:
 
         runner = HistoricalDecisionInputReplayRunner(store)
         started = perf_counter()
-        built = runner.replay(args.symbol, config=config)
+        try:
+            built = runner.replay(args.symbol, config=config)
+        except RuntimeError as exc:
+            if _ALIGNMENT_ERROR not in str(exc):
+                raise
+            print("BUILD_RECOVERY\tCOLD_DECISION_TIMELINE_BOOTSTRAP")
+            built = _bootstrap_full_timeline(
+                store,
+                symbol=args.symbol,
+                config=config,
+                canonical_runner=runner,
+            )
         build_seconds = perf_counter() - started
         print(f"BUILD_SECONDS\t{build_seconds:.3f}")
         print(f"BUILD_STATUS\t{runner.last_persistent_cache_status}")
         print(f"APPEND_STATUS\t{runner.last_decision_append_status}")
+        print(f"NATIVE_STATUS\t{runner.last_native_checkpoint_status}")
+        print(f"SUPPORTING_STATUS\t{runner.last_supporting_checkpoint_status}")
         print(f"SNAPSHOTS\t{len(built.snapshots)}")
 
         started = perf_counter()
