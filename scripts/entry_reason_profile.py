@@ -306,6 +306,11 @@ def main() -> None:
         action="store_true",
         help="Fail on a missing frozen DecisionInput timeline instead of building it in place",
     )
+    parser.add_argument(
+        "--domain-timing",
+        action="store_true",
+        help="Print live per-timeframe/per-domain engine timings when a timeline build runs",
+    )
     args = parser.parse_args()
 
     store = ParquetOHLCVStore(args.cache_root)
@@ -361,11 +366,17 @@ def main() -> None:
     else:
         # Cache miss runs the canonical domain replay once and persists the exact
         # frozen timeline, so the profile is self-sufficient on a fresh cache root.
+        run_hook = None
+        if args.domain_timing:
+            from build_decision_timeline_cache import _run_with_live_timings
+
+            run_hook = _run_with_live_timings
         ensured = ensure_frozen_decision_timeline(
             store,
             clean_symbol,
             config=config,
             progress=_progress,
+            run_with=run_hook,
         )
         frozen = ensured.load
         load_seconds = ensured.load_seconds

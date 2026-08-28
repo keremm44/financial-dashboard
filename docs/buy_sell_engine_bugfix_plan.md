@@ -687,6 +687,52 @@ Sıra: **D1 (5 dk) → D2 Adım1+2 → D3 → yeniden ölçüm → D2 Adım 3 (k
 
 ---
 
+## BÖLÜM 10 — Soğuk Build Performansı: Ölçüm, Bulgular, Sonraki Adım (2026-08-28)
+
+> **Hedef:** 685 s'lik soğuk rebuild'i kısaltmak (kullanıcı: i7/8GB).
+> **Yöntem:** sandbox'ta sentetik veri + canlı domain ölçümü (`scripts/perf_synthetic_timeline.py`).
+
+### 10.1 Bulgular
+
+1. **Build bellek sınırlıdır (kanıtlı):** 3.8GB sandbox'ta 0.5 ve 0.25 ölçeklerin
+   İKİSİNDE de OOM (EXIT=247); ikisinde de ölüm noktası aynı: cutoff-durum
+   dondurma (freeze) aşaması, son DOMAIN_START `30m order_block_behavior`.
+   Kullanıcının 8GB makinesindeki 685 s'nin önemli kısmı muhtemelen pagefile
+   baskısıdır → **bellek = hız**.
+2. **Asıl şişme kaynağı (baş şüpheli):** frozen snapshot başına SONSUZ geçmiş:
+   FVG lifecycle ölü satırları yaştan bağımsız tutuyor (gerçek ASELS verisinde
+   `age:>1000` bucket'larında binlerce satır görünüyor). OB tracker'ının kendisi
+   24 barla sınırlı (`terminal_retention_bars=24`) — suçlu o değil, projeksiyon
+   katmanı. 1263 snapshot × tam geçmiş ≈ 491MB pickle + GB'lar canlı nesne.
+3. **Kısmi CPU verisi (crash-kesik, ilk faz):** pattern motoru ~1.5 ms/bar ile
+   bar-başı en pahalı; market_structure ~0.5 ms/bar; diğerleri ucuz. Tam tablo
+   için güvenilir DOMAIN_TOTAL gerekli (aşağıda düzeltildi).
+4. **Yan bulgu — motor sağlamlığı:** saf random-walk veri `market_structure_state.
+   finalize_confirmed_break` içindeki `confirmed break references must still be
+   active` invariant'ını tetikledi. Gerçek veride henüz patlamamış kenar durum;
+   **bug adayı olarak kayıtlı** (motor nazikçe handle etmeli/açık hata vermeli).
+
+### 10.2 Bu turda yapılanlar (cache güvenli — parmak izi kümelerine dokunmaz)
+
+- `build_decision_timeline_cache.py`: DOMAIN_DONE eşiği `==`→`>=`; scope `finally`
+  içinde her motor için `DOMAIN_TOTAL tf domain seconds calls expected` (çökmede
+  bile çıkar; SIGKILL hariç).
+- `entry_reason_profile.py --domain-timing`: profilin auto-build yolu da artık canlı
+  domain zamanlarını basar.
+- `scripts/perf_synthetic_timeline.py`: sentetik OHLCV (rejimli trend) + builder
+  koşusu; bellek/CPU ölçümü gerçek cache'e dokunmadan yapılabilir.
+
+### 10.3 Sonraki adım önerisi: sınırlı projeksiyon (bounded projections)
+
+Snapshot'lara konan OB/FVG projeksiyonlarını karar-kapsamının üst kümesiyle sınırla
+(canlı + `age ≤ 100 bar` + `dist ≤ 10 ATR`): karar çıktıları **birebir aynı** kalır
+(`select_relevant_zones` zaten A=50/D=5 ile filtreliyor; küme üst kümesiydi).
+Kazanç: freeze CPU + bellek + 491MB pickle + 87 s HIT load aynı anda küçülür.
+Bedel: `context/` composition değişimi → **bir kez daha rebuild** + karar-eşdeğerlik
+testi (önce/sonra profil karşılaştırması) şart. Ayrı turda uygulanacak.
+
+---
+
 ## Ek A — Önerilen yeni dosyalar
 
 ```

@@ -126,7 +126,8 @@ def _live_domain_timing_scope():
             result = __original(self, *args, **kwargs)
             meta["seconds"] += perf_counter() - started
             meta["count"] += 1
-            if meta["count"] == meta["expected"]:
+            if meta["count"] >= meta["expected"] and not meta.get("done"):
+                meta["done"] = True
                 print(
                     f"DOMAIN_DONE\t{meta['timeframe']}\t{meta['domain']}\t"
                     f"{meta['seconds']:.3f}s\tbars={meta['expected']}",
@@ -177,6 +178,18 @@ def _live_domain_timing_scope():
     try:
         yield
     finally:
+        # Reliable per-engine totals even when the replay crashes or an engine
+        # receives fewer/more update calls than the raw input batch length.
+        for meta in sorted(
+            registry.values(),
+            key=lambda item: -item["seconds"],
+        ):
+            print(
+                f"DOMAIN_TOTAL\t{meta['timeframe']}\t{meta['domain']}\t"
+                f"{meta['seconds']:.3f}s\tcalls={meta['count']}\t"
+                f"expected={meta['expected']}",
+                flush=True,
+            )
         IncrementalNativeDomainRuntime.__init__ = native_init
         IncrementalSupportingReplayRuntime.__init__ = supporting_init
         for cls, original in originals.items():
