@@ -9,10 +9,7 @@ from .history_incremental import _zero_timings
 from .history_replay import HistoricalDecisionInputReplayRunner
 from .history_single_pass import SinglePassHistoricalDecisionInputReplay
 from .history_source import HistoricalDecisionInputConfig
-from .persistent_history_runner import (
-    _save_rebuildable_exact_cache,
-    find_compatible_exact_cache,
-)
+from .persistent_history_runner import find_compatible_exact_cache
 from .persistent_state import PersistentObjectStore
 
 
@@ -65,10 +62,6 @@ def load_frozen_decision_timeline(
                 f"files={names or 'none'}"
             )
         cache_status = "HIT_REBOUND_CONTENT_IDENTITY"
-        try:
-            _save_rebuildable_exact_cache(persistent, exact_identity, cached)
-        except Exception:
-            pass
 
     replay = SinglePassHistoricalDecisionInputReplay(
         symbol=cached.symbol,

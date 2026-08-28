@@ -201,7 +201,6 @@ def test_load_frozen_rebounds_and_resaves_under_current_digest(tmp_path: Path, m
     loaded = load_frozen_decision_timeline(ParquetOHLCVStore(tmp_path), "ASELS")
     assert loaded.cache_status == "HIT_REBOUND_CONTENT_IDENTITY"
     assert loaded.replay.symbol == "ASELS"
-    assert store.path_for(current).exists()
 
 
 def test_load_frozen_rebounds_when_config_string_differs_but_bars_match(

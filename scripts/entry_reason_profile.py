@@ -386,6 +386,9 @@ def main() -> None:
     cache_path = PersistentObjectStore(store.root).path_for(identity)
     cache_mb = cache_path.stat().st_size / (1024.0 * 1024.0) if cache_path.exists() else 0.0
     snapshots = frozen.replay.snapshots
+    print(f"FROZEN_CACHE_STATUS\t{frozen.cache_status}", flush=True)
+    print(f"SNAPSHOTS\t{len(snapshots)}", flush=True)
+    print("REASON_PROFILE_RUNNING", flush=True)
 
     horizon_state: dict[str, Counter[str]] = {
         "LT presence": Counter(),

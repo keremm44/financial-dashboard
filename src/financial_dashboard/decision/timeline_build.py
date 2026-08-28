@@ -242,6 +242,7 @@ def ensure_frozen_decision_timeline(
     clean_symbol = normalize_symbol(symbol)
 
     started = perf_counter()
+    progress("CACHE_LOOKUP\tLOADING_FROZEN_TIMELINE")
     try:
         load = load_frozen_decision_timeline(store, clean_symbol, config=cfg)
     except DecisionTimelineCacheMiss as exc:
@@ -306,6 +307,8 @@ def ensure_frozen_decision_timeline(
         )
 
     load_seconds = perf_counter() - started
+    progress(f"CACHE_STATUS\t{load.cache_status}")
+    progress(f"FROZEN_TIMELINE_LOAD_SECONDS\t{load_seconds:.3f}")
     return EnsuredDecisionTimeline(
         load=load,
         built=False,
