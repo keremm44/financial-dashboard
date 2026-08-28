@@ -66,9 +66,11 @@ def assess_execution_trigger(
 ) -> ExecutionTriggerAssessment:
     """Validate one fresh execution event without inventing a trigger from state.
 
-    A valid trigger channel with no fresh event is ``ABSENT``. Missing/degraded
-    trigger data is ``UNAVAILABLE``. Supplied stale/future/mismatched events are
-    programming errors and fail closed rather than being silently reused.
+    A usable trigger channel with no fresh event is ``ABSENT`` (READY, not BUY).
+    ``DATA_LIMITED`` does not erase that channel: generic OHLCV warnings such as
+    an open source tail or volume-only notes already have the same Decision-layer
+    treatment for Structure/Pattern. Truly missing/incomplete/unavailable 30m
+    data stays ``UNAVAILABLE``. Stale/future/mismatched events fail closed.
     """
 
     normalized = timeframe.strip().lower()
@@ -82,7 +84,11 @@ def assess_execution_trigger(
             ("EXECUTION_SIDE_UNRESOLVED",),
             (),
         )
-    if data_quality is not ContextDataQuality.VALID:
+    channel_usable = data_quality in {
+        ContextDataQuality.VALID,
+        ContextDataQuality.DATA_LIMITED,
+    }
+    if not channel_usable:
         return ExecutionTriggerAssessment(
             ExecutionTriggerState.UNAVAILABLE,
             side,

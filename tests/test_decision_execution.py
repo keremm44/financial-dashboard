@@ -55,12 +55,22 @@ def test_valid_channel_without_fresh_event_is_absent():
     assert result.state is ExecutionTriggerState.ABSENT
 
 
-def test_missing_trigger_data_is_unavailable_not_absent():
+def test_data_limited_channel_without_event_is_absent_not_unavailable():
     result = assess_execution_trigger(
         StructuralDirection.LONG,
         as_of=10,
         timeframe="30m",
         data_quality=ContextDataQuality.DATA_LIMITED,
+    )
+    assert result.state is ExecutionTriggerState.ABSENT
+
+
+def test_missing_trigger_data_is_unavailable_not_absent():
+    result = assess_execution_trigger(
+        StructuralDirection.LONG,
+        as_of=10,
+        timeframe="30m",
+        data_quality=ContextDataQuality.UNAVAILABLE,
     )
     assert result.state is ExecutionTriggerState.UNAVAILABLE
 
