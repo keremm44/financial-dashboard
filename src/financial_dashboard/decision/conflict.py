@@ -74,11 +74,21 @@ def _reaction_evidence(reaction: ReactionAssessment) -> ConflictFamilyEvidence:
 
 def _participation_evidence(participation: ParticipationAssessment) -> ConflictFamilyEvidence:
     if participation.state is ParticipationState.OPPOSING:
-        reason = "PARTICIPATION_HEAVY_CONFLICT" if participation.heavy_conflict else "PARTICIPATION_OPPOSING"
+        if participation.heavy_conflict:
+            # Break + absorption is the normal retest ("backing and filling"),
+            # not a second independent veto. Keep it LOW so it cannot pair with
+            # a reaction failure into HIGH. True opposing participation without
+            # the absorption flag stays MATERIAL.
+            return ConflictFamilyEvidence(
+                "PARTICIPATION",
+                ConflictSeverity.LOW,
+                ("PARTICIPATION_HEAVY_CONFLICT_RETEST",),
+                _lineages(participation.source_refs),
+            )
         return ConflictFamilyEvidence(
             "PARTICIPATION",
             ConflictSeverity.MATERIAL,
-            (reason,),
+            ("PARTICIPATION_OPPOSING",),
             _lineages(participation.source_refs),
         )
     if participation.unsupported_break:

@@ -108,8 +108,10 @@ def test_scenario_a_lt_bullish_st_counter_reaction_without_setup_stays_wait():
     )
     assert timing.state is TimingState.DEVELOPING
     eligibility = _eligibility(structural, timing)
+    assert eligibility.state is EligibilityState.ELIGIBLE
+    assert "SETUP_ARMED_AWAITING_CONFIRMATION" in eligibility.reasons
     final = compose_final_decision(structural, eligibility=eligibility, execution=_execution(StructuralDirection.LONG))
-    assert final.action is DecisionAction.WAIT
+    assert final.action is DecisionAction.READY
 
 
 def test_scenario_b_aligned_ready_with_low_conflict_can_buy_on_fresh_trigger():
@@ -157,12 +159,13 @@ def test_scenario_c_lt_transition_suspends_old_side_continuation():
     assert final.action is DecisionAction.WAIT
 
 
-def test_scenario_f_compressed_room_is_wait_not_no_trade():
+def test_scenario_f_compressed_room_at_armed_zone_is_discount_not_wait():
     structural = _structural(DecisionHorizon.SHORT_TERM)
     timing = SimpleNamespace(state=TimingState.READY, waiting_for=())
     eligibility = _eligibility(structural, timing, opportunity=_opportunity(OpportunityState.COMPRESSED))
-    assert eligibility.state is EligibilityState.WAITING
-    assert "MORE_DIRECTIONAL_ROOM" in eligibility.waiting_for
+    assert eligibility.state is EligibilityState.ELIGIBLE
+    assert "ROOM_COMPRESSED_AT_PRIMARY_ZONE_DISCOUNT" in eligibility.reasons
+    assert "MORE_DIRECTIONAL_ROOM" not in eligibility.waiting_for
 
 
 def test_scenario_g_elevated_unstable_environment_is_not_automatic_hard_gate():

@@ -91,14 +91,20 @@ def test_permission_block_is_hard_gate():
 
 
 def test_permission_side_mismatch_waits_instead_of_hard_blocking():
-    result = _assess(permission=_permission(gate=GateState.CONDITIONAL, side=PermittedSide.SHORT))
+    result = _assess(
+        permission=_permission(gate=GateState.CONDITIONAL, side=PermittedSide.SHORT),
+        timing=_timing(TimingState.EARLY),
+    )
     assert result.state is EligibilityState.WAITING
     assert result.blockers == ()
     assert "PERMISSION_SCOPE_SIDE_TO_RECONCILE" in result.waiting_for
 
 
 def test_permission_open_with_unresolved_side_waits_instead_of_hard_blocking():
-    result = _assess(permission=_permission(gate=GateState.OPEN, side=PermittedSide.NONE))
+    result = _assess(
+        permission=_permission(gate=GateState.OPEN, side=PermittedSide.NONE),
+        timing=_timing(TimingState.EARLY),
+    )
     assert result.state is EligibilityState.WAITING
     assert result.blockers == ()
     assert "PERMISSION_SIDE_TO_RESOLVE" in result.waiting_for
@@ -112,14 +118,20 @@ def test_shock_is_hard_gate():
 
 def test_opportunity_none_is_hard_gate_but_compressed_is_wait():
     assert _assess(opportunity=_opportunity(OpportunityState.NONE)).state is EligibilityState.BLOCKED
-    compressed = _assess(opportunity=_opportunity(OpportunityState.COMPRESSED))
+    compressed = _assess(
+        opportunity=_opportunity(OpportunityState.COMPRESSED),
+        timing=_timing(TimingState.EARLY),
+    )
     assert compressed.state is EligibilityState.WAITING
     assert "MORE_DIRECTIONAL_ROOM" in compressed.waiting_for
 
 
 def test_high_conflict_blocks_but_material_conflict_waits():
     assert _assess(conflict=_conflict(ConflictState.HIGH)).state is EligibilityState.BLOCKED
-    material = _assess(conflict=_conflict(ConflictState.MATERIAL))
+    material = _assess(
+        conflict=_conflict(ConflictState.MATERIAL),
+        timing=_timing(TimingState.EARLY),
+    )
     assert material.state is EligibilityState.WAITING
     assert "MATERIAL_CONFLICT_TO_RESOLVE" in material.waiting_for
 
@@ -130,8 +142,15 @@ def test_elevated_environment_is_soft_not_automatic_wait_or_block():
     assert "ENVIRONMENT_RISK_ELEVATED_SOFT" in result.reasons
 
 
-def test_developing_timing_is_wait():
+def test_developing_timing_is_armed_not_wait():
     result = _assess(timing=_timing(TimingState.DEVELOPING))
+    assert result.state is EligibilityState.ELIGIBLE
+    assert "SETUP_ARMED_AWAITING_CONFIRMATION" in result.reasons
+    assert result.waiting_for == ()
+
+
+def test_early_timing_is_wait():
+    result = _assess(timing=_timing(TimingState.EARLY))
     assert result.state is EligibilityState.WAITING
 
 

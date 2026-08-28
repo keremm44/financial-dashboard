@@ -86,10 +86,10 @@ def test_context_conflict_high_is_not_a_second_hard_veto() -> None:
         ),
     )
 
-    assert result.state is EligibilityState.WAITING
+    assert result.state is EligibilityState.ELIGIBLE
     assert result.blockers == ()
     assert "CONTEXT_CONFLICT_DEFERRED_TO_INDEPENDENT_FAMILY_GATE" in result.reasons
-    assert "CONTEXT_CONFLICT_TO_RECONCILE" in result.waiting_for
+    assert "CONTEXT_CONFLICT_TO_RECONCILE" not in result.waiting_for
 
 
 def test_independent_family_high_remains_a_hard_gate() -> None:

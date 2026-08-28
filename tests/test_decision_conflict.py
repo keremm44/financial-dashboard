@@ -24,6 +24,17 @@ def _environment(*, risk=EnvironmentRisk.NORMAL, alignment=EnvironmentAlignment.
     return EnvironmentAssessment(regime, ExpansionCharacter.NEUTRAL, alignment, risk, ContextDataQuality.VALID, (), (_ref(ContextDomain.VOLATILITY, "ENV:1"),))
 
 
+def test_heavy_conflict_retest_is_low_not_material():
+    result = assess_conflict(
+        StructuralDirection.LONG,
+        reaction=_reaction(),
+        participation=_participation(ParticipationState.OPPOSING, heavy=True),
+        environment=_environment(),
+    )
+    assert result.state is ConflictState.LOW
+    assert "PARTICIPATION_HEAVY_CONFLICT_RETEST" in result.reasons
+
+
 def test_weak_participation_alone_is_low_not_material():
     result = assess_conflict(
         StructuralDirection.LONG,

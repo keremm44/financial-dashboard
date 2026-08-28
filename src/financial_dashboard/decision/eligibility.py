@@ -58,6 +58,11 @@ def assess_eligibility(
     blockers: list[str] = []
     waiting: list[str] = []
     reasons: list[str] = []
+    # ARMED: setup is forming or confirmed. Zone-touch + trigger are one
+    # condition — compressed room, unknown target, material conflict and a
+    # forming trigger no longer have to clear on the same bar. FAILED/ABSENT
+    # timing, HIGH conflict and opportunity NONE stay hard.
+    armed = timing.state in {TimingState.DEVELOPING, TimingState.READY}
 
     # G1/G2/G3: Structure remains the hard directional dependency.
     if structural.data_quality is not ContextDataQuality.VALID:
@@ -81,14 +86,21 @@ def assess_eligibility(
             blockers.extend(non_context_blockers)
         elif "CONTEXT_CONFLICT_HIGH" in permission_blockers:
             reasons.append("CONTEXT_CONFLICT_DEFERRED_TO_INDEPENDENT_FAMILY_GATE")
-            waiting.append("CONTEXT_CONFLICT_TO_RECONCILE")
+            if not armed:
+                waiting.append("CONTEXT_CONFLICT_TO_RECONCILE")
     elif permission.permitted_side not in {expected_permission_side, PermittedSide.NONE}:
-        waiting.append("PERMISSION_SCOPE_SIDE_TO_RECONCILE")
+        if armed:
+            reasons.append("PERMISSION_SCOPE_SIDE_ARMED_SOFT")
+        else:
+            waiting.append("PERMISSION_SCOPE_SIDE_TO_RECONCILE")
     elif permission.permitted_side is PermittedSide.NONE and permission.gate_state in {
         GateState.OPEN,
         GateState.CONDITIONAL,
     }:
-        waiting.append("PERMISSION_SIDE_TO_RESOLVE")
+        if armed:
+            reasons.append("PERMISSION_SIDE_ARMED_SOFT")
+        else:
+            waiting.append("PERMISSION_SIDE_TO_RESOLVE")
 
     # G5/G6/G7.
     if environment.risk is EnvironmentRisk.HARD_BLOCK:
@@ -124,23 +136,32 @@ def assess_eligibility(
     # FUTURE_ACTION_LAYER_TIMING is satisfied here by the explicit timing layer.
 
     if timing.state is not TimingState.READY:
-        waiting.extend(timing.waiting_for or (f"TIMING_{timing.state.value}",))
+        if armed:
+            reasons.append("SETUP_ARMED_AWAITING_CONFIRMATION")
+        else:
+            waiting.extend(timing.waiting_for or (f"TIMING_{timing.state.value}",))
 
     if opportunity.state is OpportunityState.COMPRESSED:
-        # At a confirmed primary zone the compressed room-to-target is the
-        # discount itself: price reaching a quality zone is the entry condition,
-        # not a blocker. Waiting would only be satisfiable AFTER the zone and
-        # the discount are gone. No confirmation on the current path -> the
-        # original WAIT applies unchanged.
-        if reaction is not None and reaction.confirmation_present:
+        # At a confirmed or armed primary zone the compressed room-to-target is
+        # the discount itself: price reaching a quality zone is the entry
+        # condition, not a blocker. Waiting would only be satisfiable AFTER the
+        # zone and the discount are gone. Off-zone (timing not armed, no
+        # confirmation) the original WAIT applies unchanged.
+        if armed or (reaction is not None and reaction.confirmation_present):
             reasons.append("ROOM_COMPRESSED_AT_PRIMARY_ZONE_DISCOUNT")
         else:
             waiting.append("MORE_DIRECTIONAL_ROOM")
     elif opportunity.state is OpportunityState.UNKNOWN:
-        waiting.append("OPPORTUNITY_EVIDENCE_OR_CALIBRATION")
+        if armed:
+            reasons.append("OPPORTUNITY_UNKNOWN_WHILE_ARMED")
+        else:
+            waiting.append("OPPORTUNITY_EVIDENCE_OR_CALIBRATION")
 
     if conflict.state is ConflictState.MATERIAL:
-        waiting.append("MATERIAL_CONFLICT_TO_RESOLVE")
+        if armed:
+            reasons.append("MATERIAL_CONFLICT_ARMED_SOFT")
+        else:
+            waiting.append("MATERIAL_CONFLICT_TO_RESOLVE")
     elif conflict.state is ConflictState.UNRESOLVED:
         waiting.append("CONFLICT_EVIDENCE_TO_RESOLVE")
 

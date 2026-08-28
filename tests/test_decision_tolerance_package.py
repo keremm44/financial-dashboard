@@ -150,8 +150,17 @@ def test_compressed_room_with_confirmation_is_discounted():
 
 
 def test_compressed_room_without_confirmation_still_waits():
-    result = _assess(
-        opportunity_state=OpportunityState.COMPRESSED,
+    from financial_dashboard.decision.timing import TimingState
+    from tests.test_decision_eligibility import _timing
+
+    result = assess_eligibility(
+        _structural(),
+        permission=_permission(),
+        timing=_timing(TimingState.EARLY),
+        opportunity=_opportunity(OpportunityState.COMPRESSED),
+        conflict=_conflict(),
+        environment=_environment(),
+        coverage=_coverage(),
         reaction=SimpleNamespace(confirmation_present=False),
     )
     assert result.state is EligibilityState.WAITING
@@ -159,8 +168,17 @@ def test_compressed_room_without_confirmation_still_waits():
 
 
 def test_compressed_room_without_reaction_input_still_waits():
-    result = _assess(
-        opportunity_state=OpportunityState.COMPRESSED,
+    from financial_dashboard.decision.timing import TimingState
+    from tests.test_decision_eligibility import _timing
+
+    result = assess_eligibility(
+        _structural(),
+        permission=_permission(),
+        timing=_timing(TimingState.EARLY),
+        opportunity=_opportunity(OpportunityState.COMPRESSED),
+        conflict=_conflict(),
+        environment=_environment(),
+        coverage=_coverage(),
         reaction=None,
     )
     assert result.state is EligibilityState.WAITING
@@ -202,6 +220,61 @@ def test_unresolved_lt_yields_to_qualified_st():
     )
     assert result.selection is ArbiterSelection.SHORT_TERM
     assert "SHORT_TERM_FALLBACK_WHILE_LONG_TERM_UNRESOLVED" in result.reasons
+
+
+# --------------------------------------------------------------------------- #
+# T5: ARMED sphere — forming setup + zone is one condition                     #
+# --------------------------------------------------------------------------- #
+
+def test_armed_forming_setup_does_not_wait_for_confirmation():
+    from financial_dashboard.decision.conflict import ConflictState
+    from financial_dashboard.decision.timing import TimingState
+
+    result = assess_eligibility(
+        _structural(),
+        permission=_permission(),
+        timing=_timing(TimingState.DEVELOPING),
+        opportunity=_opportunity(OpportunityState.AMPLE),
+        conflict=_conflict(ConflictState.MATERIAL),
+        environment=_environment(),
+        coverage=_coverage(),
+    )
+    assert result.state is EligibilityState.ELIGIBLE
+    assert "SETUP_ARMED_AWAITING_CONFIRMATION" in result.reasons
+    assert "MATERIAL_CONFLICT_ARMED_SOFT" in result.reasons
+    assert result.waiting_for == ()
+
+
+def test_armed_unknown_opportunity_does_not_wait_for_calibration():
+    from financial_dashboard.decision.timing import TimingState
+
+    result = assess_eligibility(
+        _structural(),
+        permission=_permission(),
+        timing=_timing(TimingState.DEVELOPING),
+        opportunity=_opportunity(OpportunityState.UNKNOWN),
+        conflict=_conflict(),
+        environment=_environment(),
+        coverage=_coverage(),
+    )
+    assert result.state is EligibilityState.ELIGIBLE
+    assert "OPPORTUNITY_UNKNOWN_WHILE_ARMED" in result.reasons
+    assert "OPPORTUNITY_EVIDENCE_OR_CALIBRATION" not in result.waiting_for
+
+
+def test_failed_timing_is_not_armed():
+    from financial_dashboard.decision.timing import TimingState
+
+    result = assess_eligibility(
+        _structural(),
+        permission=_permission(),
+        timing=_timing(TimingState.FAILED),
+        opportunity=_opportunity(OpportunityState.AMPLE),
+        conflict=_conflict(),
+        environment=_environment(),
+        coverage=_coverage(),
+    )
+    assert result.state is EligibilityState.WAITING
 
 
 def test_blocked_lt_keeps_ownership_when_st_not_qualified():
