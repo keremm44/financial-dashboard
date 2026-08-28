@@ -37,7 +37,12 @@ class StructuralThesis(StrEnum):
 class ContinuationContext(StrEnum):
     ALIGNED = "ALIGNED"
     WEAK = "WEAK"
+    # CONFLICTING: the latest current external event opposes the thesis but is
+    # NOT a break (typically a counter-CHOCH — the natural structural trace of
+    # a pullback). CONFLICTING_BREAK: the opposing event is a BOS, i.e. the
+    # structural continuity itself broke against the thesis.
     CONFLICTING = "CONFLICTING"
+    CONFLICTING_BREAK = "CONFLICTING_BREAK"
     ABSENT = "ABSENT"
     UNAVAILABLE = "UNAVAILABLE"
 
@@ -289,6 +294,11 @@ def evaluate_continuation(
             (AxisReason("CANONICAL_BOS_ALIGNED", latest.event_type, (_event_ref(latest),)),),
         )
     if event_direction is _opposite(structural_direction):
+        if latest.event_type.upper() == "BOS":
+            return (
+                ContinuationContext.CONFLICTING_BREAK,
+                (AxisReason("CURRENT_EXTERNAL_BREAK_OPPOSES_THESIS", latest.event_type, (_event_ref(latest),)),),
+            )
         return (
             ContinuationContext.CONFLICTING,
             (AxisReason("CURRENT_EXTERNAL_EVENT_OPPOSES_THESIS", latest.event_type, (_event_ref(latest),)),),
@@ -562,8 +572,14 @@ def evaluate_conflict(
         return ConflictState.UNRESOLVED, (AxisReason("STRUCTURAL_DIRECTION_UNRESOLVED", ""),)
     if reversal is ReversalContext.STRUCTURALLY_CONFIRMED and reversal_direction is _opposite(structural_direction):
         return ConflictState.HIGH, (AxisReason("STRUCTURAL_REVERSAL_OPPOSES_CURRENT_THESIS", reversal_direction.value),)
+    if continuation is ContinuationContext.CONFLICTING_BREAK:
+        return ConflictState.HIGH, (AxisReason("CANONICAL_CONTINUATION_BREAK_CONFLICT", ""),)
     if continuation is ContinuationContext.CONFLICTING:
-        return ConflictState.HIGH, (AxisReason("CANONICAL_CONTINUATION_CONFLICT", ""),)
+        # A counter-CHOCH against an intact thesis is the structural trace of a
+        # pullback, not a break of continuity: in a trend it marks exactly the
+        # discount the entry layer is waiting for. HIGH is reserved for opposing
+        # breaks; the independent-family conflict gate owns this severity.
+        return ConflictState.MATERIAL, (AxisReason("COUNTER_CHOCH_PULLBACK_CONTEXT", ""),)
     if reaction is ReactionContext.ACTIVE and reaction_direction is _opposite(structural_direction):
         if mtf is MTFContext.COUNTER_REACTION or participation is ParticipationContext.OPPOSING:
             return ConflictState.MATERIAL, (AxisReason("COUNTER_REACTION_WITH_SUPPORTING_CONFLICT", reaction_direction.value),)

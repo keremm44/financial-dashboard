@@ -228,12 +228,21 @@ kapı yalnızca tez yönünde yeni BOS geldiğinde açılır — o ana kadar bö
 kaçmıştır. Karar katmanının nuanslı tablosu aynı anı LOW/NONE okur (HIGH 11: gerçek
 reversal'lar). Kullanıcının "düzeltmeler de önemli" gözlemi, birebir bu kod satırıdır.
 
-### 12.4 Öneri T6 — counter-CHOCH severity düzeltmesi (onaya bağlı)
+### 12.4 T6 — counter-CHOCH severity düzeltmesi — **UYGULANDI** (kullanıcı onaylı)
 
 `context/axes.py`: karşı yönlü son olay **BOS** ise HIGH **kalır** (yapısal süreklilik
 gerçekten kırılmıştır); karşı yönlü son olay **CHOCH** ise HIGH → **MATERIAL** (düzeltme
 izidir; bağımsız-aile kapısı zaten MATERIAL'ı yönetir: WAIT ama hard değil).
 Yönlü semantiği zayıflatmaz — karşı BOS veto yetkisini korur.
 
-**Maliyet:** `context/` parmak-izi kümesinde → **bir rebuild daha (~7 dk)**. T3
-(engines/) istenirse aynı rebuild'e biner → ek maliyet 0.
+**Uygulama:** `ContinuationContext.CONFLICTING_BREAK` (karşı BOS → HIGH veto aynen)
+ayrıldı; karşı CHOCH `CONFLICTING` → `ConflictState.MATERIAL`
+(`COUNTER_CHOCH_PULLBACK_CONTEXT`). Permission artık karşı-CHOCH'da
+`CONTEXT_CONFLICT_HIGH` ile BLOCK etmez; snapshot anlamlı dallara düşer
+(counter-reaction / continuation / reversal-candidate) ve şiddeti bağımsız-aile
+conflict tablosu belirler. Testler:
+`tests/test_context_axes_choch_tolerance.py` (5 vaka). Tam paket 1193 ✓.
+
+**Maliyet:** `context/` parmak-izi kümesinde → **bir rebuild daha (~7 dk)** — bir
+sonraki profil koşusunda otomatik tetiklenir. T3 kullanıcı tarafından bu tur için
+seçilmedi (gerektiğinde ayrı tur).
