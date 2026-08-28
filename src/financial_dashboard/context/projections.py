@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping
 
+import pandas as pd
+
+from financial_dashboard.analysis_config import BAR_DURATIONS
 from financial_dashboard.targeting.models import TargetEvidenceType
 
 from .envelope import (
@@ -12,6 +15,17 @@ from .envelope import (
     normalize_context_data_quality,
 )
 from .lineage import families_for, lineage_id_from_origin_event
+
+# Bounded-history policy for the per-snapshot liquidity read model. Live pools
+# are always kept. Terminal pools (CONSUMED / INVALIDATED) older than this many
+# own-timeframe bars, or farther than this many ATR when distance is known, can
+# never influence a decision: objective/zone attachment only reads target-eligible
+# (ACTIVE/TESTED) rows, and target-path disposition only looks up still-eligible
+# identities. Dropping the rest bounds snapshot history without changing outputs.
+PROJECTION_MAX_TERMINAL_AGE_BARS = 100
+PROJECTION_MAX_DISTANCE_ATR = 10.0
+_TERMINAL_LIQUIDITY_STATES = frozenset({"CONSUMED", "INVALIDATED"})
+_TERMINAL_LIQUIDITY_REMOVALS = frozenset({"CONSUMED", "INVALIDATED"})
 
 
 AvailabilityResolver = Callable[[Any, str], Any]
@@ -244,14 +258,80 @@ class LiquidityProjection:
         return tuple(item for item in self.behavior_observations if item.ref.timeframe == normalized)
 
 
+def _liquidity_terminal_age_within_bounds(origin_time: Any, as_of: Any, timeframe: str) -> bool:
+    """True when a terminal pool is young enough to matter (or unknown TF).
+
+    Unknown durations or unparseable timestamps fail open (row kept) so a new
+    timeframe can never lose live-relevant history by accident.
+    """
+
+    try:
+        duration = pd.Timedelta(BAR_DURATIONS[timeframe])
+        delta = pd.Timestamp(as_of) - pd.Timestamp(origin_time)
+    except (KeyError, ValueError, TypeError):
+        return True
+    if duration <= pd.Timedelta(0) or delta < pd.Timedelta(0):
+        return True
+    return int(delta // duration) <= PROJECTION_MAX_TERMINAL_AGE_BARS
+
+
+def _within_liquidity_behavior_bounds(pool: Any) -> bool:
+    """Keep live pools always; keep dead pools only inside the decision superset."""
+
+    removal = str(_enum_value(pool.removal)).strip().upper()
+    if removal not in _TERMINAL_LIQUIDITY_REMOVALS:
+        return True
+    age = getattr(pool, "age_bars", None)
+    if age is None or int(age) > PROJECTION_MAX_TERMINAL_AGE_BARS:
+        return False
+    distance = getattr(pool, "distance_atr", None)
+    if distance is not None and float(distance) > PROJECTION_MAX_DISTANCE_ATR:
+        return False
+    return True
+
+
+def _within_liquidity_evidence_bounds(evidence: Any, snapshot: Any | None) -> bool:
+    """Keep eligible/live evidence always; bound only terminal pool history."""
+
+    if bool(getattr(evidence, "target_eligible", False)):
+        return True
+    state = str(_enum_value(evidence.source_state)).strip().upper()
+    if state not in _TERMINAL_LIQUIDITY_STATES:
+        return True
+    if snapshot is None:
+        return True
+    as_of = getattr(snapshot, "as_of", None)
+    if as_of is None or not _liquidity_terminal_age_within_bounds(
+        evidence.origin_time, as_of, str(evidence.timeframe)
+    ):
+        return as_of is None
+    price = getattr(snapshot, "current_price", None)
+    atr = getattr(snapshot, "atr", None)
+    if price is None or atr is None:
+        return True
+    try:
+        safe_atr = float(atr)
+        if safe_atr <= 1e-12:
+            return True
+        low = float(evidence.low)
+        high = float(evidence.high)
+        distance = min(abs(low - float(price)), abs(high - float(price))) / safe_atr
+    except (TypeError, ValueError):
+        return True
+    return distance <= PROJECTION_MAX_DISTANCE_ATR
+
+
 def project_liquidity(
     replay: Any,
     *,
     data_quality_by_timeframe: Mapping[str, Any],
 ) -> LiquidityProjection:
+    snapshots = getattr(replay, "snapshots", None) or {}
     observations: list[LiquidityObservation] = []
     for evidence in replay.evidence:
         if evidence.evidence_type is not TargetEvidenceType.LIQUIDITY:
+            continue
+        if not _within_liquidity_evidence_bounds(evidence, snapshots.get(evidence.timeframe)):
             continue
         quality = _quality(data_quality_by_timeframe[evidence.timeframe])
         ref = _fact_ref(
@@ -289,6 +369,8 @@ def project_liquidity(
             continue
         quality = _quality(data_quality_by_timeframe[timeframe])
         for pool in behavior.pools:
+            if not _within_liquidity_behavior_bounds(pool):
+                continue
             native_state = (
                 f"{_enum_value(pool.maturity)}:{_enum_value(pool.relation)}:"
                 f"{_enum_value(pool.removal)}"
@@ -885,6 +967,8 @@ __all__ = [
     "LiquidityBehaviorObservation",
     "LiquidityObservation",
     "LiquidityProjection",
+    "PROJECTION_MAX_DISTANCE_ATR",
+    "PROJECTION_MAX_TERMINAL_AGE_BARS",
     "ParticipationLinkProjection",
     "ParticipationProjection",
     "ParticipationTimeframeProjection",

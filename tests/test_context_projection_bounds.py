@@ -15,6 +15,27 @@ from financial_dashboard.context.order_block_behavior_projection import (
     PROJECTION_MAX_DISTANCE_ATR as OB_MAX_DIST,
     project_order_block_behavior,
 )
+from financial_dashboard.context.projections import (
+    PROJECTION_MAX_DISTANCE_ATR as LIQ_MAX_DIST,
+    PROJECTION_MAX_TERMINAL_AGE_BARS as LIQ_MAX_AGE,
+    project_liquidity,
+)
+from financial_dashboard.engines.liquidity_behavior import (
+    LiquidityBehaviorSnapshot,
+    LiquidityLandscapeState,
+    LiquidityPoolBehaviorSnapshot,
+    LiquidityPoolMaturity,
+    LiquidityPriceRelation,
+    LiquidityRemovalState,
+)
+from financial_dashboard.engines.liquidity_models import LiquiditySide
+from financial_dashboard.targeting.models import (
+    LiquidityScope,
+    TargetEvidence,
+    TargetEvidenceFamily,
+    TargetEvidenceType,
+    TargetRole,
+)
 from financial_dashboard.decision.reaction import (
     ReactionRelevancePolicy,
     select_relevant_zones,
@@ -220,3 +241,175 @@ def test_projection_bound_is_decision_superset_randomized():
         assert [item.identity for item in selected_full[0].observations] == [
             item.identity for item in selected_bounded[0].observations
         ]
+
+
+# --------------------------------------------------------------------------- #
+# Liquidity projection bounds                                                 #
+# --------------------------------------------------------------------------- #
+
+
+def _liq_pool(
+    *,
+    identity: str,
+    removal: LiquidityRemovalState,
+    age_bars: int,
+    distance_atr,
+    level: float = 105.0,
+) -> LiquidityPoolBehaviorSnapshot:
+    return LiquidityPoolBehaviorSnapshot(
+        identity=identity,
+        side=LiquiditySide.BSL,
+        level=level,
+        maturity=LiquidityPoolMaturity.STALE
+        if removal in {LiquidityRemovalState.CONSUMED, LiquidityRemovalState.INVALIDATED}
+        else LiquidityPoolMaturity.ESTABLISHED,
+        relation=LiquidityPriceRelation.DISTANT,
+        removal=removal,
+        age_bars=age_bars,
+        bars_since_touch=age_bars,
+        touch_count=2,
+        distance_atr=distance_atr,
+        distance_delta_atr=None,
+    )
+
+
+def _liq_evidence(
+    *,
+    identity: str,
+    source_state: str,
+    target_eligible: bool,
+    age_hours: float,
+    level: float,
+) -> TargetEvidence:
+    origin = NOW - pd.Timedelta(hours=age_hours)
+    return TargetEvidence(
+        uid=f"TE-{identity}",
+        symbol="THYAO",
+        timeframe="1h",
+        evidence_type=TargetEvidenceType.LIQUIDITY,
+        family=TargetEvidenceFamily.STRUCTURAL,
+        roles=(TargetRole.MAGNET,),
+        low=level,
+        high=level,
+        anchor_price=level,
+        origin_index=0,
+        origin_time=origin,
+        confirmed_at=origin,
+        available_at=origin + pd.Timedelta(hours=1),
+        source_state=source_state,
+        target_eligible=target_eligible,
+        native_origin_id=f"LIQ:1h:{identity}",
+        origin_event_id=f"LIQ:1h:{identity}",
+        source_identity=identity,
+        formation_atr=None,
+        source_quality=None,
+        liquidity_scope=LiquidityScope.EXTERNAL,
+    )
+
+
+def _liq_replay(evidence, pools):
+    return SimpleNamespace(
+        symbol="THYAO",
+        timeframes=("1h",),
+        evidence=tuple(evidence),
+        liquidity_behavior={
+            "1h": LiquidityBehaviorSnapshot(
+                as_of=NOW,
+                landscape=LiquidityLandscapeState.NO_NEARBY_OBJECTIVE,
+                pools=tuple(pools),
+            )
+        },
+        snapshots={
+            "1h": SimpleNamespace(
+                as_of=NOW,
+                available_at=AVAILABLE,
+                current_price=PRICE,
+                atr=1.0,
+            )
+        },
+    )
+
+
+def test_liquidity_projection_drops_old_terminal_keeps_live_and_young():
+    evidence = [
+        _liq_evidence(
+            identity="live-old",
+            source_state="ACTIVE",
+            target_eligible=True,
+            age_hours=5000,
+            level=100.2,
+        ),
+        _liq_evidence(
+            identity="dead-young",
+            source_state="CONSUMED",
+            target_eligible=False,
+            age_hours=40,
+            level=101.0,
+        ),
+        _liq_evidence(
+            identity="dead-old",
+            source_state="CONSUMED",
+            target_eligible=False,
+            age_hours=LIQ_MAX_AGE + 1,
+            level=101.0,
+        ),
+        _liq_evidence(
+            identity="dead-far",
+            source_state="INVALIDATED",
+            target_eligible=False,
+            age_hours=10,
+            level=PRICE + (LIQ_MAX_DIST + 1),
+        ),
+        _liq_evidence(
+            identity="swept-old",
+            source_state="SWEPT",
+            target_eligible=False,
+            age_hours=5000,
+            level=PRICE + 50,
+        ),
+    ]
+    pools = [
+        _liq_pool(
+            identity="live-old",
+            removal=LiquidityRemovalState.UNTOUCHED,
+            age_bars=900,
+            distance_atr=0.2,
+        ),
+        _liq_pool(
+            identity="dead-young",
+            removal=LiquidityRemovalState.CONSUMED,
+            age_bars=40,
+            distance_atr=1.0,
+        ),
+        _liq_pool(
+            identity="dead-old",
+            removal=LiquidityRemovalState.CONSUMED,
+            age_bars=LIQ_MAX_AGE + 1,
+            distance_atr=1.0,
+        ),
+        _liq_pool(
+            identity="dead-far",
+            removal=LiquidityRemovalState.INVALIDATED,
+            age_bars=10,
+            distance_atr=LIQ_MAX_DIST + 1,
+        ),
+        _liq_pool(
+            identity="dead-no-dist",
+            removal=LiquidityRemovalState.CONSUMED,
+            age_bars=10,
+            distance_atr=None,
+        ),
+        _liq_pool(
+            identity="accepted-old",
+            removal=LiquidityRemovalState.ACCEPTED_BEYOND,
+            age_bars=900,
+            distance_atr=20.0,
+        ),
+    ]
+    projection = project_liquidity(
+        _liq_replay(evidence, pools), data_quality_by_timeframe={"1h": "VALID"}
+    )
+    kept_evidence = {item.ref.native_id.split(":")[-1] for item in projection.observations}
+    kept_behavior = {item.pool_identity for item in projection.behavior_observations}
+    assert kept_evidence == {"live-old", "dead-young", "swept-old"}
+    assert kept_behavior == {"live-old", "dead-young", "dead-no-dist", "accepted-old"}

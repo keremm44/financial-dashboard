@@ -274,12 +274,15 @@ seçilmedi (gerektiğinde ayrı tur).
 | support_resistance / targeting / semantic_targeting | %7+7+7 | |
 
 ### 13.3 Budama planı (karar-üstküme güvenli, onaya bağlı)
-- **Faz 1 — liquidity sınırlama:** OB/FVG ile aynı politikayla (canlı her zaman + terminal
-  yaş ≤100 bar / mesafe ≤5 ATR üst kümesi). Tahmini kazanç: payload ~−%25-35,
-  yükleme 60.8 → ~40-45 s. En düşük risk.
+- **Faz 1 — liquidity sınırlama: UYGULANDI** (2026-08-28). `project_liquidity`
+  artık OB/FVG ile aynı politikayı uygular: canlı havuzlar (eligible / non-terminal
+  removal) her zaman tutulur; terminal (`CONSUMED`/`INVALIDATED`) yalnız
+  yaş ≤100 bar ve (biliniyorsa) mesafe ≤10 ATR içindeyse. Landscape tek enum
+  olarak native'den gelir, dokunulmaz. Karar katmanı eligible kimliklere bakıyor
+  — küme katı üst küme. `context/` parmak izinde → **bir rebuild**.
 - **Faz 2 — meta veri sıkılaştırma:** source_refs/lineage_groups timeline düzeyine
   çıkarılıp snapshot başına indeks + eligible_fact_ids'in kompakt biçimi.
-  Tahmini ek kazanç ~−%20-30. Daha büyük cerrahi.
+  Tahmini ek kazanç ~−%20-30. Daha büyük cerrahi; ayrı tur.
 - Hedef: ~489 MB → ~200-250 MB; yükleme ~25-30 s; build dondurma da orantısal hızlanır.
 - **Maliyet:** DecisionInput bileşimi değişir → **bir rebuild (~7-11 dk)**.
 - Araç: `scripts/dissect_timeline_payload.py` (fingerprint dışı; cache bozmaz).
