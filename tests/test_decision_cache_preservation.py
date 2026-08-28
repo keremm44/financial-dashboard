@@ -225,16 +225,75 @@ def test_load_frozen_rebounds_when_config_string_differs_but_bars_match(
     assert loaded.cache_status == "HIT_REBOUND_CONTENT_IDENTITY"
 
 
-def test_content_identity_does_not_rebind_different_source(tmp_path: Path):
+def test_mtime_drift_still_rebinds_same_parquet_bytes(tmp_path: Path):
+    from financial_dashboard.decision.persistent_history_runner import find_compatible_exact_cache
+
+    store = PersistentObjectStore(tmp_path)
+    on_disk = _identity(source=(("1h", 10, 100),))
+    current = _identity(source=(("1h", 10, 999999),))
+    _save_rebuildable_exact_cache(store, on_disk, _payload())
+    found = find_compatible_exact_cache(store, current)
+    assert found is not None
+    assert found.symbol == "ASELS"
+
+
+def test_existing_symbol_timeline_is_used_when_source_sidecar_differs(tmp_path: Path):
     from financial_dashboard.decision.persistent_history_runner import find_compatible_exact_cache
 
     store = PersistentObjectStore(tmp_path)
     _save_rebuildable_exact_cache(store, _identity(source=(("1h", 10, 100),)), _payload())
     found = find_compatible_exact_cache(store, _identity(source=(("1h", 99, 999),)))
-    assert found is None
+    assert found is not None
+    assert found.symbol == "ASELS"
 
 
-def test_load_frozen_misses_when_source_bars_differ(tmp_path: Path, monkeypatch):
+def test_load_frozen_uses_existing_file_when_source_mtime_differs(
+    tmp_path: Path, monkeypatch
+):
+    from financial_dashboard.data.parquet_store import ParquetOHLCVStore
+    from financial_dashboard.decision.history_replay import HistoricalDecisionInputReplayRunner
+    from financial_dashboard.decision.timeline_cache import load_frozen_decision_timeline
+
+    store = PersistentObjectStore(tmp_path)
+    _save_rebuildable_exact_cache(store, _identity(source=(("1h", 10, 100),)), _payload())
+    monkeypatch.setattr(
+        HistoricalDecisionInputReplayRunner,
+        "_cache_identity",
+        lambda self, *, symbol, config: _identity(source=(("1h", 10, 888),)),
+    )
+    loaded = load_frozen_decision_timeline(ParquetOHLCVStore(tmp_path), "ASELS")
+    assert loaded.cache_status == "HIT_REBOUND_CONTENT_IDENTITY"
+    assert loaded.replay.symbol == "ASELS"
+
+
+def test_prefers_matching_source_when_two_timelines_exist(tmp_path: Path):
+    from financial_dashboard.decision.persistent_history_runner import find_compatible_exact_cache
+
+    store = PersistentObjectStore(tmp_path)
+    matching = _identity(source=(("1h", 10, 100),), config="cfg-a")
+    other = _identity(source=(("1h", 99, 999),), config="cfg-b")
+    matching_payload = SinglePassHistoricalDecisionInputReplay(
+        symbol="ASELS",
+        decision_timeframe="1h",
+        cutoffs=("match",),
+        snapshots=(),
+        timings=None,
+    )
+    other_payload = SinglePassHistoricalDecisionInputReplay(
+        symbol="ASELS",
+        decision_timeframe="1h",
+        cutoffs=("other",),
+        snapshots=(),
+        timings=None,
+    )
+    _save_rebuildable_exact_cache(store, other, other_payload)
+    _save_rebuildable_exact_cache(store, matching, matching_payload)
+    found = find_compatible_exact_cache(store, matching)
+    assert found is not None
+    assert found.cutoffs == ("match",)
+
+
+def test_load_frozen_misses_when_symbol_dir_has_no_timeline(tmp_path: Path, monkeypatch):
     from financial_dashboard.data.parquet_store import ParquetOHLCVStore
     from financial_dashboard.decision.history_replay import HistoricalDecisionInputReplayRunner
     from financial_dashboard.decision.timeline_cache import (
@@ -242,12 +301,10 @@ def test_load_frozen_misses_when_source_bars_differ(tmp_path: Path, monkeypatch)
         load_frozen_decision_timeline,
     )
 
-    store = PersistentObjectStore(tmp_path)
-    _save_rebuildable_exact_cache(store, _identity(source=(("1h", 10, 100),)), _payload())
     monkeypatch.setattr(
         HistoricalDecisionInputReplayRunner,
         "_cache_identity",
-        lambda self, *, symbol, config: _identity(source=(("1h", 99, 999),)),
+        lambda self, *, symbol, config: _identity(),
     )
     with pytest.raises(DecisionTimelineCacheMiss):
         load_frozen_decision_timeline(ParquetOHLCVStore(tmp_path), "ASELS")

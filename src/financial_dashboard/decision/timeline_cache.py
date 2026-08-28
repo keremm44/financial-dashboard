@@ -50,9 +50,19 @@ def load_frozen_decision_timeline(
     if not isinstance(cached, SinglePassHistoricalDecisionInputReplay):
         cached = find_compatible_exact_cache(persistent, exact_identity)
         if not isinstance(cached, SinglePassHistoricalDecisionInputReplay):
+            symbol_dir = persistent.path_for(exact_identity).parent
+            try:
+                names = sorted(
+                    path.name
+                    for path in symbol_dir.glob("decision_input_timeline__*.pkl")
+                    if "__checkpoint__" not in path.name
+                )
+            except OSError:
+                names = []
             raise DecisionTimelineCacheMiss(
                 "exact frozen DecisionInput timeline is unavailable for the current "
-                f"symbol/config/source identity: {clean_symbol}"
+                f"symbol/config/source identity: {clean_symbol}; "
+                f"files={names or 'none'}"
             )
         cache_status = "HIT_REBOUND_CONTENT_IDENTITY"
         try:

@@ -113,60 +113,121 @@ def _source_fingerprint_from_sidecar(raw) -> tuple[tuple[str, int, int], ...] | 
     return tuple(rows)
 
 
+def _source_size_identity(
+    source: tuple[tuple[str, int, int], ...] | None,
+) -> tuple[tuple[str, int], ...] | None:
+    """Compare parquet identity by timeframe+bytes, ignoring mtime.
+
+    ``cache_fingerprint`` stores ``(timeframe, st_size, st_mtime_ns)``. mtime is
+    not bar content — a copy, AV scan, or Windows timestamp rewrite would miss a
+    400MB timeline that is still the same file.
+    """
+
+    if source is None:
+        return None
+    return tuple((str(timeframe), int(size)) for timeframe, size, *_rest in source)
+
+
+def _payload_from_cache_path(cache_path) -> SinglePassHistoricalDecisionInputReplay | None:
+    envelope = _load_envelope_lenient(cache_path)
+    if envelope is None:
+        return None
+    if isinstance(envelope, SinglePassHistoricalDecisionInputReplay):
+        return envelope
+    if not isinstance(envelope, dict):
+        return None
+    payload = envelope.get("payload")
+    if isinstance(payload, SinglePassHistoricalDecisionInputReplay):
+        return payload
+    return None
+
+
+def _load_envelope_lenient(path) -> dict | SinglePassHistoricalDecisionInputReplay | None:
+    """Unpickle a timeline even when schema_version no longer matches."""
+
+    if not path.exists():
+        return None
+    try:
+        with path.open("rb") as handle:
+            envelope = pickle.load(handle)
+    except (OSError, EOFError, pickle.PickleError, AttributeError, ImportError, TypeError, ValueError):
+        return None
+    if isinstance(envelope, SinglePassHistoricalDecisionInputReplay):
+        return envelope
+    if isinstance(envelope, dict):
+        return envelope
+    return None
+
+
 def find_compatible_exact_cache(
     persistent: PersistentObjectStore,
     identity: PersistentCacheIdentity,
 ) -> SinglePassHistoricalDecisionInputReplay | None:
-    """Load a DecisionInput timeline whose bars/config match, ignoring code digest.
+    """Load a DecisionInput timeline already on disk for this symbol.
 
-    Exact lookup keys the filename by a hash of implementation sources. Pulling
-    decision-rule or fingerprint-recipe changes therefore misses a perfectly
-    valid 400MB file sitting in the same folder. Content identity is the
-    parquet prefix + replay config + product schema — that is what must HIT.
-    Domain-math refreshes remain available via the explicit builder.
+    Exact lookup keys the filename by a hash of implementation sources, so a
+    pull misses a valid 400MB file in the same folder. Prefer bars/config
+    identity (mtime ignored). If the only on-disk timeline is this symbol's
+    ``decision_input_timeline`` pickle, load that file — do not rebuild.
     """
 
     symbol_dir = persistent.path_for(identity).parent
+    prefix = _safe_namespace_prefix(identity.namespace)
     try:
-        sidecars = sorted(symbol_dir.glob(f"*{_IDENTITY_SIDECAR_SUFFIX}"))
+        cache_paths = [
+            path
+            for path in symbol_dir.glob(f"{prefix}*{_EXACT_CACHE_SUFFIX}")
+            if "__checkpoint__" not in path.name
+        ]
     except OSError:
         return None
-
-    def _load(sidecar, *, require_config: bool):
-        if "__checkpoint__" in sidecar.name:
-            return None
-        try:
-            record = json.loads(sidecar.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-        if record.get("namespace") != identity.namespace:
-            return None
-        if record.get("symbol") != identity.symbol:
-            return None
-        if record.get("semantic_fingerprint") != identity.semantic_fingerprint:
-            return None
-        if require_config and record.get("config_fingerprint") != identity.config_fingerprint:
-            return None
-        source = _source_fingerprint_from_sidecar(record.get("source_fingerprint"))
-        if source != identity.source_fingerprint:
-            return None
-        cache_path = sidecar.with_name(
-            sidecar.name[: -len(_IDENTITY_SIDECAR_SUFFIX)] + _EXACT_CACHE_SUFFIX
-        )
-        envelope = PersistentObjectStore._load_envelope(cache_path)
-        if envelope is None:
-            return None
-        payload = envelope.get("payload")
-        if isinstance(payload, SinglePassHistoricalDecisionInputReplay):
-            return payload
+    if not cache_paths:
         return None
 
-    for sidecar in sidecars:
-        payload = _load(sidecar, require_config=True)
-        if payload is not None:
-            return payload
-    for sidecar in sidecars:
-        payload = _load(sidecar, require_config=False)
+    wanted_sizes = _source_size_identity(identity.source_fingerprint)
+    ranked: list[tuple[int, int, object]] = []
+    for cache_path in cache_paths:
+        sidecar = cache_path.with_name(
+            cache_path.name[: -len(_EXACT_CACHE_SUFFIX)] + _IDENTITY_SIDECAR_SUFFIX
+        )
+        record = None
+        try:
+            loaded = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            loaded = None
+        if isinstance(loaded, dict):
+            record = loaded
+            if record.get("namespace") not in (None, identity.namespace):
+                continue
+            if record.get("symbol") not in (None, identity.symbol):
+                continue
+            stored = _source_fingerprint_from_sidecar(record.get("source_fingerprint"))
+            stored_sizes = _source_size_identity(stored)
+            semantic_ok = record.get("semantic_fingerprint") in (
+                None,
+                identity.semantic_fingerprint,
+            )
+            config_ok = record.get("config_fingerprint") == identity.config_fingerprint
+            source_ok = stored_sizes is not None and stored_sizes == wanted_sizes
+            if source_ok and config_ok and semantic_ok:
+                priority = 10
+            elif source_ok and semantic_ok:
+                priority = 20
+            elif semantic_ok:
+                priority = 50
+            else:
+                priority = 80
+        else:
+            priority = 90
+        try:
+            size = cache_path.stat().st_size
+        except OSError:
+            size = 0
+        ranked.append((priority, -size, cache_path))
+
+    ranked.sort()
+    for _priority, _size, cache_path in ranked:
+        payload = _payload_from_cache_path(cache_path)
         if payload is not None:
             return payload
     return None

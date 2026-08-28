@@ -244,8 +244,9 @@ def ensure_frozen_decision_timeline(
     started = perf_counter()
     try:
         load = load_frozen_decision_timeline(store, clean_symbol, config=cfg)
-    except DecisionTimelineCacheMiss:
+    except DecisionTimelineCacheMiss as exc:
         progress("CACHE_STATUS\tMISS_BUILDING")
+        progress(f"CACHE_MISS_REASON\t{exc}")
         build_started = perf_counter()
         runner, built = build_timeline_once(
             store,
