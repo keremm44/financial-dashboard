@@ -103,25 +103,33 @@ def _exit_event(as_of, *, state=ExecutionTriggerState.CONFIRMED):
     )
 
 
-def test_long_term_entry_keeps_existing_lt_exit_authority():
+def test_long_term_entry_arms_on_1h_bearish_without_waiting_for_daily_bos():
     as_of = pd.Timestamp("2026-01-05 12:00")
-    decision = compose_position_exit_decision(
-        _state(DecisionHorizon.LONG_TERM),
-        _structural_snapshot(
-            lt_direction=StructuralDirection.LONG,
-            lt_thesis=ThesisState.INTACT,
-            st_direction=StructuralDirection.SHORT,
-            st_thesis=ThesisState.INTACT,
-            relation=HorizonRelation.COUNTER_REACTION,
-        ),
-        as_of=as_of,
+    state = _state(DecisionHorizon.LONG_TERM)
+    structural = _structural_snapshot(
+        lt_direction=StructuralDirection.LONG,
+        lt_thesis=ThesisState.INTACT,
+        st_direction=StructuralDirection.SHORT,
+        st_thesis=ThesisState.INTACT,
+        relation=HorizonRelation.COUNTER_REACTION,
     )
+    waiting = compose_position_exit_decision(state, structural, as_of=as_of)
 
-    assert decision.action is DecisionAction.HOLD
-    assert decision.entry_horizon is DecisionHorizon.LONG_TERM
-    assert decision.stage is ExitStage.MONITOR
-    assert decision.position_health is PositionHealth.PROTECTED
-    assert "LT_LONG_INTACT_ST_COUNTER_REACTION" in decision.reasons
+    assert waiting.action is DecisionAction.HOLD
+    assert waiting.entry_horizon is DecisionHorizon.LONG_TERM
+    assert waiting.stage is ExitStage.EXIT_READY
+    assert waiting.position_health is PositionHealth.PRESSURED
+    assert "ST_BEARISH_THESIS_ESTABLISHED_AGAINST_OPEN_LONG" in waiting.reasons
+    assert waiting.waiting_for == ("FRESH_LONG_EXIT_EXECUTION_EVENT",)
+
+    sold = compose_position_exit_decision(
+        state,
+        structural,
+        as_of=as_of,
+        execution_event=_exit_event(as_of),
+    )
+    assert sold.action is DecisionAction.SELL
+    assert sold.execution_event_consumed is True
 
 
 def test_short_term_entry_uses_st_structure_and_established_bearish_state_arms_exit():
@@ -153,25 +161,31 @@ def test_short_term_entry_uses_st_structure_and_established_bearish_state_arms_e
     assert confirmed.execution_event_consumed is True
 
 
-def test_short_term_transition_down_is_watch_not_sell():
+def test_short_term_transition_down_sells_on_fresh_30m_short():
     as_of = pd.Timestamp("2026-01-05 12:00")
-    decision = compose_position_exit_decision(
-        _state(DecisionHorizon.SHORT_TERM),
-        _structural_snapshot(
-            st_direction=StructuralDirection.LONG,
-            st_thesis=ThesisState.TRANSITIONING,
-            st_transition_target=StructuralDirection.SHORT,
-            relation=HorizonRelation.STRUCTURAL_CONFLICT,
-        ),
+    state = _state(DecisionHorizon.SHORT_TERM)
+    structural = _structural_snapshot(
+        st_direction=StructuralDirection.LONG,
+        st_thesis=ThesisState.TRANSITIONING,
+        st_transition_target=StructuralDirection.SHORT,
+        relation=HorizonRelation.STRUCTURAL_CONFLICT,
+    )
+    waiting = compose_position_exit_decision(state, structural, as_of=as_of)
+    assert waiting.action is DecisionAction.HOLD
+    assert waiting.stage is ExitStage.EXIT_READY
+    assert waiting.execution.state is ExitExecutionState.ABSENT
+    assert waiting.execution_event_consumed is False
+    assert "ST_LONG_THESIS_TRANSITIONING_TOWARD_SHORT" in waiting.reasons
+
+    sold = compose_position_exit_decision(
+        state,
+        structural,
         as_of=as_of,
         execution_event=_exit_event(as_of),
     )
-
-    assert decision.action is DecisionAction.HOLD
-    assert decision.stage is ExitStage.EXIT_WATCH
-    assert decision.execution.state is ExitExecutionState.NOT_ARMED
-    assert decision.execution_event_consumed is False
-    assert "ST_LONG_THESIS_TRANSITIONING_TOWARD_SHORT" in decision.reasons
+    assert sold.action is DecisionAction.SELL
+    assert sold.stage is ExitStage.EXIT_READY
+    assert sold.execution_event_consumed is True
 
 
 def test_premature_exit_event_is_not_consumed_or_carried_forward():

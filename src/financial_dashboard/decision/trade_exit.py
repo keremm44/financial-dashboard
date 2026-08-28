@@ -63,19 +63,44 @@ def _refs(snapshot: HorizonStructuralSnapshot) -> tuple[FactRef, ...]:
     return tuple(sorted(values.values(), key=lambda ref: ref.deterministic_key))
 
 
+def st_pressures_open_long(st) -> str | None:
+    """1H structure that can arm a long exit without waiting for 1D/4H BOS.
+
+    Pullbacks that are already rotating back toward LT LONG are not pressure.
+    """
+
+    if st is None:
+        return None
+    quality = getattr(st, "data_quality", ContextDataQuality.VALID)
+    if quality not in {ContextDataQuality.VALID, ContextDataQuality.DATA_LIMITED}:
+        return None
+    thesis = getattr(st, "thesis_state", None)
+    direction = getattr(st, "direction", None)
+    target = getattr(st, "transition_target", None)
+    if thesis is ThesisState.INVALIDATED:
+        return "ST_LONG_THESIS_INVALIDATED"
+    if direction is StructuralDirection.SHORT and thesis is ThesisState.INTACT:
+        return "ST_BEARISH_THESIS_ESTABLISHED_AGAINST_OPEN_LONG"
+    if (
+        direction is StructuralDirection.LONG
+        and thesis is ThesisState.TRANSITIONING
+        and target is StructuralDirection.SHORT
+    ):
+        return "ST_LONG_THESIS_TRANSITIONING_TOWARD_SHORT"
+    return None
+
+
 def assess_long_position_exit(snapshot: HorizonStructuralSnapshot) -> LongExitAssessment:
     """Classify one open-long exit stage without numeric voting or magic thresholds.
 
-    V1-pass2 rules are intentionally conservative:
-    - LT LONG/INTACT remains MONITOR, including ST counter-reactions/pullbacks.
-    - LT LONG transitioning toward SHORT becomes EXIT_WATCH, not SELL.
-    - Missing/unresolved LT authority becomes EXIT_WATCH/UNKNOWN, not forced SELL.
-    - A canonical LT bearish thesis or explicit LT invalidation becomes EXIT_READY.
-
-    EXIT_READY is not SELL. A separate fresh exit execution event is still required.
+    LT invalidation / established 1D short still arms immediately. An intact LT
+    long no longer waits for 1D/4H BOS: established 1H short or 1H transition-down
+    arms EXIT_READY. A same-side 1H pullback recovering toward LT stays MONITOR.
+    EXIT_READY is not SELL; a fresh 30m SHORT execution event is still required.
     """
 
     lt = snapshot.long_term
+    st = snapshot.short_term
     relation = snapshot.relation
     refs = _refs(snapshot)
 
@@ -115,6 +140,16 @@ def assess_long_position_exit(snapshot: HorizonStructuralSnapshot) -> LongExitAs
             refs,
         )
 
+    st_pressure = st_pressures_open_long(st)
+    if st_pressure is not None:
+        return LongExitAssessment(
+            ExitStage.EXIT_READY,
+            PositionHealth.PRESSURED,
+            (st_pressure,),
+            ("FRESH_LONG_EXIT_EXECUTION_EVENT",),
+            refs,
+        )
+
     if (
         lt.direction is StructuralDirection.LONG
         and lt.thesis_state is ThesisState.TRANSITIONING
@@ -148,10 +183,10 @@ def assess_long_position_exit(snapshot: HorizonStructuralSnapshot) -> LongExitAs
             )
         if relation is HorizonRelation.COUNTER_REACTION:
             return LongExitAssessment(
-                ExitStage.MONITOR,
-                PositionHealth.PROTECTED,
+                ExitStage.EXIT_READY,
+                PositionHealth.PRESSURED,
                 ("LT_LONG_INTACT_ST_COUNTER_REACTION",),
-                (),
+                ("FRESH_LONG_EXIT_EXECUTION_EVENT",),
                 refs,
             )
         if relation is HorizonRelation.PULLBACK:
@@ -277,4 +312,5 @@ __all__ = [
     "PositionHealth",
     "assess_long_exit_execution",
     "assess_long_position_exit",
+    "st_pressures_open_long",
 ]

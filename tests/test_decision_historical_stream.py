@@ -183,9 +183,9 @@ def test_trade_lifecycle_uses_dedicated_exit_path_not_legacy_sell_candidate():
     assert events[1].snapshot["trade_lifecycle"]["requested_action"] == "BUY"
     assert events[2].snapshot["trade_lifecycle"]["requested_action"] == "SELL"
     assert events[2].snapshot["trade_lifecycle"]["action"] == "HOLD"
-    assert events[2].snapshot["lifecycle_phase"] == "COUNTER_REACTION"
-    assert events[2].snapshot["long_exit"]["position_health"] == "PROTECTED"
-    assert events[2].snapshot["long_exit"]["stage"] == "MONITOR"
+    assert events[2].snapshot["lifecycle_phase"] == "EXIT_READY"
+    assert events[2].snapshot["long_exit"]["position_health"] == "PRESSURED"
+    assert events[2].snapshot["long_exit"]["stage"] == "EXIT_READY"
     assert events[3].snapshot["long_exit"]["stage"] == "EXIT_READY"
     assert events[3].snapshot["lifecycle_phase"] == "EXIT_READY"
     assert events[3].snapshot["long_exit"]["execution"]["state"] == "ABSENT"
@@ -213,7 +213,6 @@ def test_lifecycle_readiness_proxy_exercises_real_ownership_and_exit_stages():
                 side=StructuralDirection.LONG,
                 action=DecisionAction.WAIT,
                 as_of="2026-01-05 11:00",
-                relation=HorizonRelation.COUNTER_REACTION,
             ),
             101.0,
         ),
@@ -242,7 +241,7 @@ def test_lifecycle_readiness_proxy_exercises_real_ownership_and_exit_stages():
     assert events[0].snapshot["trade_lifecycle"]["position_state"] == "OPEN"
     assert events[0].waiting_for == ()
     assert "AUDIT_PROXY_LONG_ENTRY_FROM_READY" in events[0].reasons
-    assert events[1].snapshot["long_exit"]["position_health"] == "PROTECTED"
+    assert events[1].snapshot["long_exit"]["position_health"] == "HEALTHY"
     assert events[2].snapshot["long_exit"]["stage"] == "EXIT_READY"
     assert events[2].snapshot["trade_lifecycle"]["position_state"] == "FLAT"
     assert events[2].waiting_for == ()

@@ -103,8 +103,9 @@ def _short_term_position_exit(snapshot: HorizonStructuralSnapshot) -> LongExitAs
 
     No supporting-domain score, price threshold, ATR rule or new timeframe authority
     is introduced here. The state mapping mirrors the existing structural exit FSM:
-    intact long protects ownership, transition-down arms watch, and established short
-    arms EXIT_READY. EXIT_READY still requires a separate fresh execution event.
+    intact long protects ownership; 1H transition-down or established short arms
+    EXIT_READY without waiting for a 1H/4H/1D BOS. EXIT_READY still requires a
+    separate fresh 30m SHORT execution event.
     """
 
     st = snapshot.short_term
@@ -152,10 +153,10 @@ def _short_term_position_exit(snapshot: HorizonStructuralSnapshot) -> LongExitAs
         and st.transition_target is StructuralDirection.SHORT
     ):
         return LongExitAssessment(
-            ExitStage.EXIT_WATCH,
+            ExitStage.EXIT_READY,
             PositionHealth.PRESSURED,
             ("ST_LONG_THESIS_TRANSITIONING_TOWARD_SHORT",),
-            ("ST_TRANSITION_TO_RESOLVE",),
+            ("FRESH_LONG_EXIT_EXECUTION_EVENT",),
             refs,
         )
 

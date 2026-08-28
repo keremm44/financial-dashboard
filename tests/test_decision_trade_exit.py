@@ -22,6 +22,9 @@ def _structural_snapshot(
     relation=HorizonRelation.ALIGNED,
     transition_target=None,
     quality=ContextDataQuality.VALID,
+    st_direction=StructuralDirection.LONG,
+    st_thesis=ThesisState.INTACT,
+    st_transition_target=None,
 ):
     lt = SimpleNamespace(
         direction=lt_direction,
@@ -30,7 +33,13 @@ def _structural_snapshot(
         data_quality=quality,
         source_refs=(),
     )
-    st = SimpleNamespace(source_refs=())
+    st = SimpleNamespace(
+        direction=st_direction,
+        thesis_state=st_thesis,
+        transition_target=st_transition_target,
+        data_quality=quality,
+        source_refs=(),
+    )
     return SimpleNamespace(long_term=lt, short_term=st, relation=relation)
 
 
@@ -46,14 +55,47 @@ def _exit_event(*, as_of, side=StructuralDirection.SHORT, state=ExecutionTrigger
     )
 
 
-def test_lt_intact_st_counter_reaction_is_protected_hold_not_exit_ready():
+def test_lt_intact_st_counter_reaction_arms_exit_without_daily_bos():
     assessment = assess_long_position_exit(
-        _structural_snapshot(relation=HorizonRelation.COUNTER_REACTION)
+        _structural_snapshot(
+            relation=HorizonRelation.COUNTER_REACTION,
+            st_direction=StructuralDirection.SHORT,
+            st_thesis=ThesisState.INTACT,
+        )
+    )
+
+    assert assessment.stage is ExitStage.EXIT_READY
+    assert assessment.position_health is PositionHealth.PRESSURED
+    assert assessment.reasons == ("ST_BEARISH_THESIS_ESTABLISHED_AGAINST_OPEN_LONG",)
+    assert assessment.waiting_for == ("FRESH_LONG_EXIT_EXECUTION_EVENT",)
+
+
+def test_lt_intact_1h_transition_down_arms_exit_without_htf_bos():
+    assessment = assess_long_position_exit(
+        _structural_snapshot(
+            st_direction=StructuralDirection.LONG,
+            st_thesis=ThesisState.TRANSITIONING,
+            st_transition_target=StructuralDirection.SHORT,
+        )
+    )
+
+    assert assessment.stage is ExitStage.EXIT_READY
+    assert assessment.reasons == ("ST_LONG_THESIS_TRANSITIONING_TOWARD_SHORT",)
+
+
+def test_lt_intact_st_pullback_recovering_toward_lt_stays_monitor():
+    assessment = assess_long_position_exit(
+        _structural_snapshot(
+            relation=HorizonRelation.PULLBACK,
+            st_direction=StructuralDirection.SHORT,
+            st_thesis=ThesisState.TRANSITIONING,
+            st_transition_target=StructuralDirection.LONG,
+        )
     )
 
     assert assessment.stage is ExitStage.MONITOR
     assert assessment.position_health is PositionHealth.PROTECTED
-    assert assessment.reasons == ("LT_LONG_INTACT_ST_COUNTER_REACTION",)
+    assert assessment.reasons == ("LT_LONG_INTACT_ST_PULLBACK",)
 
 
 def test_lt_transition_toward_short_is_watch_not_automatic_sell():
@@ -92,9 +134,7 @@ def test_established_lt_bearish_thesis_arms_long_exit_but_does_not_sell_by_itsel
 
 def test_fresh_short_exit_event_executes_only_after_exit_ready():
     as_of = pd.Timestamp("2026-01-05 12:00")
-    protected = assess_long_position_exit(
-        _structural_snapshot(relation=HorizonRelation.COUNTER_REACTION)
-    )
+    protected = assess_long_position_exit(_structural_snapshot())
     premature = assess_long_exit_execution(
         protected,
         as_of=as_of,
