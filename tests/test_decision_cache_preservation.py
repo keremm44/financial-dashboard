@@ -14,6 +14,7 @@ from financial_dashboard.decision.persistent_history_runner import (
 from financial_dashboard.decision.persistent_state import (
     PersistentCacheIdentity,
     PersistentObjectStore,
+    _CONTEXT_EVALUATION_EXCLUDED_PATHS,
     _DECISION_EVALUATION_EXCLUDED_PATHS,
     _DECISION_INPUT_IMPLEMENTATION_PATHS,
     namespace_semantic_fingerprint,
@@ -68,6 +69,9 @@ def test_content_composition_paths_remain_in_fingerprint():
     # Snapshot-content code must keep invalidating the timeline (fail-closed).
     for required in ("engines", "context", "targeting", "decision/history_incremental.py"):
         assert required in _DECISION_INPUT_IMPLEMENTATION_PATHS
+    # Interpretation of already-projected facts must not bust domain cache.
+    for excluded in _CONTEXT_EVALUATION_EXCLUDED_PATHS:
+        assert excluded not in _DECISION_INPUT_IMPLEMENTATION_PATHS
 
 
 def test_decision_fingerprint_changes_only_with_composition_code(tmp_path: Path):
@@ -85,8 +89,13 @@ def test_decision_fingerprint_changes_only_with_composition_code(tmp_path: Path)
     fingerprint = namespace_semantic_fingerprint("decision_input_timeline")
     assert len(fingerprint) == 64
     assert persistent_state.code_paths_semantic_fingerprint(
-        _DECISION_INPUT_IMPLEMENTATION_PATHS
+        _DECISION_INPUT_IMPLEMENTATION_PATHS,
+        exclude=_CONTEXT_EVALUATION_EXCLUDED_PATHS,
     ) == fingerprint
+    included = persistent_state.code_paths_semantic_fingerprint(
+        _DECISION_INPUT_IMPLEMENTATION_PATHS
+    )
+    assert included != fingerprint
 
 
 def test_save_writes_sidecar_and_evicts_stale_same_config(tmp_path: Path):

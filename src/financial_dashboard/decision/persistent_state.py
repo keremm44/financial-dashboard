@@ -31,7 +31,12 @@ def _stable_digest(parts: Iterable[str]) -> str:
     return digest.hexdigest()
 
 
-def _hash_source_paths(paths: Iterable[Path], *, root: Path) -> str:
+def _hash_source_paths(
+    paths: Iterable[Path],
+    *,
+    root: Path,
+    exclude: frozenset[str] = frozenset(),
+) -> str:
     digest = sha256()
     expanded: set[Path] = set()
     for path in paths:
@@ -48,6 +53,8 @@ def _hash_source_paths(paths: Iterable[Path], *, root: Path) -> str:
 
     for path in sorted(expanded, key=lambda item: item.relative_to(root).as_posix()):
         relative = path.relative_to(root).as_posix()
+        if relative in exclude:
+            continue
         payload = path.read_bytes()
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative.encode("utf-8"))
@@ -65,12 +72,15 @@ def codebase_semantic_fingerprint() -> str:
 
 
 @lru_cache(maxsize=32)
-def code_paths_semantic_fingerprint(relative_paths: tuple[str, ...]) -> str:
+def code_paths_semantic_fingerprint(
+    relative_paths: tuple[str, ...],
+    exclude: tuple[str, ...] = (),
+) -> str:
     """Hash only the source paths that own one persisted semantic layer."""
 
     package_root = Path(__file__).resolve().parents[1]
     paths = tuple(package_root / relative for relative in relative_paths)
-    return _hash_source_paths(paths, root=package_root)
+    return _hash_source_paths(paths, root=package_root, exclude=frozenset(exclude))
 
 
 _NATIVE_IMPLEMENTATION_PATHS = (
@@ -110,10 +120,20 @@ _DECISION_INPUT_IMPLEMENTATION_PATHS = tuple(
 # DecisionInput timeline; they never compose it. They are deliberately excluded
 # from _DECISION_INPUT_IMPLEMENTATION_PATHS so that decision-layer fixes do not
 # invalidate an otherwise valid frozen timeline. Only code that changes snapshot
-# CONTENT (engines/, context/, targeting/, history composition) may invalidate.
+# CONTENT (engines/, context projections, targeting/, history composition) may
+# invalidate.
+#
+# context/permissions.py and context/axes.py live under context/ but are
+# interpretation of already-projected facts. The decision engine recomputes
+# horizon permission from frozen structure/zones at eval time, so hashing them
+# would rebuild native domains on every BUY/SELL rule pull.
 _DECISION_EVALUATION_EXCLUDED_PATHS = (
     "decision/participation.py",
     "decision/reaction.py",
+)
+_CONTEXT_EVALUATION_EXCLUDED_PATHS = (
+    "context/permissions.py",
+    "context/axes.py",
 )
 
 
@@ -132,7 +152,10 @@ def namespace_semantic_fingerprint(namespace: str) -> str:
     if namespace == "supporting_runtime":
         return code_paths_semantic_fingerprint(_SUPPORTING_IMPLEMENTATION_PATHS)
     if namespace == "decision_input_timeline":
-        return code_paths_semantic_fingerprint(_DECISION_INPUT_IMPLEMENTATION_PATHS)
+        return code_paths_semantic_fingerprint(
+            _DECISION_INPUT_IMPLEMENTATION_PATHS,
+            exclude=_CONTEXT_EVALUATION_EXCLUDED_PATHS,
+        )
     return codebase_semantic_fingerprint()
 
 
