@@ -733,6 +733,37 @@ testi (önce/sonra profil karşılaştırması) şart. Ayrı turda uygulanacak.
 
 ---
 
+## BÖLÜM 11 — Sınırlı Projeksiyon Uygulandı (2026-08-28)
+
+> **Değişiklik:** `context/order_block_behavior_projection.py` ve
+> `context/fvg_engulfing_projection.py` artık snapshot başına sonsuz geçmiş yerine
+> sınırlı küme koyar: **canlı bölgeler her zaman tutulur**; terminal (ölü)
+> bölgeler yalnızca `yaş ≤ 100 bar` ve (OB için) `mesafe ≤ 10 ATR` içindeyse.
+> **Karar eşdeğerliği:** küme, karar katmanının kapsamının katı üst kümesidir
+> (reaction policy A=50/D=5 ⊂ 100/10; D3 failure modları aynı terminal
+> alanlarını okur) — 300 vakalı rassal üst-küme testi + birim testler
+> (`tests/test_context_projection_bounds.py`) bunu kilitler; tam paket 1171 ✓.
+>
+> **Bilinçli davranış farkları (karar DIŞI):** `--legacy-reaction` tanı modu artık
+> ≤100 barlık tarih üzerinde çalışır; profilin FAILURE SOURCES sayaçları aynı
+> şekilde sınırlıdır (etiket güncellendi).
+>
+> **Süre tahmini (dürüst aralık; kesin sayı bir sonraki koşuda basılır):**
+> Bu pull `context/` değiştirdiği için **bir kez daha rebuild** tetiklenir; o
+> koşu `BUILD_SECONDS`, `DOMAIN_TOTAL` (artık güvenilir), `FROZEN_CACHE_FILE_MB`
+> ve HIT yüklemeyi basar — fark orada görülür. Verilerden türetilen beklenti:
+> cache 491 MB → ~250–350 MB; HIT yükleme 87 s → ~50–65 s; rebuild 685 s →
+> ~500–600 s (motor replay kısmı dokunulmadan kaldığı için build kazancı
+> dondurma/pickle kısmından gelir; asıl büyük build kazancı zaten seeding ile
+> geldi — veri tazelemeleri artık artımlı).
+>
+> **Yan bulgu güçlendi:** market-structure invariant hatası
+> (`confirmed break references must still be active`) sentetik veride İKİNCİ kez,
+> farklı ölçek/tohumda üretildi → GitHub issue açıldı (gerçek veride patlamamış
+> sağlamlık açığı).
+
+---
+
 ## Ek A — Önerilen yeni dosyalar
 
 ```

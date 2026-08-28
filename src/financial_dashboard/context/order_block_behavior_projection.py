@@ -6,6 +6,14 @@ from typing import Any, Mapping
 from .envelope import ContextDomain, FactRef, normalize_context_data_quality
 from .lineage import families_for
 
+# Bounded-history policy for the per-snapshot behavior read model. The decision
+# layer's reaction scope (age/distance relevance + OB failure modes) never reads
+# zones beyond these bounds, and live zones are always kept, so every frozen
+# decision remains byte-identical while per-snapshot projection history stops
+# growing without limit (it previously retained every terminal zone forever).
+PROJECTION_MAX_TERMINAL_AGE_BARS = 100
+PROJECTION_MAX_DISTANCE_ATR = 10.0
+
 
 @dataclass(frozen=True, slots=True)
 class OrderBlockBehaviorObservation:
@@ -72,6 +80,27 @@ def _lineage_id(timeframe: str, identity: str) -> str:
     return f"OB:{timeframe}:{suffix}"
 
 
+def _within_projection_bounds(item: Any) -> bool:
+    """Keep live zones always; keep dead zones only inside the decision superset.
+
+    A zone older than ``PROJECTION_MAX_TERMINAL_AGE_BARS`` bars or farther than
+    ``PROJECTION_MAX_DISTANCE_ATR`` ATR (when known) can never influence any
+    decision-layer assessment: the reaction relevance scope and the OB failure
+    modes read strictly smaller windows. Dropping such rows bounds snapshot
+    history without changing a single decision output.
+    """
+
+    if bool(item.active):
+        return True
+    age = getattr(item, "age_bars", None)
+    if age is None or int(age) > PROJECTION_MAX_TERMINAL_AGE_BARS:
+        return False
+    distance = getattr(item, "distance_atr", None)
+    if distance is not None and float(distance) > PROJECTION_MAX_DISTANCE_ATR:
+        return False
+    return True
+
+
 def project_order_block_behavior(
     replay: Any | None,
     *,
@@ -88,6 +117,8 @@ def project_order_block_behavior(
             continue
         quality = normalize_context_data_quality(data_quality_by_timeframe[timeframe])
         for item in behavior_rows:
+            if not _within_projection_bounds(item):
+                continue
             state = _enum_value(item.state)
             interaction = _enum_value(item.interaction)
             native_state = f"{state}:{interaction}"

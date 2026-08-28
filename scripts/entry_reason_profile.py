@@ -626,7 +626,7 @@ def main() -> None:
     _print_counter("ENTRY BLOCKERS", entry_blockers, top=args.top)
     _print_counter("ENTRY WAITING", entry_waiting, top=args.top)
 
-    print("\nREACTION FAILURE SOURCES (legacy sphere, KN-1 diagnostic)")
+    print("\nREACTION FAILURE SOURCES (snapshot zones, terminal-bounded <=100 bars, KN-1 diagnostic)")
     print("-" * 60)
     if not failure_sources:
         print("None.")
