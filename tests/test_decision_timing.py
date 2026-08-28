@@ -152,6 +152,41 @@ def test_pattern_missing_is_not_unavailable_when_reaction_was_validly_observed_a
     assert "PRIMARY_ZONE_PRESENT_AWAITING_REACTION" in result.reasons
 
 
+def test_lt_htf_location_zone_forms_setup_without_confirming_1h():
+    result = assess_setup_trigger(
+        StructuralDirection.LONG,
+        reaction=_reaction(ReactionState.UNKNOWN),
+        location_reaction=_reaction(ReactionState.ABSENT),
+        pattern=None,
+        timeframe="1h",
+    )
+    assert result.state is SetupTriggerState.FORMING
+    assert "HTF_LOCATION_ZONE_AWAITING_CONFIRMATION_REACTION" in result.reasons
+
+
+def test_lt_htf_confirmed_location_does_not_confirm_without_1h_reaction():
+    result = assess_setup_trigger(
+        StructuralDirection.LONG,
+        reaction=_reaction(ReactionState.UNKNOWN),
+        location_reaction=_reaction(ReactionState.CONFIRMED, confirmed=True),
+        pattern=None,
+        timeframe="1h",
+    )
+    assert result.state is SetupTriggerState.FORMING
+    assert result.state is not SetupTriggerState.CONFIRMED
+
+
+def test_lt_1h_failed_reaction_is_not_rescued_by_htf_location():
+    result = assess_setup_trigger(
+        StructuralDirection.LONG,
+        reaction=_reaction(ReactionState.FAILED, failed=True),
+        location_reaction=_reaction(ReactionState.ABSENT),
+        pattern=None,
+        timeframe="1h",
+    )
+    assert result.state is SetupTriggerState.FAILED
+
+
 def test_all_setup_evidence_missing_is_unavailable_not_absent():
     result = assess_setup_trigger(
         StructuralDirection.LONG,

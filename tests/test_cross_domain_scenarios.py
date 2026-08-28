@@ -66,8 +66,9 @@ def test_scenario_b_htf_down_with_ltf_counter_reaction_keeps_reversal_absent() -
     assert axes.reaction_direction is ContextDirection.UP
     assert axes.reversal is ReversalContext.NOT_PRESENT
     assert result.permission.scope is PermissionScope.REACTION_ONLY
-    assert result.permission.permitted_side is PermittedSide.LONG
+    assert result.permission.permitted_side is PermittedSide.SHORT
     assert result.permission.gate_state is GateState.CONDITIONAL
+    assert "PULLBACK_DISCOUNT_CONTEXT" in result.permission.allowed_reasons
 
 
 def test_scenario_c_failed_reaction_does_not_promote_reversal() -> None:

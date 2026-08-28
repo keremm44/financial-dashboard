@@ -61,7 +61,7 @@ def test_aligned_canonical_continuation_can_open_scope_without_becoming_action()
     assert envelope.is_actionable_signal is False
 
 
-def test_active_counter_reaction_is_only_conditional_reaction_scope() -> None:
+def test_active_counter_reaction_keeps_intact_thesis_side() -> None:
     structural = structural_projection(anchor_direction=-1, ltf_direction=1)
     support = reaction_zone(
         side=QualifiedZoneSide.SUPPORT,
@@ -72,12 +72,14 @@ def test_active_counter_reaction_is_only_conditional_reaction_scope() -> None:
     )
 
     assert envelope.scope is PermissionScope.REACTION_ONLY
-    assert envelope.permitted_side is PermittedSide.LONG
+    assert envelope.permitted_side is PermittedSide.SHORT
     assert envelope.gate_state is GateState.CONDITIONAL
+    assert "PULLBACK_DISCOUNT_CONTEXT" in envelope.allowed_reasons
+    assert "COUNTER_REACTION_IS_DISCOUNT_NOT_SIDE_FLIP" in envelope.allowed_reasons
     assert "FUTURE_ACTION_LAYER_TIMING" in envelope.waiting_for
 
 
-def test_developing_counter_reaction_waits() -> None:
+def test_developing_counter_reaction_does_not_flip_intact_thesis_side() -> None:
     structural = structural_projection(anchor_direction=-1, ltf_direction=1)
     support = reaction_zone(
         side=QualifiedZoneSide.SUPPORT,
@@ -89,8 +91,9 @@ def test_developing_counter_reaction_waits() -> None:
     )
 
     assert envelope.scope is PermissionScope.REACTION_ONLY
-    assert envelope.permitted_side is PermittedSide.LONG
-    assert envelope.gate_state is GateState.WAITING
+    assert envelope.permitted_side is PermittedSide.SHORT
+    assert envelope.gate_state is GateState.CONDITIONAL
+    assert "PULLBACK_DISCOUNT_CONTEXT" in envelope.allowed_reasons
 
 
 def test_anchor_transition_candidate_waits_for_structural_follow_through() -> None:

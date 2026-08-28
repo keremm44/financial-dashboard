@@ -113,7 +113,7 @@ def _patch_pipeline(monkeypatch, *, side=StructuralDirection.LONG, calls=None):
             (),
         )
 
-    def timing(horizon, side_value, relation, *, reaction, pattern, timeframe):
+    def timing(horizon, side_value, relation, *, reaction, pattern, timeframe, location_reaction=None):
         if calls is not None:
             calls.setdefault("timing", []).append(timeframe)
         setup = SetupTriggerAssessment(SetupTriggerState.CONFIRMED, timeframe, ("SETUP",), ())

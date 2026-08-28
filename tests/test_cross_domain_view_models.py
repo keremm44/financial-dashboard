@@ -70,7 +70,7 @@ def test_cross_domain_summary_preserves_reaction_vs_reversal() -> None:
     assert values["Reaction"] == "ACTIVE / UP"
     assert values["Reversal"] == "NOT_PRESENT / NONE"
     assert values["Permission scope"] == "REACTION_ONLY"
-    assert values["Permitted side"] == "LONG"
+    assert values["Permitted side"] == "SHORT"
 
 
 def test_cross_domain_frames_are_descriptive_not_action_outputs() -> None:

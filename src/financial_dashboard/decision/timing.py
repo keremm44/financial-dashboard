@@ -100,13 +100,15 @@ def assess_setup_trigger(
     reaction: ReactionAssessment,
     pattern: PatternBehaviorProjection | None,
     timeframe: str,
+    location_reaction: ReactionAssessment | None = None,
 ) -> SetupTriggerAssessment:
     """Classify setup maturity without creating a directional vote.
 
-    ``reaction`` must already be restricted to the timing timeframe by the caller.
-    Pattern is optional. A directional Pattern can confirm setup maturity only when
-    its native direction agrees with the Structure-owned side. Pattern absence never
-    blocks an otherwise confirmed reaction path.
+    ``reaction`` must already be restricted to the confirmation timeframe by the
+    caller (1h for LT, 30m for ST). ``location_reaction`` is optional HTF zone
+    context (LT: 1d/4h/2h/1h). A higher-timeframe zone may put the setup into
+    FORMING; CONFIRMED still requires the confirmation-TF reaction or an aligned
+    pattern break. Pattern absence never blocks an otherwise confirmed reaction.
     """
 
     normalized = timeframe.strip().lower()
@@ -136,7 +138,8 @@ def assess_setup_trigger(
     )
 
     reaction_known = reaction.state is not ReactionState.UNKNOWN
-    refs = _unique_refs(reaction.source_refs, pattern_ref)
+    location_refs = () if location_reaction is None else location_reaction.source_refs
+    refs = _unique_refs(reaction.source_refs, location_refs, pattern_ref)
     reasons: list[str] = []
 
     reaction_confirmed = reaction.state is ReactionState.CONFIRMED
@@ -159,12 +162,20 @@ def assess_setup_trigger(
         )
 
     reaction_forming = reaction.state is ReactionState.DEVELOPING
-    # A same-side zone on the timing TF is the setup location. ABSENT means the
-    # zone exists but has no confirmed interaction yet — that is FORMING, not
-    # "wait for a BOS". CONFIRMED still requires a real reaction or pattern break.
+    # A same-side zone on the confirmation TF is the local setup. ABSENT means
+    # the zone exists but has no confirmed interaction yet — that is FORMING,
+    # not "wait for a BOS". LT may also form from an HTF location zone (1d/4h/2h)
+    # while still waiting for the 1h confirmation reaction.
     zone_present_forming = (
         reaction.state is ReactionState.ABSENT
         and reaction.data_quality is ContextDataQuality.VALID
+    )
+    location_forming = (
+        reaction.state is not ReactionState.FAILED
+        and location_reaction is not None
+        and location_reaction.data_quality is ContextDataQuality.VALID
+        and location_reaction.state
+        in {ReactionState.ABSENT, ReactionState.DEVELOPING, ReactionState.CONFIRMED}
     )
     pattern_forming = bool(
         (pattern_aligned or pattern_neutral)
@@ -177,11 +188,13 @@ def assess_setup_trigger(
             PatternBehaviorPhase.POST_BREAK_RETEST,
         }
     )
-    if reaction_forming or pattern_forming or zone_present_forming:
+    if reaction_forming or pattern_forming or zone_present_forming or location_forming:
         if reaction_forming:
             reasons.append("REACTION_SETUP_DEVELOPING")
         if zone_present_forming:
             reasons.append("PRIMARY_ZONE_PRESENT_AWAITING_REACTION")
+        if location_forming and not zone_present_forming and not reaction_forming:
+            reasons.append("HTF_LOCATION_ZONE_AWAITING_CONFIRMATION_REACTION")
         if pattern_forming:
             reasons.append(f"PATTERN_SETUP_DEVELOPING:{row.phase.value}")
         return SetupTriggerAssessment(
@@ -246,6 +259,7 @@ def assess_timing(
     reaction: ReactionAssessment,
     pattern: PatternBehaviorProjection | None,
     timeframe: str,
+    location_reaction: ReactionAssessment | None = None,
 ) -> TimingAssessment:
     """Explicit v1 timing state machine with named guard conditions.
 
@@ -258,6 +272,7 @@ def assess_timing(
         reaction=reaction,
         pattern=pattern,
         timeframe=timeframe,
+        location_reaction=location_reaction,
     )
     refs = setup.source_refs
     normalized = timeframe.strip().lower()

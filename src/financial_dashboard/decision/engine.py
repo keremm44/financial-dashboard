@@ -351,6 +351,7 @@ def assess_horizon_decision(
         structural.direction,
         structural_snapshot.relation,
         reaction=timing_reaction,
+        location_reaction=reaction if horizon is DecisionHorizon.LONG_TERM else None,
         pattern=snapshot.pattern_behavior,
         timeframe=timing_tf,
     )

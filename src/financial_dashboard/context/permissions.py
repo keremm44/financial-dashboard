@@ -151,6 +151,37 @@ def resolve_permission_axes(
         and axes.reaction_direction not in {ContextDirection.NONE, axes.structural_direction}
     )
     if counter_reaction:
+        # Intact thesis: an opposing zone interaction is the pullback discount,
+        # not a side flip. Flipping permitted_side to the counter move made
+        # eligibility wait on PERMISSION_SCOPE_SIDE_TO_RECONCILE during the
+        # exact window a continuation entry should consider. Reversal/transition
+        # already returned above; HIGH / opposing BOS already blocked.
+        if axes.structural_thesis in {StructuralThesis.UP, StructuralThesis.DOWN}:
+            side = _side(axes.structural_direction)
+            if side is PermittedSide.NONE:
+                return PermissionEnvelope(
+                    scope=PermissionScope.NONE,
+                    permitted_side=PermittedSide.NONE,
+                    gate_state=GateState.BLOCKED,
+                    blocking_reasons=("CONTINUATION_DIRECTION_UNRESOLVED",),
+                    source_refs=refs,
+                )
+            scope = (
+                PermissionScope.CONTINUATION_ONLY
+                if axes.anchor_timeframe.strip().lower() == "1d"
+                else PermissionScope.REACTION_ONLY
+            )
+            return PermissionEnvelope(
+                scope=scope,
+                permitted_side=side,
+                gate_state=GateState.CONDITIONAL,
+                allowed_reasons=(
+                    "PULLBACK_DISCOUNT_CONTEXT",
+                    "COUNTER_REACTION_IS_DISCOUNT_NOT_SIDE_FLIP",
+                ),
+                waiting_for=("FUTURE_ACTION_LAYER_TIMING",),
+                source_refs=refs,
+            )
         side = _side(axes.reaction_direction)
         if axes.reaction is ReactionContext.DEVELOPING:
             return PermissionEnvelope(
