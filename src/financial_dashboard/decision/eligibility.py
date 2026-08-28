@@ -10,6 +10,7 @@ from .conflict import ConflictAssessment, ConflictState
 from .coverage import CoverageAssessment, CoverageFamily
 from .environment import EnvironmentAssessment, EnvironmentRisk
 from .opportunity import OpportunityAssessment, OpportunityState
+from .reaction import ReactionAssessment
 from .structural import StructuralAssessment, StructuralDirection, ThesisState
 from .timing import TimingAssessment, TimingState
 
@@ -45,6 +46,7 @@ def assess_eligibility(
     conflict: ConflictAssessment,
     environment: EnvironmentAssessment,
     coverage: CoverageAssessment,
+    reaction: "ReactionAssessment | None" = None,
 ) -> EligibilityAssessment:
     """Compose accepted hard gates and soft WAIT conditions hierarchically.
 
@@ -125,7 +127,15 @@ def assess_eligibility(
         waiting.extend(timing.waiting_for or (f"TIMING_{timing.state.value}",))
 
     if opportunity.state is OpportunityState.COMPRESSED:
-        waiting.append("MORE_DIRECTIONAL_ROOM")
+        # At a confirmed primary zone the compressed room-to-target is the
+        # discount itself: price reaching a quality zone is the entry condition,
+        # not a blocker. Waiting would only be satisfiable AFTER the zone and
+        # the discount are gone. No confirmation on the current path -> the
+        # original WAIT applies unchanged.
+        if reaction is not None and reaction.confirmation_present:
+            reasons.append("ROOM_COMPRESSED_AT_PRIMARY_ZONE_DISCOUNT")
+        else:
+            waiting.append("MORE_DIRECTIONAL_ROOM")
     elif opportunity.state is OpportunityState.UNKNOWN:
         waiting.append("OPPORTUNITY_EVIDENCE_OR_CALIBRATION")
 

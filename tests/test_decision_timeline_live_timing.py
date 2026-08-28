@@ -34,10 +34,9 @@ def test_builder_exposes_live_start_done_timeframe_domain_contract():
 
 
 def test_cold_bootstrap_uses_fresh_checkpoint_identity_and_restores_versions():
-    module = _builder_module()
-    scope = module["_cold_domain_checkpoint_scope"]
-    native_history = module["native_history"]
-    incremental_history = module["incremental_history"]
+    import financial_dashboard.decision.history_incremental as incremental_history
+    import financial_dashboard.decision.history_native_timeline as native_history
+    from financial_dashboard.decision.timeline_build import cold_domain_checkpoint_scope as scope
 
     native_original = native_history._NATIVE_PERSISTENCE_SEMANTIC_VERSION
     supporting_original = incremental_history._SUPPORTING_PERSISTENCE_SEMANTIC_VERSION

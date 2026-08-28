@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Mapping
 
 from .arbiter import ArbiterState, EntryScenarioArbitration
 from .composer import DecisionAction, FinalDecision
@@ -178,10 +178,20 @@ def assess_entry_decision(
     *,
     config: "DecisionEngineConfig | None" = None,
     execution_event: ExecutionTriggerEvent | None = None,
+    arbitration: "EntryScenarioArbitration | None" = None,
+    assessments: "Mapping[DecisionHorizon, HorizonDecisionAssessment] | None" = None,
 ) -> EntryDecision:
-    """Evaluate the complete Turn 4 -> Turn 5 -> Turn 6 entry chain causally."""
+    """Evaluate the complete Turn 4 -> Turn 5 -> Turn 6 entry chain causally.
 
-    arbitration = snapshot.entry_arbitration(config=config)
+    ``arbitration`` and ``assessments`` let profiling/replay callers reuse an
+    already-computed arbitration result and horizon assessments. Reused
+    assessments are only valid for the fresh-event-free path: when an
+    ``execution_event`` is supplied, the selected horizon is re-evaluated so the
+    execution trigger state is always derived from that event.
+    """
+
+    if arbitration is None:
+        arbitration = snapshot.entry_arbitration(config=config)
     scenario = arbitration.selected_scenario
 
     if scenario is None or scenario.stage is not ScenarioStage.QUALIFIED:
@@ -192,12 +202,19 @@ def assess_entry_decision(
 
     from .engine import assess_horizon_decision
 
-    assessment = assess_horizon_decision(
-        snapshot,
-        arbitration.selected_horizon,
-        config=config,
-        execution_event=execution_event,
-    )
+    selected_horizon = arbitration.selected_horizon
+    assessment = None
+    if assessments is not None and execution_event is None:
+        assessment = assessments.get(selected_horizon)
+        if assessment is not None and assessment.horizon is not selected_horizon:
+            raise ValueError("injected assessment horizon must match the arbiter selection")
+    if assessment is None:
+        assessment = assess_horizon_decision(
+            snapshot,
+            selected_horizon,
+            config=config,
+            execution_event=execution_event,
+        )
     return compose_entry_decision(
         arbitration,
         selected_assessment=assessment,

@@ -5,7 +5,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from time import perf_counter
 
-from build_decision_timeline_cache import _build_timeline_once, _causal_warmup_start
+from build_decision_timeline_cache import _causal_warmup_start
+from financial_dashboard.decision.timeline_build import build_timeline_once as _build_timeline_once
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
 from financial_dashboard.decision.persistent_history_runner import (

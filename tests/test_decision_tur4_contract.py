@@ -50,6 +50,9 @@ def test_final_composer_consumes_frozen_eligibility_not_raw_domain_votes():
 
 def test_eligibility_has_small_typed_input_surface_without_raw_domain_projections():
     parameters = set(inspect.signature(eligibility_module.assess_eligibility).parameters)
+    # 'reaction' (T4 tolerance): typed ReactionAssessment only — eligibility reads
+    # its confirmation flag for the at-primary-zone room discount. Still a small,
+    # fully typed decision-assessment surface; no raw domain projections.
     assert parameters == {
         "structural",
         "permission",
@@ -58,6 +61,7 @@ def test_eligibility_has_small_typed_input_surface_without_raw_domain_projection
         "conflict",
         "environment",
         "coverage",
+        "reaction",
     }
 
 

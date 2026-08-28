@@ -89,6 +89,8 @@ class UnifiedParticipationExport:
     last_pivot_low: float | None = None
     last_pivot_low_known_index: int | None = None
     heavy_conflict: bool = False
+    heavy_conflict_reasons: tuple[str, ...] = ()
+    heavy_conflict_bars: int = 0
     one_bar_shock: bool = False
     shock_direction: int = 0
 
@@ -103,10 +105,16 @@ class VolumeParticipationEngine(LifecycleVolumeParticipationEngine):
     ) -> None:
         super().__init__(config, lifecycle_config)
         self.final_export = UnifiedParticipationExport()
+        self._heavy_conflict_since_index: int | None = None
+        self._last_heavy_conflict_reasons: tuple[str, ...] = ()
+        self._last_heavy_conflict_bars: int = 0
 
     def _reset(self) -> None:
         super()._reset()
         self.final_export = UnifiedParticipationExport()
+        self._heavy_conflict_since_index = None
+        self._last_heavy_conflict_reasons = ()
+        self._last_heavy_conflict_bars = 0
 
     def _shock(self, metrics: VolumeParticipationMetrics) -> tuple[bool, int]:
         if not metrics.data_ready or len(self._rows) < 2:
@@ -138,9 +146,12 @@ class VolumeParticipationEngine(LifecycleVolumeParticipationEngine):
             return True, -1
         return True, 0
 
-    def _heavy_conflict(self, metrics: VolumeParticipationMetrics) -> bool:
+    def _heavy_conflict_reasons(self, metrics: VolumeParticipationMetrics) -> tuple[str, ...]:
+        """Named disjuncts that currently satisfy the heavy-conflict predicate."""
+
         if not metrics.data_ready:
-            return False
+            return ()
+        reasons: list[str] = []
         pressure = abs(metrics.directional_value_pressure_5 or 0.0)
         directional_proxy = (
             metrics.up_evidence_count >= self.config.participation_minimum_evidence
@@ -170,9 +181,44 @@ class VolumeParticipationEngine(LifecycleVolumeParticipationEngine):
             and not near_high
             and not near_low
         )
-        return directional_proxy or confirmed_absorption or breakout_absorption or direction_breakout or capital_price
+        if directional_proxy:
+            reasons.append("DIRECTIONAL_PROXY")
+        if confirmed_absorption:
+            reasons.append("CONFIRMED_ABSORPTION")
+        if breakout_absorption:
+            reasons.append("BREAKOUT_ABSORPTION")
+        if direction_breakout:
+            reasons.append("DIRECTION_BREAKOUT")
+        if capital_price:
+            reasons.append("CAPITAL_PRICE")
+        return tuple(reasons)
+
+    def _heavy_conflict(self, metrics: VolumeParticipationMetrics) -> bool:
+        return bool(self._heavy_conflict_reasons(metrics))
+
+    def _track_heavy_conflict(
+        self, metrics: VolumeParticipationMetrics
+    ) -> tuple[tuple[str, ...], int]:
+        """Update heavy-conflict onset tracking and return (reasons, age_in_bars)."""
+
+        reasons = self._heavy_conflict_reasons(metrics)
+        index = max(0, len(self._rows) - 1)
+        if reasons:
+            if self._heavy_conflict_since_index is None:
+                self._heavy_conflict_since_index = index
+        else:
+            self._heavy_conflict_since_index = None
+        bars = (
+            0
+            if self._heavy_conflict_since_index is None
+            else max(0, index - self._heavy_conflict_since_index)
+        )
+        self._last_heavy_conflict_reasons = reasons
+        self._last_heavy_conflict_bars = bars
+        return reasons, bars
 
     def _resolve_final(self, metrics: VolumeParticipationMetrics, shock: bool) -> FinalParticipationState:
+        self._track_heavy_conflict(metrics)
         if not metrics.data_ready:
             return FinalParticipationState.PENDING if metrics.volume_usable or metrics.capital_usable else FinalParticipationState.VOLUME_UNAVAILABLE
         if self._heavy_conflict(metrics):
@@ -276,6 +322,8 @@ class VolumeParticipationEngine(LifecycleVolumeParticipationEngine):
             last_pivot_low=life.last_pivot_low,
             last_pivot_low_known_index=life.last_pivot_low_known_index,
             heavy_conflict=state == FinalParticipationState.CONFLICT,
+            heavy_conflict_reasons=self._last_heavy_conflict_reasons,
+            heavy_conflict_bars=self._last_heavy_conflict_bars,
             one_bar_shock=shock,
             shock_direction=shock_direction,
         )

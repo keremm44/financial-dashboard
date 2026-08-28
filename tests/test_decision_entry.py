@@ -87,10 +87,30 @@ def _assessment(horizon, action, *, execution=ExecutionTriggerState.ABSENT):
     )
 
 
-def test_blocked_lt_keeps_ownership_and_cannot_be_bypassed_into_buy():
+def test_blocked_lt_falls_back_to_qualified_st_for_ownership():
     arbitration = arbitrate_entry_scenarios(
         _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT, stage=ScenarioStage.BLOCKED),
         _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT),
+    )
+
+    result = compose_entry_decision(
+        arbitration,
+        selected_assessment=_assessment(DecisionHorizon.SHORT_TERM, DecisionAction.READY),
+    )
+
+    assert result.selected_horizon is DecisionHorizon.SHORT_TERM
+    assert "SHORT_TERM_FALLBACK_WHILE_LONG_TERM_BLOCKED" in arbitration.reasons
+    assert result.action is DecisionAction.READY
+
+
+def test_blocked_lt_keeps_ownership_when_st_not_qualified():
+    arbitration = arbitrate_entry_scenarios(
+        _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT, stage=ScenarioStage.BLOCKED),
+        _scenario(
+            DecisionHorizon.SHORT_TERM,
+            ScenarioPresence.PRESENT,
+            stage=ScenarioStage.DEVELOPING,
+        ),
     )
 
     result = compose_entry_decision(arbitration)
@@ -101,10 +121,29 @@ def test_blocked_lt_keeps_ownership_and_cannot_be_bypassed_into_buy():
     assert result.is_actionable_signal is False
 
 
-def test_developing_lt_keeps_ownership_and_waits_even_when_st_is_qualified():
+def test_developing_lt_falls_back_to_qualified_st():
     arbitration = arbitrate_entry_scenarios(
         _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT, stage=ScenarioStage.DEVELOPING),
         _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT),
+    )
+
+    result = compose_entry_decision(
+        arbitration,
+        selected_assessment=_assessment(DecisionHorizon.SHORT_TERM, DecisionAction.READY),
+    )
+
+    assert result.selected_horizon is DecisionHorizon.SHORT_TERM
+    assert result.action is DecisionAction.READY
+
+
+def test_developing_lt_keeps_ownership_when_st_also_developing():
+    arbitration = arbitrate_entry_scenarios(
+        _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT, stage=ScenarioStage.DEVELOPING),
+        _scenario(
+            DecisionHorizon.SHORT_TERM,
+            ScenarioPresence.PRESENT,
+            stage=ScenarioStage.DEVELOPING,
+        ),
     )
 
     result = compose_entry_decision(arbitration)
@@ -114,10 +153,30 @@ def test_developing_lt_keeps_ownership_and_waits_even_when_st_is_qualified():
     assert "WAIT_FOR_SETUP" in result.waiting_for
 
 
-def test_unresolved_lt_ownership_waits_and_does_not_consume_st():
+def test_unresolved_lt_falls_back_to_qualified_st():
     arbitration = arbitrate_entry_scenarios(
         _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.UNKNOWN),
         _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT),
+    )
+
+    result = compose_entry_decision(
+        arbitration,
+        selected_assessment=_assessment(DecisionHorizon.SHORT_TERM, DecisionAction.READY),
+    )
+
+    assert result.selected_horizon is DecisionHorizon.SHORT_TERM
+    assert "SHORT_TERM_FALLBACK_WHILE_LONG_TERM_UNRESOLVED" in arbitration.reasons
+    assert result.action is DecisionAction.READY
+
+
+def test_unresolved_lt_waits_when_st_not_qualified():
+    arbitration = arbitrate_entry_scenarios(
+        _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.UNKNOWN),
+        _scenario(
+            DecisionHorizon.SHORT_TERM,
+            ScenarioPresence.PRESENT,
+            stage=ScenarioStage.DEVELOPING,
+        ),
     )
 
     result = compose_entry_decision(arbitration)

@@ -212,7 +212,7 @@ pickle ayak izini değil; ~87 s'lik HIT pickle yükü için trimming hâlâ erte
 
 ### 12.3 YENİ KÖK NEDEN: iki ayrı conflict değerlendirmesi çelişiyor
 
-**Ölçüm:** Karar katmanı conflict tablosu HIGH'ı yalnızca **11**_snapshotta görüyor;
+**Ölçüm:** Karar katmanı conflict tablosu HIGH'ı yalnızca **11** snapshotta görüyor;
 buna karşılık permission zarfı **766** kez `CONTEXT_CONFLICT_HIGH` ile BLOCKED →
 eligibility `CONTEXT_CONFLICT_TO_RECONCILE` = WAIT'lerin **%88'i** (766/871).
 
@@ -225,7 +225,7 @@ CONFLICTING` → **HIGH** yapar (`axes.py:566`). `CONFLICTING` ise `evaluate_con
 **Piyasa karşılığı:** Trend tezi LONG iken düzeltme, anchor TF'de counter-CHOCH üretir;
 bu düzeltmenin doğal yapısal izidir. Kod bunu HIGH conflict sayar → kapı kilitlenir;
 kapı yalnızca tez yönünde yeni BOS geldiğinde açılır — o ana kadar bölge ve iskonto
-kaçmıştır. Karar katmanasının nuanslı tablosu aynı anı LOW/NONE okur (HIGH 11: gerçek
+kaçmıştır. Karar katmanının nuanslı tablosu aynı anı LOW/NONE okur (HIGH 11: gerçek
 reversal'lar). Kullanıcının "düzeltmeler de önemli" gözlemi, birebir bu kod satırıdır.
 
 ### 12.4 Öneri T6 — counter-CHOCH severity düzeltmesi (onaya bağlı)
@@ -236,5 +236,4 @@ izidir; bağımsız-aile kapısı zaten MATERIAL'ı yönetir: WAIT ama hard değ
 Yönlü semantiği zayıflatmaz — karşı BOS veto yetkisini korur.
 
 **Maliyet:** `context/` parmak-izi kümesinde → **bir rebuild daha (~7 dk)**. T3
-(engines/) istenirse aynı rebuild'e biner → ek maliyet 0. CACHENOT: karar katmanı
-dosyalarında değişiklik yok.
+(engines/) istenirse aynı rebuild'e biner → ek maliyet 0.

@@ -21,7 +21,12 @@ from .execution import (
 )
 from .opportunity import OpportunityAssessment, OpportunityCalibration, assess_opportunity
 from .participation import ParticipationAssessment, assess_participation
-from .reaction import ReactionAssessment, assess_reaction
+from .reaction import (
+    ReactionAssessment,
+    ReactionRelevancePolicy,
+    assess_reaction,
+    select_relevant_zones,
+)
 from .structural import (
     DecisionHorizon,
     HorizonStructuralSnapshot,
@@ -40,12 +45,19 @@ class DecisionEngineConfig:
     """V1 policy/calibration inputs; no hidden market thresholds."""
 
     opportunity_calibration: OpportunityCalibration | None = None
+    reaction_relevance: ReactionRelevancePolicy | None = ReactionRelevancePolicy()
+    participation_conflict_max_age_bars: int | None = 24
     action_policy: ActionPolicy = field(default_factory=ActionPolicy)
     execution_timeframe: str = "30m"
 
     def __post_init__(self) -> None:
         if self.execution_timeframe.strip().lower() != "30m":
             raise ValueError("v1 execution timeframe is architecturally fixed to 30m")
+        if (
+            self.participation_conflict_max_age_bars is not None
+            and self.participation_conflict_max_age_bars < 0
+        ):
+            raise ValueError("participation_conflict_max_age_bars must be >= 0 when provided")
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,22 +289,37 @@ def assess_horizon_decision(
     permission = _horizon_permission(snapshot, horizon)
 
     durability = assess_durability(snapshot.stabil_support)
+    # One shared price-relevant reaction sphere feeds both the broad reaction
+    # assessment and the setup-timing assessment, so the same zone history is
+    # scanned once per snapshot instead of twice.
+    reaction_ob = snapshot.order_block_behavior
+    reaction_fvg = snapshot.fvg_engulfing_lifecycle
+    if cfg.reaction_relevance is not None:
+        reaction_ob, reaction_fvg = select_relevant_zones(
+            reaction_ob,
+            reaction_fvg,
+            current_price=snapshot.current_price,
+            policy=cfg.reaction_relevance,
+        )
     reaction = assess_reaction(
         structural.direction,
-        order_blocks=snapshot.order_block_behavior,
-        fvg_engulfing=snapshot.fvg_engulfing_lifecycle,
+        order_blocks=reaction_ob,
+        fvg_engulfing=reaction_fvg,
         timeframes=reaction_timeframes,
+        relevance=cfg.reaction_relevance,
     )
     timing_reaction = assess_reaction(
         structural.direction,
-        order_blocks=snapshot.order_block_behavior,
-        fvg_engulfing=snapshot.fvg_engulfing_lifecycle,
+        order_blocks=reaction_ob,
+        fvg_engulfing=reaction_fvg,
         timeframes=(timing_tf,),
+        relevance=cfg.reaction_relevance,
     )
     participation = assess_participation(
         structural.direction,
         snapshot.participation_behavior,
         timeframe=participation_tf,
+        max_heavy_conflict_age_bars=cfg.participation_conflict_max_age_bars,
     )
     environment = assess_environment(
         structural.direction,
@@ -335,6 +362,7 @@ def assess_horizon_decision(
         conflict=conflict,
         environment=environment,
         coverage=coverage,
+        reaction=reaction,
     )
     execution = assess_execution_trigger(
         structural.direction,
