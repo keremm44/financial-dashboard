@@ -26,6 +26,7 @@ from .trade_exit import (
     LongExitAssessment,
     LongExitExecutionAssessment,
     PositionHealth,
+    arm_open_long_on_30m_short,
     assess_long_exit_execution,
     assess_long_position_exit,
 )
@@ -210,8 +211,10 @@ def compose_position_exit_decision(
 ) -> PositionExitDecision:
     """Compose HOLD/SELL for one OPEN position from frozen ownership metadata.
 
-    Premature 30m events are deliberately not passed into the execution validator.
-    They are therefore not consumed and cannot be cached for a later EXIT_READY bar.
+    LT/1H thesis can stay MONITOR for months. The open trade is a shorter cycle:
+    a fresh same-bar 30m SHORT CONFIRMED event arms EXIT_READY and can SELL
+    without waiting for 1H/4H/1D BOS. FAILED or missing events stay HOLD.
+    Ownership-less rows fail closed and do not guess a sell.
     """
 
     if state.position is not PositionState.OPEN:
@@ -235,6 +238,12 @@ def compose_position_exit_decision(
     else:
         raise ValueError("unsupported position entry horizon")
 
+    structural = arm_open_long_on_30m_short(
+        structural,
+        as_of=as_of,
+        event=execution_event,
+        allow=metadata is not None,
+    )
     armed = structural.stage is ExitStage.EXIT_READY
     event_for_execution = execution_event if armed else None
     execution = assess_long_exit_execution(
@@ -280,8 +289,15 @@ def assess_position_exit_decision(
     if state.entry_metadata is not None and state.entry_metadata.symbol != snapshot.symbol:
         raise ValueError("position entry metadata symbol must match exit snapshot symbol")
 
-    structural_snapshot = build_horizon_structural_snapshot(snapshot.structure)
-    channel_available = snapshot.quality_for_timeframe("30m") is ContextDataQuality.VALID
+    from .engine import _decision_structure_projection
+
+    structural_snapshot = build_horizon_structural_snapshot(
+        _decision_structure_projection(snapshot.structure)
+    )
+    channel_available = snapshot.quality_for_timeframe("30m") in {
+        ContextDataQuality.VALID,
+        ContextDataQuality.DATA_LIMITED,
+    }
     return compose_position_exit_decision(
         state,
         structural_snapshot,

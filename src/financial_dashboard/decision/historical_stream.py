@@ -21,6 +21,7 @@ from .trade_exit import (
     LongExitAssessment,
     LongExitExecutionAssessment,
     PositionHealth,
+    arm_open_long_on_30m_short,
     assess_long_exit_execution,
     assess_long_position_exit,
 )
@@ -354,7 +355,12 @@ def apply_trade_lifecycle(
         lifecycle_proxy_reason: str | None = None
 
         if state.position is PositionState.OPEN:
-            long_exit = assess_long_position_exit(assessment.structural_snapshot)
+            long_exit = arm_open_long_on_30m_short(
+                assess_long_position_exit(assessment.structural_snapshot),
+                as_of=assessment.as_of,
+                event=exit_event_map.get(assessment.as_of),
+                allow=True,
+            )
             channel_available = assessment.execution.state is not ExecutionTriggerState.UNAVAILABLE
             exit_execution = assess_long_exit_execution(
                 long_exit,

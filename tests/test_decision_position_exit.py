@@ -188,7 +188,21 @@ def test_short_term_transition_down_sells_on_fresh_30m_short():
     assert sold.execution_event_consumed is True
 
 
-def test_premature_exit_event_is_not_consumed_or_carried_forward():
+def test_intact_lt_still_holds_without_30m_short_event():
+    as_of = pd.Timestamp("2026-01-05 12:00")
+    decision = compose_position_exit_decision(
+        _state(DecisionHorizon.LONG_TERM),
+        _structural_snapshot(),
+        as_of=as_of,
+    )
+
+    assert decision.stage is ExitStage.MONITOR
+    assert decision.action is DecisionAction.HOLD
+    assert decision.execution.state is ExitExecutionState.NOT_ARMED
+    assert decision.execution_event_consumed is False
+
+
+def test_open_long_sells_on_fresh_30m_short_even_if_lt_stays_intact():
     as_of = pd.Timestamp("2026-01-05 12:00")
     decision = compose_position_exit_decision(
         _state(DecisionHorizon.LONG_TERM),
@@ -197,11 +211,26 @@ def test_premature_exit_event_is_not_consumed_or_carried_forward():
         execution_event=_exit_event(as_of),
     )
 
-    assert decision.stage is ExitStage.MONITOR
+    assert decision.action is DecisionAction.SELL
+    assert decision.stage is ExitStage.EXIT_READY
+    assert decision.execution.state is ExitExecutionState.CONFIRMED
+    assert decision.execution_event_consumed is True
+    assert "30M_SHORT_CONFIRM_AGAINST_OPEN_LONG" in decision.reasons
+
+
+def test_failed_30m_short_does_not_arm_or_sell_while_thesis_intact():
+    as_of = pd.Timestamp("2026-01-05 12:00")
+    decision = compose_position_exit_decision(
+        _state(DecisionHorizon.LONG_TERM),
+        _structural_snapshot(),
+        as_of=as_of,
+        execution_event=_exit_event(as_of, state=ExecutionTriggerState.FAILED),
+    )
+
     assert decision.action is DecisionAction.HOLD
+    assert decision.stage is ExitStage.MONITOR
     assert decision.execution.state is ExitExecutionState.NOT_ARMED
     assert decision.execution_event_consumed is False
-    assert decision.execution.source_refs == ()
 
 
 def test_missing_legacy_entry_metadata_fails_closed_without_guessing_horizon():

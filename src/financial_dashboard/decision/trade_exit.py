@@ -251,6 +251,35 @@ def _validate_exit_event(event: ExecutionTriggerEvent, *, as_of: Any, timeframe:
             raise ValueError("long exit execution cannot contain future-unavailable refs")
 
 
+def arm_open_long_on_30m_short(
+    assessment: LongExitAssessment,
+    *,
+    as_of: Any,
+    event: ExecutionTriggerEvent | None,
+    allow: bool,
+) -> LongExitAssessment:
+    """Arm a trade-scale exit from a fresh 30m SHORT confirm while the long is owned.
+
+    LT/1H thesis may stay intact for months. The open *position* is a shorter
+    cycle: a same-bar CONFIRMED 30m SHORT event is enough to arm EXIT_READY.
+    No event still means HOLD. Missing ownership metadata does not guess a sell.
+    FAILED/stale/wrong-side events are not an arming signal.
+    """
+
+    if not allow or assessment.stage is ExitStage.EXIT_READY or event is None:
+        return assessment
+    if event.state is not ExecutionTriggerState.CONFIRMED:
+        return assessment
+    _validate_exit_event(event, as_of=as_of, timeframe="30m")
+    return LongExitAssessment(
+        ExitStage.EXIT_READY,
+        PositionHealth.PRESSURED,
+        (*assessment.reasons, "30M_SHORT_CONFIRM_AGAINST_OPEN_LONG"),
+        ("FRESH_LONG_EXIT_EXECUTION_EVENT",),
+        assessment.source_refs,
+    )
+
+
 def assess_long_exit_execution(
     assessment: LongExitAssessment,
     *,
@@ -310,6 +339,7 @@ __all__ = [
     "LongExitAssessment",
     "LongExitExecutionAssessment",
     "PositionHealth",
+    "arm_open_long_on_30m_short",
     "assess_long_exit_execution",
     "assess_long_position_exit",
     "st_pressures_open_long",
