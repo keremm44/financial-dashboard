@@ -81,7 +81,7 @@ def test_lt_present_and_st_present_selects_lt_only():
     assert result.is_actionable_signal is False
 
 
-def test_lt_developing_st_qualified_falls_back_to_st():
+def test_lt_developing_st_qualified_still_selects_lt_ownership():
     lt = _scenario(
         DecisionHorizon.LONG_TERM,
         ScenarioPresence.PRESENT,
@@ -91,13 +91,12 @@ def test_lt_developing_st_qualified_falls_back_to_st():
 
     result = arbitrate_entry_scenarios(lt, st)
 
-    assert result.selection is ArbiterSelection.SHORT_TERM
-    assert result.selected_scenario.stage is ScenarioStage.QUALIFIED
-    assert "SHORT_TERM_FALLBACK_WHILE_LONG_TERM_BLOCKED" in result.reasons
-    assert DecisionHorizon.SHORT_TERM not in result.suppressed_horizons
+    assert result.selection is ArbiterSelection.LONG_TERM
+    assert result.selected_scenario.stage is ScenarioStage.DEVELOPING
+    assert DecisionHorizon.SHORT_TERM in result.suppressed_horizons
 
 
-def test_lt_blocked_st_qualified_falls_back_to_st():
+def test_lt_blocked_st_qualified_cannot_bypass_lt():
     lt = _scenario(
         DecisionHorizon.LONG_TERM,
         ScenarioPresence.PRESENT,
@@ -107,8 +106,8 @@ def test_lt_blocked_st_qualified_falls_back_to_st():
 
     result = arbitrate_entry_scenarios(lt, st)
 
-    assert result.selection is ArbiterSelection.SHORT_TERM
-    assert "LONG_TERM_SCENARIO_BLOCKED_NOT_QUALIFIED" in result.reasons
+    assert result.selection is ArbiterSelection.LONG_TERM
+    assert result.selected_scenario.stage is ScenarioStage.BLOCKED
 
 
 def test_only_explicit_lt_absence_allows_short_term_fallback():
@@ -122,25 +121,9 @@ def test_only_explicit_lt_absence_allows_short_term_fallback():
     assert result.selected_horizon is DecisionHorizon.SHORT_TERM
 
 
-def test_lt_unknown_falls_back_to_qualified_st():
+def test_lt_unknown_never_falls_back_to_visible_st():
     lt = _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.UNKNOWN)
     st = _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT)
-
-    result = arbitrate_entry_scenarios(lt, st)
-
-    assert result.state is ArbiterState.SELECTED
-    assert result.selection is ArbiterSelection.SHORT_TERM
-    assert result.selected_horizon is DecisionHorizon.SHORT_TERM
-    assert "SHORT_TERM_FALLBACK_WHILE_LONG_TERM_UNRESOLVED" in result.reasons
-
-
-def test_lt_unknown_waits_when_st_not_qualified():
-    lt = _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.UNKNOWN)
-    st = _scenario(
-        DecisionHorizon.SHORT_TERM,
-        ScenarioPresence.PRESENT,
-        stage=ScenarioStage.DEVELOPING,
-    )
 
     result = arbitrate_entry_scenarios(lt, st)
 

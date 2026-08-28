@@ -94,12 +94,6 @@ from .market_state import (
     build_horizon_structural_map,
     build_market_state,
 )
-from .calibration import (
-    CalibrationSchemaError,
-    OpportunityCalibrationRecord,
-    load_opportunity_calibration,
-    save_opportunity_calibration,
-)
 from .opportunity import (
     OpportunityAssessment,
     OpportunityCalibration,
@@ -116,14 +110,7 @@ from .persistent_lifecycle_replay import (
     PersistentLifecycleReplayResult,
 )
 from .position_metadata import PositionEntryMetadata, build_position_entry_metadata
-from .reaction import (
-    ReactionAssessment,
-    ReactionRelevancePolicy,
-    ReactionState,
-    assess_reaction,
-    select_relevant_zones,
-    zone_is_relevant,
-)
+from .reaction import ReactionAssessment, ReactionState, assess_reaction
 from .scenario import (
     EntryScenarioAssessment,
     ScenarioKind,
@@ -237,7 +224,6 @@ __all__ = [
     "PositionHealth",
     "PositionState",
     "ReactionAssessment",
-    "ReactionRelevancePolicy",
     "ReactionState",
     "ScenarioKind",
     "ScenarioPresence",
@@ -285,12 +271,6 @@ __all__ = [
     "assess_participation",
     "assess_position_exit_decision",
     "assess_reaction",
-    "select_relevant_zones",
-    "zone_is_relevant",
-    "CalibrationSchemaError",
-    "OpportunityCalibrationRecord",
-    "load_opportunity_calibration",
-    "save_opportunity_calibration",
     "assess_setup_trigger",
     "assess_short_term_structure",
     "assess_snapshot_stream",

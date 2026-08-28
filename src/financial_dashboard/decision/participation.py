@@ -30,7 +30,6 @@ class ParticipationAssessment:
     data_quality: ContextDataQuality
     reasons: tuple[str, ...]
     source_refs: tuple[FactRef, ...]
-    heavy_conflict_bars: int | None = None
 
 
 def _direction_value(side: StructuralDirection) -> int:
@@ -46,17 +45,8 @@ def assess_participation(
     participation: ParticipationBehaviorProjection | None,
     *,
     timeframe: str,
-    max_heavy_conflict_age_bars: int | None = None,
 ) -> ParticipationAssessment:
-    """Classify participation severity relative to Structure without voting on side.
-
-    A native heavy-conflict flag stays MATERIAL while it is fresh enough to
-    describe the current path. Once its age in bars exceeds
-    ``max_heavy_conflict_age_bars`` it is reclassified as persistent ambiguity
-    (WEAK, ``PARTICIPATION_HEAVY_CONFLICT_STALE``) instead of a hard
-    contradiction: months-long "heavy conflict" is noise, not evidence. The
-    native predicate itself is never modified here.
-    """
+    """Classify participation severity relative to Structure without voting on side."""
 
     direction = _direction_value(side)
     normalized = timeframe.strip().lower()
@@ -117,25 +107,6 @@ def assess_participation(
     # participation, weak effort/result and an unsupported break only weaken the
     # structural path when that unsupported break is on the structural side.
     if row.heavy_conflict:
-        heavy_bars = getattr(row, "heavy_conflict_bars", None)
-        stale = (
-            max_heavy_conflict_age_bars is not None
-            and heavy_bars is not None
-            and heavy_bars > max_heavy_conflict_age_bars
-        )
-        if stale:
-            return ParticipationAssessment(
-                ParticipationState.WEAK,
-                False,
-                same_side_unsupported_break,
-                quality,
-                (
-                    "PARTICIPATION_HEAVY_CONFLICT_STALE",
-                    f"HEAVY_CONFLICT_BARS:{int(heavy_bars)}",
-                ),
-                (row.ref,),
-                heavy_conflict_bars=heavy_bars,
-            )
         return ParticipationAssessment(
             ParticipationState.OPPOSING,
             True,
@@ -143,7 +114,6 @@ def assess_participation(
             quality,
             ("PARTICIPATION_HEAVY_CONFLICT",),
             (row.ref,),
-            heavy_conflict_bars=heavy_bars,
         )
 
     weak = (

@@ -298,23 +298,13 @@ def assess_entry_scenario(
     horizon: DecisionHorizon,
     *,
     config: "DecisionEngineConfig | None" = None,
-    assessment: "HorizonDecisionAssessment | None" = None,
 ) -> EntryScenarioAssessment:
-    """Build the causal non-action scenario directly from one frozen input snapshot.
-
-    ``assessment`` allows callers that already evaluated the horizon engine for this
-    snapshot/config to inject it instead of recomputing the full chain. The injected
-    assessment must belong to the requested horizon.
-    """
+    """Build the causal non-action scenario directly from one frozen input snapshot."""
 
     # Local import avoids making the existing horizon engine depend on this layer.
     from .engine import assess_horizon_decision
 
-    if assessment is None:
-        assessment = assess_horizon_decision(snapshot, horizon, config=config, execution_event=None)
-    elif assessment.horizon is not horizon:
-        raise ValueError("injected assessment horizon must match the requested horizon")
-
+    assessment = assess_horizon_decision(snapshot, horizon, config=config, execution_event=None)
     market = snapshot.market_state
     horizon_market = market.long_term if horizon is DecisionHorizon.LONG_TERM else market.short_term
     path = snapshot.target_path(assessment.structural.direction)

@@ -3,40 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
-import pandas as pd
-
-from financial_dashboard.analysis_config import BAR_DURATIONS
-
 from .envelope import ContextDataQuality, ContextDomain, FactRef, normalize_context_data_quality
 from .lineage import families_for
-
-# Bounded-history policy for the per-snapshot lifecycle read model. Terminal FVG
-# rows (invalid / full-fill) older than this many own-timeframe bars can never
-# influence a decision: the reaction relevance scope reads a strictly smaller
-# window. Live rows are always kept, so decisions remain byte-identical while
-# snapshot history stops retaining every dead gap forever.
-PROJECTION_MAX_TERMINAL_AGE_BARS = 100
 
 
 def _quality(value: Any) -> ContextDataQuality:
     return normalize_context_data_quality(value)
-
-
-def _terminal_age_within_bounds(formation_time: Any, as_of: Any, timeframe: str) -> bool:
-    """True when a terminal lifecycle row is young enough to matter (or unknown TF).
-
-    Unknown durations or unparseable timestamps fail open (row kept) so a new
-    timeframe can never lose live-relevant history by accident.
-    """
-
-    try:
-        duration = pd.Timedelta(BAR_DURATIONS[timeframe])
-        delta = pd.Timestamp(as_of) - pd.Timestamp(formation_time)
-    except (KeyError, ValueError, TypeError):
-        return True
-    if duration <= pd.Timedelta(0) or delta < pd.Timedelta(0):
-        return True
-    return int(delta // duration) <= PROJECTION_MAX_TERMINAL_AGE_BARS
 
 
 def _ref(
@@ -155,10 +127,6 @@ def project_fvg_engulfing_lifecycle(
             continue
         quality = _quality(data_quality_by_timeframe[timeframe])
         for item in fvg_by_tf.get(timeframe, ()):
-            if (bool(item.invalid) or bool(item.full_fill)) and not _terminal_age_within_bounds(
-                item.formation_time, snapshot.as_of, timeframe
-            ):
-                continue
             ref = _ref(
                 domain=ContextDomain.FVG,
                 fact_type="FVG_LIFECYCLE",
@@ -199,10 +167,6 @@ def project_fvg_engulfing_lifecycle(
             )
 
         for item in engulf_by_tf.get(timeframe, ()):
-            if bool(item.invalid) and not _terminal_age_within_bounds(
-                item.formation_time, snapshot.as_of, timeframe
-            ):
-                continue
             ref = _ref(
                 domain=ContextDomain.ENGULFING,
                 fact_type="ENGULFING_LIFECYCLE",

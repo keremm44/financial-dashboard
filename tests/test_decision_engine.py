@@ -55,7 +55,6 @@ def _permission(side=PermittedSide.LONG):
 def _snapshot(side=StructuralDirection.LONG):
     return SimpleNamespace(
         as_of=10,
-        current_price=100.0,
         structure=object(),
         stabil_support=None,
         order_block_behavior=None,
@@ -95,7 +94,7 @@ def _patch_pipeline(monkeypatch, *, side=StructuralDirection.LONG, calls=None):
             calls.setdefault("reaction", []).append(kwargs["timeframes"])
         return ReactionAssessment(ReactionState.CONFIRMED, False, True, False, ContextDataQuality.VALID, ("CONFIRMED",), ())
 
-    def participation(side_value, projection, *, timeframe, max_heavy_conflict_age_bars=None):
+    def participation(side_value, projection, *, timeframe):
         if calls is not None:
             calls.setdefault("participation", []).append(timeframe)
         return ParticipationAssessment(ParticipationState.SUPPORTIVE, False, False, ContextDataQuality.VALID, ("SUPPORTIVE",), ())

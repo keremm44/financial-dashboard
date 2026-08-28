@@ -178,3 +178,63 @@ T1 + T2 + T4 (tek commit, cache-güvenli) → ölçüm → T3 (rebuild'e biner) 
   Tam paket: **1188 passed / 4 skipped**.
 - Cache: dokunan dosyaların tamamı (`arbiter`, `reaction`, `conflict`, `eligibility`,
   `engine`) parmak-izi kümelerinin DIŞINDA → mevcut cache HIT kalır, rebuild yok.
+
+---
+
+## BÖLÜM 12 — Ölçülmüş Sonuçlar ve Yeni Kök Neden: Çift Conflict Değerlendirmesi (2026-08-28)
+
+> Kullanıcı makinesinde rebuild + profil (T1+T2+T4 koduyla). Tüm sayılar ölçümdür.
+
+### 12.1 Performans (soğuk rebuild)
+
+| Metrik | Önce | Sonra | Değişim |
+|---|---|---|---|
+| BUILD_SECONDS | 685.712 | **421.132** | **−%38.5** |
+| FROZEN_CACHE_FILE_MB | 491.675 | 488.872 | −%0.6 |
+| REASON_PROFILE_SECONDS | 43.8 | 38.4 | −%12 |
+| VERIFY (sidecar digest) | — | 0.002 s / load 0.004 s | anlık |
+| CHECKPOINTS_SEEDED | 7 | 9 | sonraki refresh artımlı |
+
+**Engine replay toplamı sadece ~44.9 s (build'in %10.7'si)** — darboğaz replay değil,
+cutoff başına bağlam kompozisyonu/dondurması (teşhis doğrulandı). En pahalı motorlar:
+30m pattern 7.42 s, 30m liquidity 6.67 s, 30m market_structure 5.20 s. Cache boyutu
+neredeyse değişmedi (−2.8 MB): sınırlı projeksiyon CPU/nesne maliyetini kesti ama
+pickle ayak izini değil; ~87 s'lik HIT pickle yükü için trimming hâlâ ertelenmiş iş.
+
+### 12.2 Tolerans paketi doğrulaması
+
+- **T2 çalıştı:** LT REACTION MATERIAL 606 → **229**; yeni `REACTION_FAILED_SECONDARY_LINEAGE`
+  LOW 377; MATERIAL_CONFLICT_TO_RESOLVE 306 → **193**.
+- **T4 çalıştı:** LT MORE_DIRECTIONAL_ROOM 359 → **120** (239 kez birincil-bölge iskontosu).
+- **T1 henüz ateşlenmedi — beklenendir:** ST stage QUALIFIED = 0 (DEVELOPING 549). ST kendi
+  kapılarına takılıyor: SETUP_TRIGGER 403, CONTEXT_CONFLICT 300, ROOM 257. Zincir bir alt
+  seviyeye indi; ARBITER hâlâ 777 LONG_TERM / 0 SHORT_TERM.
+
+### 12.3 YENİ KÖK NEDEN: iki ayrı conflict değerlendirmesi çelişiyor
+
+**Ölçüm:** Karar katmanı conflict tablosu HIGH'ı yalnızca **11**_snapshotta görüyor;
+buna karşılık permission zarfı **766** kez `CONTEXT_CONFLICT_HIGH` ile BLOCKED →
+eligibility `CONTEXT_CONFLICT_TO_RECONCILE` = WAIT'lerin **%88'i** (766/871).
+
+**Kod (kanıt):** permission `context/permissions.py:101` `axes.conflict is HIGH` → BLOCKED.
+`axes.conflict` `context/axes.py:evaluate_conflict`'ten gelir ve `continuation is
+CONFLICTING` → **HIGH** yapar (`axes.py:566`). `CONFLICTING` ise `evaluate_continuation`
+'da (`axes.py:291`): LT anchor'ındaki **en son yapısal olayın yönü tezin tersiyse** —
+**olay tipi CHOCH bile olsa** — döner.
+
+**Piyasa karşılığı:** Trend tezi LONG iken düzeltme, anchor TF'de counter-CHOCH üretir;
+bu düzeltmenin doğal yapısal izidir. Kod bunu HIGH conflict sayar → kapı kilitlenir;
+kapı yalnızca tez yönünde yeni BOS geldiğinde açılır — o ana kadar bölge ve iskonto
+kaçmıştır. Karar katmanasının nuanslı tablosu aynı anı LOW/NONE okur (HIGH 11: gerçek
+reversal'lar). Kullanıcının "düzeltmeler de önemli" gözlemi, birebir bu kod satırıdır.
+
+### 12.4 Öneri T6 — counter-CHOCH severity düzeltmesi (onaya bağlı)
+
+`context/axes.py`: karşı yönlü son olay **BOS** ise HIGH **kalır** (yapısal süreklilik
+gerçekten kırılmıştır); karşı yönlü son olay **CHOCH** ise HIGH → **MATERIAL** (düzeltme
+izidir; bağımsız-aile kapısı zaten MATERIAL'ı yönetir: WAIT ama hard değil).
+Yönlü semantiği zayıflatmaz — karşı BOS veto yetkisini korur.
+
+**Maliyet:** `context/` parmak-izi kümesinde → **bir rebuild daha (~7 dk)**. T3
+(engines/) istenirse aynı rebuild'e biner → ek maliyet 0. CACHENOT: karar katmanı
+dosyalarında değişiklik yok.

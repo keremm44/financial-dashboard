@@ -102,18 +102,10 @@ _DECISION_INPUT_IMPLEMENTATION_PATHS = tuple(
          "decision/history_incremental.py",
          "decision/persistent_history_runner.py",
          "decision/incremental_cross_domain.py",
-         "decision/incremental_targeting.py")
+         "decision/incremental_targeting.py",
+         "decision/participation.py",
+         "decision/reaction.py")
     )
-)
-# Downstream evaluation modules (reaction/participation assessments, eligibility,
-# timing, conflict, scenario, arbiter, entry, calibration) CONSUME the frozen
-# DecisionInput timeline; they never compose it. They are deliberately excluded
-# from _DECISION_INPUT_IMPLEMENTATION_PATHS so that decision-layer fixes do not
-# invalidate an otherwise valid frozen timeline. Only code that changes snapshot
-# CONTENT (engines/, context/, targeting/, history composition) may invalidate.
-_DECISION_EVALUATION_EXCLUDED_PATHS = (
-    "decision/participation.py",
-    "decision/reaction.py",
 )
 
 

@@ -50,25 +50,13 @@ def _lineages(refs) -> tuple[str, ...]:
 
 def _reaction_evidence(reaction: ReactionAssessment) -> ConflictFamilyEvidence:
     if reaction.failure_present:
-        if reaction.confirmation_present:
-            # A live failure on one lineage while the current path holds a
-            # confirmed reaction is a secondary-lineage failure: the market
-            # rejected one zone but is confirming another. That is normal
-            # price discovery during pullbacks, not a material contradiction;
-            # failures that overlap a confirmed zone were already superseded
-            # upstream in the reaction assessment.
-            return ConflictFamilyEvidence(
-                "REACTION",
-                ConflictSeverity.LOW,
-                ("REACTION_FAILED_SECONDARY_LINEAGE",),
-                _lineages(reaction.source_refs),
-            )
-        return ConflictFamilyEvidence(
-            "REACTION",
-            ConflictSeverity.MATERIAL,
-            ("REACTION_FAILED",),
-            _lineages(reaction.source_refs),
+        severity = ConflictSeverity.MATERIAL
+        reason = (
+            "REACTION_FAILED_WHILE_OTHER_REACTION_CONFIRMED"
+            if reaction.confirmation_present
+            else "REACTION_FAILED"
         )
+        return ConflictFamilyEvidence("REACTION", severity, (reason,), _lineages(reaction.source_refs))
     return ConflictFamilyEvidence("REACTION", ConflictSeverity.NONE, (), _lineages(reaction.source_refs))
 
 
