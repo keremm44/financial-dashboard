@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
+from financial_dashboard.context.envelope import ContextDataQuality
+from financial_dashboard.context.pattern_behavior_projection import _phase as _native_pattern_phase
+
 from .execution import ExecutionTriggerEvent, ExecutionTriggerState
 from .structural import StructuralDirection
 
@@ -9,18 +12,30 @@ from .structural import StructuralDirection
 _EXECUTION_TIMEFRAME = "30m"
 _CONFIRMED_PATTERN_PHASES = frozenset({"BREAK_CONFIRMED", "RETEST_HELD"})
 _FAILED_PATTERN_PHASES = frozenset({"BREAK_FAILED", "INVALIDATED"})
+_BOS_EVENT_TYPES = frozenset({"BOS", "EVENT_BOS"})
 
 
-def _phase_name(value: Any) -> str:
+def _token(value: Any) -> str:
     if value is None:
         return ""
     return str(getattr(value, "value", value) or "").strip().upper()
 
 
-def _direction(value: int) -> StructuralDirection | None:
-    if value > 0:
+def _direction(value: Any) -> StructuralDirection | None:
+    if isinstance(value, StructuralDirection):
+        return None if value is StructuralDirection.UNRESOLVED else value
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        token = _token(value)
+        if token in {"1", "UP", "LONG", "BULLISH"}:
+            return StructuralDirection.LONG
+        if token in {"-1", "DOWN", "SHORT", "BEARISH"}:
+            return StructuralDirection.SHORT
+        return None
+    if numeric > 0:
         return StructuralDirection.LONG
-    if value < 0:
+    if numeric < 0:
         return StructuralDirection.SHORT
     return None
 
@@ -38,7 +53,30 @@ def _pattern_row(snapshot: Any) -> Any | None:
         return None
 
 
-def _confirmed_bos_ids(snapshot: Any) -> dict[str, int]:
+def _row_phase(row: Any | None) -> str:
+    """Decision-layer phase, recovering native state when 30m is DATA_LIMITED.
+
+    Frozen pattern_behavior maps non-VALID source quality to UNAVAILABLE even
+    when the engine native_state is a real break. Timing already rehydrates that
+    for setup; the execution detector must do the same or every 30m DATA_LIMITED
+    bar looks like a missing pattern.
+    """
+
+    if row is None:
+        return ""
+    phase = _token(getattr(row, "phase", None))
+    quality = getattr(getattr(row, "ref", None), "data_quality", None)
+    if phase and phase != "UNAVAILABLE" and quality is not ContextDataQuality.DATA_LIMITED:
+        return phase
+    native = getattr(row, "native_state", None)
+    if native:
+        recovered = _token(_native_pattern_phase(str(native), unavailable=False))
+        if recovered and recovered != "UNAVAILABLE":
+            return recovered
+    return phase if phase != "UNAVAILABLE" else ""
+
+
+def _confirmed_bos_ids(snapshot: Any) -> dict[str, StructuralDirection]:
     structure = getattr(snapshot, "structure", None)
     if structure is None:
         return {}
@@ -49,16 +87,19 @@ def _confirmed_bos_ids(snapshot: Any) -> dict[str, int]:
         row = lookup(_EXECUTION_TIMEFRAME)
     except (KeyError, AttributeError, TypeError):
         return {}
-    found: dict[str, int] = {}
+    found: dict[str, StructuralDirection] = {}
     for event in getattr(row, "events", ()) or ():
-        if str(getattr(event, "event_type", "")).strip().upper() != "BOS":
+        if _token(getattr(event, "event_type", "")) not in _BOS_EVENT_TYPES:
             continue
-        if str(getattr(event, "confirmation_status", "")).strip().upper() != "CONFIRMED":
+        if _token(getattr(event, "confirmation_status", "")) != "CONFIRMED":
+            continue
+        side = _direction(getattr(event, "direction", 0))
+        if side is None:
             continue
         native_id = str(getattr(getattr(event, "ref", None), "native_id", "") or "")
         if not native_id:
             continue
-        found[native_id] = int(getattr(event, "direction", 0) or 0)
+        found[native_id] = side
     return found
 
 
@@ -105,7 +146,7 @@ def detect_30m_execution_events(
 
     for snapshot in snapshots:
         row = _pattern_row(snapshot)
-        phase = "" if row is None else _phase_name(getattr(row, "phase", None))
+        phase = _row_phase(row)
         direction = 0 if row is None else int(getattr(row, "classic_direction", 0) or 0)
         bos = _confirmed_bos_ids(snapshot)
         refs = () if row is None or getattr(row, "ref", None) is None else (row.ref,)
@@ -138,15 +179,14 @@ def detect_30m_execution_events(
 
         if event is None and seen_previous:
             new_ids = tuple(native_id for native_id in bos if native_id not in previous_bos)
-            if len(new_ids) == 1:
-                side = _direction(bos[new_ids[0]])
-                if side is not None:
-                    event = _event(
-                        snapshot,
-                        state=ExecutionTriggerState.CONFIRMED,
-                        side=side,
-                        reason="30M_STRUCTURE_BOS_CONFIRMED",
-                    )
+            sides = {bos[native_id] for native_id in new_ids}
+            if len(sides) == 1:
+                event = _event(
+                    snapshot,
+                    state=ExecutionTriggerState.CONFIRMED,
+                    side=next(iter(sides)),
+                    reason="30M_STRUCTURE_BOS_CONFIRMED",
+                )
 
         if event is not None and event.state is ExecutionTriggerState.CONFIRMED:
             if event.side is StructuralDirection.LONG:
