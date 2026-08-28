@@ -74,8 +74,13 @@ def _write_identity_sidecar(cache_path, identity: PersistentCacheIdentity) -> No
     write only leaves a legacy-style cache file that eviction will skip.
     """
 
+    from .persistent_state import namespace_semantic_fingerprint
+
     sidecar = cache_path.with_name(
         cache_path.name[: -len(_EXACT_CACHE_SUFFIX)] + _IDENTITY_SIDECAR_SUFFIX
+    )
+    implementation = identity.implementation_fingerprint or namespace_semantic_fingerprint(
+        identity.namespace
     )
     try:
         sidecar.write_text(
@@ -86,6 +91,7 @@ def _write_identity_sidecar(cache_path, identity: PersistentCacheIdentity) -> No
                     "semantic_fingerprint": identity.semantic_fingerprint,
                     "config_fingerprint": identity.config_fingerprint,
                     "source_fingerprint": [list(row) for row in identity.source_fingerprint],
+                    "implementation_fingerprint": implementation,
                     "digest": identity.digest,
                 },
                 sort_keys=True,
@@ -94,6 +100,66 @@ def _write_identity_sidecar(cache_path, identity: PersistentCacheIdentity) -> No
         )
     except OSError:
         pass
+
+
+def _source_fingerprint_from_sidecar(raw) -> tuple[tuple[str, int, int], ...] | None:
+    if not isinstance(raw, list):
+        return None
+    rows: list[tuple[str, int, int]] = []
+    for item in raw:
+        if not isinstance(item, list) or len(item) != 3:
+            return None
+        rows.append((str(item[0]), int(item[1]), int(item[2])))
+    return tuple(rows)
+
+
+def find_compatible_exact_cache(
+    persistent: PersistentObjectStore,
+    identity: PersistentCacheIdentity,
+) -> SinglePassHistoricalDecisionInputReplay | None:
+    """Load a DecisionInput timeline whose bars/config match, ignoring code digest.
+
+    Exact lookup keys the filename by a hash of implementation sources. Pulling
+    decision-rule or fingerprint-recipe changes therefore misses a perfectly
+    valid 400MB file sitting in the same folder. Content identity is the
+    parquet prefix + replay config + product schema — that is what must HIT.
+    Domain-math refreshes remain available via the explicit builder.
+    """
+
+    symbol_dir = persistent.path_for(identity).parent
+    prefix = f"{_safe_namespace_prefix(identity.namespace)}"
+    try:
+        sidecars = sorted(symbol_dir.glob(f"*{_IDENTITY_SIDECAR_SUFFIX}"))
+    except OSError:
+        return None
+    for sidecar in sidecars:
+        if "__checkpoint__" in sidecar.name:
+            continue
+        try:
+            record = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if record.get("namespace") != identity.namespace:
+            continue
+        if record.get("symbol") != identity.symbol:
+            continue
+        if record.get("semantic_fingerprint") != identity.semantic_fingerprint:
+            continue
+        if record.get("config_fingerprint") != identity.config_fingerprint:
+            continue
+        source = _source_fingerprint_from_sidecar(record.get("source_fingerprint"))
+        if source != identity.source_fingerprint:
+            continue
+        cache_path = sidecar.with_name(
+            sidecar.name[: -len(_IDENTITY_SIDECAR_SUFFIX)] + _EXACT_CACHE_SUFFIX
+        )
+        envelope = PersistentObjectStore._load_envelope(cache_path)
+        if envelope is None:
+            continue
+        payload = envelope.get("payload")
+        if isinstance(payload, SinglePassHistoricalDecisionInputReplay):
+            return payload
+    return None
 
 
 def _safe_namespace_prefix(namespace: str) -> str:
@@ -242,4 +308,5 @@ __all__ = [
     "DecisionTimelineReference",
     "PersistentHistoricalDecisionInputReplayRunner",
     "evict_stale_exact_caches",
+    "find_compatible_exact_cache",
 ]

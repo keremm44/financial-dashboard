@@ -226,8 +226,22 @@ class IncrementalHistoricalDecisionInputReplayRunner:
         persistent = PersistentObjectStore(self.store.root)
         exact_identity = self._cache_identity(symbol=clean_symbol, config=cfg)
         cached = persistent.load(exact_identity)
+        if not isinstance(cached, SinglePassHistoricalDecisionInputReplay):
+            from .persistent_history_runner import (
+                _save_rebuildable_exact_cache,
+                find_compatible_exact_cache,
+            )
+
+            cached = find_compatible_exact_cache(persistent, exact_identity)
+            if isinstance(cached, SinglePassHistoricalDecisionInputReplay):
+                self.last_persistent_cache_status = "HIT_REBOUND"
+                try:
+                    _save_rebuildable_exact_cache(persistent, exact_identity, cached)
+                except Exception:
+                    pass
         if isinstance(cached, SinglePassHistoricalDecisionInputReplay):
-            self.last_persistent_cache_status = "HIT_EXACT"
+            if self.last_persistent_cache_status != "HIT_REBOUND":
+                self.last_persistent_cache_status = "HIT_EXACT"
             self.last_decision_append_status = "NOT_NEEDED"
             self.last_assembly_breakdown = {
                 "views": 0.0,

@@ -141,6 +141,43 @@ def test_eviction_keeps_different_config_and_legacy_files(tmp_path: Path):
     assert store.path_for(current).exists()
 
 
+def test_content_identity_rebinds_when_code_digest_changes(tmp_path: Path):
+    from financial_dashboard.decision.persistent_history_runner import find_compatible_exact_cache
+
+    store = PersistentObjectStore(tmp_path)
+    current = _identity()
+    stale = PersistentCacheIdentity(
+        namespace=current.namespace,
+        symbol=current.symbol,
+        semantic_fingerprint=current.semantic_fingerprint,
+        config_fingerprint=current.config_fingerprint,
+        source_fingerprint=current.source_fingerprint,
+        implementation_fingerprint="old-code-digest",
+    )
+    assert stale.digest != current.digest
+    payload = _payload()
+    _save_rebuildable_exact_cache(store, stale, payload)
+    # Legacy sidecars had no implementation field; content identity still matches.
+    sidecar = store.path_for(stale).with_name(store.path_for(stale).stem + ".identity.json")
+    record = json.loads(sidecar.read_text(encoding="utf-8"))
+    record.pop("implementation_fingerprint", None)
+    sidecar.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+
+    found = find_compatible_exact_cache(store, current)
+    assert found is not None
+    assert found.symbol == "ASELS"
+    assert store.load(current) is None  # exact digest still missing until rebound save
+
+
+def test_content_identity_does_not_rebind_different_source(tmp_path: Path):
+    from financial_dashboard.decision.persistent_history_runner import find_compatible_exact_cache
+
+    store = PersistentObjectStore(tmp_path)
+    _save_rebuildable_exact_cache(store, _identity(source=(("1h", 10, 100),)), _payload())
+    found = find_compatible_exact_cache(store, _identity(source=(("1h", 99, 999),)))
+    assert found is None
+
+
 def test_eviction_never_touches_checkpoints(tmp_path: Path):
     store = PersistentObjectStore(tmp_path)
     old = _identity(source=(("1h", 10, 100),))

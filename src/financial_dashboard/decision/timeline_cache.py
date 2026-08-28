@@ -9,6 +9,10 @@ from .history_incremental import _zero_timings
 from .history_replay import HistoricalDecisionInputReplayRunner
 from .history_single_pass import SinglePassHistoricalDecisionInputReplay
 from .history_source import HistoricalDecisionInputConfig
+from .persistent_history_runner import (
+    _save_rebuildable_exact_cache,
+    find_compatible_exact_cache,
+)
 from .persistent_state import PersistentObjectStore
 
 
