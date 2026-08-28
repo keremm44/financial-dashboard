@@ -13,6 +13,7 @@ from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.decision.canonical_events import canonical_decision_events_from_replay
 from financial_dashboard.decision.engine import DecisionEngineConfig
+from financial_dashboard.decision.execution_detect import detect_30m_execution_events
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
 from financial_dashboard.decision.lifecycle_replay import replay_canonical_trade_lifecycle
 from financial_dashboard.decision.opportunity import OpportunityCalibration
@@ -131,6 +132,11 @@ def main() -> None:
     parser.add_argument("--max-bars", type=int, default=None)
     parser.add_argument("--pattern-profile", default=None)
     parser.add_argument("--canonical-readiness-proxy", action="store_true")
+    parser.add_argument(
+        "--no-30m-execution",
+        action="store_true",
+        help="Do not attach the 30m bar-transition detector (READY stays READY).",
+    )
     parser.add_argument("--opportunity-none-max-atr", type=float, default=None)
     parser.add_argument("--opportunity-compressed-max-atr", type=float, default=None)
     parser.add_argument("--opportunity-moderate-max-atr", type=float, default=None)
@@ -186,10 +192,17 @@ def main() -> None:
         raise SystemExit("Frozen historical DecisionInput timeline contains no causal snapshots")
 
     calibration = _calibration(args)
+    if args.no_30m_execution:
+        entry_events: dict = {}
+        exit_events: dict = {}
+    else:
+        entry_events, exit_events = detect_30m_execution_events(input_replay.snapshots)
     started = perf_counter()
     lifecycle = replay_canonical_trade_lifecycle(
         input_replay.snapshots,
         config=DecisionEngineConfig(opportunity_calibration=calibration),
+        entry_execution_events=entry_events,
+        exit_execution_events=exit_events,
         readiness_execution_proxy=bool(args.canonical_readiness_proxy),
     )
     decisions = canonical_decision_events_from_replay(lifecycle)
@@ -236,6 +249,8 @@ def main() -> None:
     print(f"CAUSAL_WARMUP_START\t{effective_start}")
     print(f"CAUSAL_SNAPSHOTS\t{len(input_replay.snapshots)}")
     print(f"DECISION_EVENTS\t{len(decisions)}")
+    print(f"EXECUTION_EVENTS_ENTRY\t{len(entry_events)}")
+    print(f"EXECUTION_EVENTS_EXIT\t{len(exit_events)}")
     print("INPUT_REPLAY_PATH\tFROZEN_DECISION_TIMELINE_CACHE_ONLY")
     print(f"FROZEN_CACHE_STATUS\t{frozen.cache_status}")
     print(f"FROZEN_TIMELINE_LOAD_SECONDS\t{frozen_load_seconds:.3f}")
