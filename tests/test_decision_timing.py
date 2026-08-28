@@ -88,7 +88,7 @@ def test_opposite_pattern_does_not_manufacture_setup_for_structure_side():
         pattern=_pattern(PatternBehaviorPhase.BREAK_CONFIRMED, direction=-1),
         timeframe="30m",
     )
-    assert result.state is SetupTriggerState.ABSENT
+    assert result.state is SetupTriggerState.FORMING
 
 
 def test_developing_reaction_maps_to_developing_timing():
@@ -104,7 +104,7 @@ def test_developing_reaction_maps_to_developing_timing():
     assert "SETUP_TRIGGER_CONFIRMATION" in result.waiting_for
 
 
-def test_lt_counter_reaction_remains_early_even_when_setup_fact_is_confirmed():
+def test_lt_counter_reaction_can_be_ready_when_setup_is_confirmed():
     result = assess_timing(
         DecisionHorizon.LONG_TERM,
         StructuralDirection.LONG,
@@ -113,7 +113,20 @@ def test_lt_counter_reaction_remains_early_even_when_setup_fact_is_confirmed():
         pattern=None,
         timeframe="1h",
     )
+    assert result.state is TimingState.READY
+
+
+def test_lt_early_transition_still_holds_timing_even_when_setup_is_confirmed():
+    result = assess_timing(
+        DecisionHorizon.LONG_TERM,
+        StructuralDirection.LONG,
+        HorizonRelation.EARLY_TRANSITION,
+        reaction=_reaction(ReactionState.CONFIRMED, confirmed=True),
+        pattern=None,
+        timeframe="1h",
+    )
     assert result.state is TimingState.EARLY
+    assert "LOWER_HORIZON_COUNTER_MOVE_TO_RESOLVE" in result.waiting_for
 
 
 def test_st_counter_reaction_can_be_ready_on_its_own_horizon():
@@ -135,7 +148,8 @@ def test_pattern_missing_is_not_unavailable_when_reaction_was_validly_observed_a
         pattern=None,
         timeframe="30m",
     )
-    assert result.state is SetupTriggerState.ABSENT
+    assert result.state is SetupTriggerState.FORMING
+    assert "PRIMARY_ZONE_PRESENT_AWAITING_REACTION" in result.reasons
 
 
 def test_all_setup_evidence_missing_is_unavailable_not_absent():

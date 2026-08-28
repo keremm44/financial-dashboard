@@ -139,6 +139,58 @@ def test_unresolved_canonical_structure_blocks_permission() -> None:
     assert envelope.blocking_reasons == ("CANONICAL_STRUCTURE_UNRESOLVED",)
 
 
+def test_intact_thesis_without_fresh_bos_is_pullback_discount_not_empty_wait() -> None:
+    lt_axes = ContextAxes(
+        anchor_timeframe="1d",
+        structural_thesis=StructuralThesis.UP,
+        structural_direction=ContextDirection.UP,
+        continuation=ContinuationContext.CONFLICTING,
+        reaction=ReactionContext.NONE,
+        reaction_direction=ContextDirection.NONE,
+        reversal=ReversalContext.NOT_PRESENT,
+        reversal_direction=ContextDirection.NONE,
+        objective=ObjectiveContext.UPSIDE,
+        participation=ParticipationContext.NEUTRAL,
+        volatility=VolatilityContext.BALANCED,
+        pattern_readiness=PatternReadiness.NO_PATTERN,
+        mtf=MTFContext.COUNTER_REACTION,
+        ham_readiness=HamReadinessContext.AVAILABLE,
+        conflict=ConflictState.MATERIAL,
+        reasons=(),
+    )
+    lt = resolve_permission_axes(lt_axes)
+    assert lt.gate_state is GateState.CONDITIONAL
+    assert lt.scope is PermissionScope.CONTINUATION_ONLY
+    assert lt.permitted_side is PermittedSide.LONG
+    assert "PULLBACK_DISCOUNT_CONTEXT" in lt.allowed_reasons
+    assert lt.blocking_reasons == ()
+    assert lt.is_actionable_signal is False
+
+    st_axes = ContextAxes(
+        anchor_timeframe="1h",
+        structural_thesis=StructuralThesis.UP,
+        structural_direction=ContextDirection.UP,
+        continuation=ContinuationContext.WEAK,
+        reaction=ReactionContext.NONE,
+        reaction_direction=ContextDirection.NONE,
+        reversal=ReversalContext.NOT_PRESENT,
+        reversal_direction=ContextDirection.NONE,
+        objective=ObjectiveContext.UPSIDE,
+        participation=ParticipationContext.NEUTRAL,
+        volatility=VolatilityContext.BALANCED,
+        pattern_readiness=PatternReadiness.NO_PATTERN,
+        mtf=MTFContext.ALIGNED,
+        ham_readiness=HamReadinessContext.AVAILABLE,
+        conflict=ConflictState.NONE,
+        reasons=(),
+    )
+    st = resolve_permission_axes(st_axes)
+    assert st.gate_state is GateState.CONDITIONAL
+    assert st.scope is PermissionScope.REACTION_ONLY
+    assert st.permitted_side is PermittedSide.LONG
+    assert "PULLBACK_DISCOUNT_CONTEXT" in st.allowed_reasons
+
+
 def test_unresolved_context_conflict_is_wait_not_hard_block() -> None:
     axes = ContextAxes(
         anchor_timeframe="1h",

@@ -209,6 +209,40 @@ def resolve_permission_axes(
             source_refs=refs,
         )
 
+    # Intact thesis without a fresh aligned BOS is the pullback-discount window,
+    # not a missing context. The BOS that established the thesis already lives
+    # in structural_thesis; waiting for the next anchor-TF BOS would enter after
+    # the discount is gone. HIGH / opposing BOS already returned above.
+    # MATERIAL counter-CHOCH is the pullback itself and must not re-lock this
+    # branch. OPEN is reserved for aligned continuation; timing still owns READY.
+    if (
+        axes.structural_thesis in {StructuralThesis.UP, StructuralThesis.DOWN}
+        and axes.continuation in {ContinuationContext.WEAK, ContinuationContext.CONFLICTING}
+        and axes.reaction is not ReactionContext.FAILED
+    ):
+        side = _side(axes.structural_direction)
+        if side is PermittedSide.NONE:
+            return PermissionEnvelope(
+                scope=PermissionScope.NONE,
+                permitted_side=PermittedSide.NONE,
+                gate_state=GateState.BLOCKED,
+                blocking_reasons=("CONTINUATION_DIRECTION_UNRESOLVED",),
+                source_refs=refs,
+            )
+        scope = (
+            PermissionScope.CONTINUATION_ONLY
+            if axes.anchor_timeframe.strip().lower() == "1d"
+            else PermissionScope.REACTION_ONLY
+        )
+        return PermissionEnvelope(
+            scope=scope,
+            permitted_side=side,
+            gate_state=GateState.CONDITIONAL,
+            allowed_reasons=("PULLBACK_DISCOUNT_CONTEXT",),
+            waiting_for=("FUTURE_ACTION_LAYER_TIMING",),
+            source_refs=refs,
+        )
+
     return PermissionEnvelope(
         scope=PermissionScope.NONE,
         permitted_side=PermittedSide.NONE,

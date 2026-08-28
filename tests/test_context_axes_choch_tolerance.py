@@ -31,7 +31,11 @@ from financial_dashboard.context.axes import (
 from financial_dashboard.context.envelope import ContextDataQuality
 
 from tests._context_step4_test_data import ref as _context_ref
-from financial_dashboard.context.permissions import GateState, resolve_permission_axes
+from financial_dashboard.context.permissions import (
+    GateState,
+    PermissionScope,
+    resolve_permission_axes,
+)
 from financial_dashboard.context.projections import (
     StructuralEventProjection,
     StructuralFactsProjection,
@@ -142,7 +146,9 @@ def _axes(continuation: ContinuationContext, conflict: ConflictState) -> Context
 def test_permission_no_longer_blocks_counter_choch_as_context_conflict_high():
     continuation = ContinuationContext.CONFLICTING
     envelope = resolve_permission_axes(_axes(continuation, ConflictState.MATERIAL))
-    assert envelope.gate_state is not GateState.BLOCKED
+    assert envelope.gate_state is GateState.CONDITIONAL
+    assert envelope.scope is PermissionScope.CONTINUATION_ONLY
+    assert "PULLBACK_DISCOUNT_CONTEXT" in envelope.allowed_reasons
     assert "CONTEXT_CONFLICT_HIGH" not in envelope.blocking_reasons
 
 

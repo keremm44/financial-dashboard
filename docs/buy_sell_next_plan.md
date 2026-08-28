@@ -1,5 +1,8 @@
 # BUY/SELL — Sonraki Plan (v1, 2026-08-28)
 
+**Durum:** Adım 1–3 kodda. `permissions.py` context parmak izinde → ASELS için
+**bir rebuild**. Sonra profil (QUALIFIED/READY > 0, WAIT hâlâ çoğunluk).
+
 > **Amaç:** Sinyali şişirmek değil. Düzeltme-indiriminde oynanabilir long
 > senaryosunun **READY’ye ulaşabilmesi**. Structure hâlâ yönü tek başına koyar.
 > Sert kapılar (SHOCK, HIGH conflict, opportunity NONE, permission BLOCKED,

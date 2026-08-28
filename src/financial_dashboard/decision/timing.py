@@ -159,6 +159,13 @@ def assess_setup_trigger(
         )
 
     reaction_forming = reaction.state is ReactionState.DEVELOPING
+    # A same-side zone on the timing TF is the setup location. ABSENT means the
+    # zone exists but has no confirmed interaction yet — that is FORMING, not
+    # "wait for a BOS". CONFIRMED still requires a real reaction or pattern break.
+    zone_present_forming = (
+        reaction.state is ReactionState.ABSENT
+        and reaction.data_quality is ContextDataQuality.VALID
+    )
     pattern_forming = bool(
         (pattern_aligned or pattern_neutral)
         and row.phase
@@ -170,9 +177,11 @@ def assess_setup_trigger(
             PatternBehaviorPhase.POST_BREAK_RETEST,
         }
     )
-    if reaction_forming or pattern_forming:
+    if reaction_forming or pattern_forming or zone_present_forming:
         if reaction_forming:
             reasons.append("REACTION_SETUP_DEVELOPING")
+        if zone_present_forming:
+            reasons.append("PRIMARY_ZONE_PRESENT_AWAITING_REACTION")
         if pattern_forming:
             reasons.append(f"PATTERN_SETUP_DEVELOPING:{row.phase.value}")
         return SetupTriggerAssessment(
@@ -263,8 +272,10 @@ def assess_timing(
             refs,
         )
 
+    # A lower-horizon pullback / counter-reaction is the LT discount window, not
+    # a reason to hold LT EARLY until ST realigns. Keep the hold only when LT
+    # itself is transitioning or the two horizons are structurally irreconcilable.
     if horizon is DecisionHorizon.LONG_TERM and relation in {
-        HorizonRelation.COUNTER_REACTION,
         HorizonRelation.EARLY_TRANSITION,
         HorizonRelation.STRUCTURAL_CONFLICT,
     }:

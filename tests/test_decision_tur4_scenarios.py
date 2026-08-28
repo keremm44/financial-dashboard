@@ -106,7 +106,7 @@ def test_scenario_a_lt_bullish_st_counter_reaction_without_setup_stays_wait():
         pattern=None,
         timeframe="1h",
     )
-    assert timing.state is TimingState.EARLY
+    assert timing.state is TimingState.DEVELOPING
     eligibility = _eligibility(structural, timing)
     final = compose_final_decision(structural, eligibility=eligibility, execution=_execution(StructuralDirection.LONG))
     assert final.action is DecisionAction.WAIT
