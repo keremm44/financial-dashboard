@@ -246,3 +246,40 @@ conflict tablosu belirler. Testler:
 **Maliyet:** `context/` parmak-izi kümesinde → **bir rebuild daha (~7 dk)** — bir
 sonraki profil koşusunda otomatik tetiklenir. T3 kullanıcı tarafından bu tur için
 seçilmedi (gerektiğinde ayrı tur).
+
+---
+
+## BÖLÜM 13 — Payload Çözümlemesi: 489 MB Nerede? (2026-08-28, ölçülmüş)
+
+> Yöntem: sandbox'ta küçük sentetik cache (PERF, 510 snapshot, 164 MB, 322 KB/snapshot)
+> + `scripts/dissect_timeline_payload.py` (alan bazlı pickle ölçümü). Gerçek cache
+> 387 KB/snapshot — bileşim benzer, history-heavy alanlar gerçekte DAHA büyük.
+
+### 13.1 HIT re-run doğrulaması
+- REASON_PROFILE 137.7 s → **38.8 s** (rebuild sonrası makine bellek baskısıymış; kod değil).
+- Karar dağılımları rebuild koşusuyla **birebir aynı** (cache tutarlı).
+- Yeni sabit maliyet: **FROZEN_TIMELINE_LOAD 60.75 s** (489 MB pickle) — her koşuda ödenir.
+- Bir koşu ≈ 60.8 + 38.8 ≈ **100 s**.
+
+### 13.2 Bileşim (ölçülmüş, alan bazlı; paylar ayrı pickledığından üst üste biner)
+
+| Alan | Pay | Not |
+|---|---|---|
+| context (içindekilerle) | ~%61 | source_refs %44 + lineage_groups %21 + zones %13 + knowledge_boundary %12 içerir |
+| **liquidity** | **~%33** | observations ~285 satra/snapshot + behavior_observations — **SINIRSIZ geçmiş** (OB/FVG gibi budanmamış!) |
+| structure.timeframe_facts | ~%15 | olay tarihçesi |
+| qualified_zones | ~%13 | ~189 bölge/snapshot |
+| knowledge_boundary.eligible_fact_ids | ~%12 | türetilebilir kimlik dizisi |
+| order_block_behavior | %7 | zaten ≤100 barla sınırlı (BÖLÜM 11) |
+| support_resistance / targeting / semantic_targeting | %7+7+7 | |
+
+### 13.3 Budama planı (karar-üstküme güvenli, onaya bağlı)
+- **Faz 1 — liquidity sınırlama:** OB/FVG ile aynı politikayla (canlı her zaman + terminal
+  yaş ≤100 bar / mesafe ≤5 ATR üst kümesi). Tahmini kazanç: payload ~−%25-35,
+  yükleme 60.8 → ~40-45 s. En düşük risk.
+- **Faz 2 — meta veri sıkılaştırma:** source_refs/lineage_groups timeline düzeyine
+  çıkarılıp snapshot başına indeks + eligible_fact_ids'in kompakt biçimi.
+  Tahmini ek kazanç ~−%20-30. Daha büyük cerrahi.
+- Hedef: ~489 MB → ~200-250 MB; yükleme ~25-30 s; build dondurma da orantısal hızlanır.
+- **Maliyet:** DecisionInput bileşimi değişir → **bir rebuild (~7-11 dk)**.
+- Araç: `scripts/dissect_timeline_payload.py` (fingerprint dışı; cache bozmaz).
