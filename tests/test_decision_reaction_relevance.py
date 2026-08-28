@@ -225,7 +225,10 @@ def test_fvg_terminal_age_rule_uses_derived_timestamps():
         fvg_engulfing=scoped_fvg,
         timeframes=("1h",),
     )
-    assert assessment.failure_present is True  # young invalid FVG still votes
+    # young terminal invalid survives scoping but is a lifecycle COMPLETION,
+    # not a directional failure vote (T2 tolerance)
+    assert assessment.failure_present is False
+    assert any("FVG_LIFECYCLE_COMPLETED" in r for r in assessment.reasons)
 
 
 def test_supersession_releases_failure_when_confirmed_zone_overlaps():

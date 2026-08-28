@@ -367,12 +367,20 @@ def assess_reaction(
             lower = float(item.lower_boundary)
             upper = float(item.upper_boundary)
             usable_zone_ranges.append((timeframe, lower, upper))
-            if item.failed_reaction or item.invalid or item.full_fill:
+            if item.failed_reaction:
+                # Only a live failed reaction is a directional failure vote. A
+                # fully filled or invalidated gap is a lifecycle COMPLETION
+                # (normal gap-fill price discovery), not a contradiction: gaps
+                # without continuation get filled more often than not, so
+                # counting completion as failure made MATERIAL conflict
+                # statistically inevitable across a ~100-zone set.
                 failure_records.append(("FVG", item.ref.timeframe, item.identity, lower, upper))
             elif item.reaction_confirmed:
                 confirmed = True
                 confirmed_ranges.append((timeframe, lower, upper))
                 reasons.append(f"FVG_CONFIRMED:{item.ref.timeframe}:{item.identity}")
+            elif item.invalid or item.full_fill:
+                reasons.append(f"FVG_LIFECYCLE_COMPLETED:{item.ref.timeframe}:{item.identity}")
             elif item.first_test_index is not None:
                 developing = True
                 reasons.append(f"FVG_DEVELOPING:{item.ref.timeframe}:{item.identity}")

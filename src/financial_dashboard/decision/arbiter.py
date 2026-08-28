@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from .scenario import EntryScenarioAssessment, ScenarioPresence
+from .scenario import EntryScenarioAssessment, ScenarioPresence, ScenarioStage
 from .structural import DecisionHorizon
 
 if TYPE_CHECKING:
@@ -31,8 +31,12 @@ class EntryScenarioArbitration:
     """Non-action ownership decision between LT and ST entry scenarios.
 
     The arbiter never compares scores or readiness strength. LONG_TERM has semantic
-    priority. SHORT_TERM is considered only after LONG_TERM is proven ABSENT;
-    UNKNOWN is not absence and therefore cannot trigger a fallback.
+    priority whenever its scenario is qualified. A present-but-blocked (or still
+    developing) LONG_TERM scenario no longer suppresses a fully qualified
+    SHORT_TERM scenario: in a trend pullback the LT thesis stays alive while the
+    executable edge is the ST reaction, so ownership follows qualification, not
+    mere presence. UNKNOWN is not absence, but it is also not a veto: a qualified
+    ST scenario may act while LT presence is unresolved.
     """
 
     state: ArbiterState
@@ -70,7 +74,32 @@ def arbitrate_entry_scenarios(
 
     _validate_horizons(long_term, short_term)
 
+    st_qualified = (
+        short_term.presence is ScenarioPresence.PRESENT
+        and short_term.stage is ScenarioStage.QUALIFIED
+    )
+
     if long_term.presence is ScenarioPresence.PRESENT:
+        # A qualified LT scenario keeps absolute priority; a blocked or still
+        # developing LT scenario cannot veto a fully qualified ST setup forever.
+        if (
+            long_term.stage is not ScenarioStage.QUALIFIED
+            and st_qualified
+        ):
+            return EntryScenarioArbitration(
+                state=ArbiterState.SELECTED,
+                selection=ArbiterSelection.SHORT_TERM,
+                selected_horizon=DecisionHorizon.SHORT_TERM,
+                selected_scenario=short_term,
+                long_term=long_term,
+                short_term=short_term,
+                suppressed_horizons=(),
+                reasons=(
+                    f"LONG_TERM_SCENARIO_{long_term.stage.value}_NOT_QUALIFIED",
+                    "SHORT_TERM_FALLBACK_WHILE_LONG_TERM_BLOCKED",
+                ),
+                waiting_for=(),
+            )
         suppressed = (
             (DecisionHorizon.SHORT_TERM,)
             if short_term.presence is ScenarioPresence.PRESENT
@@ -91,9 +120,25 @@ def arbitrate_entry_scenarios(
             waiting_for=(),
         )
 
-    # UNKNOWN is not a negative vote. The ST path may be visible for diagnostics,
-    # but it cannot own the decision until LT is proven absent.
+    # UNKNOWN is not a negative vote and therefore not a veto: a fully qualified
+    # ST scenario may own the decision while LT presence is unresolved. Without
+    # a qualified ST scenario the decision waits for LT resolution as before.
     if long_term.presence is ScenarioPresence.UNKNOWN:
+        if st_qualified:
+            return EntryScenarioArbitration(
+                state=ArbiterState.SELECTED,
+                selection=ArbiterSelection.SHORT_TERM,
+                selected_horizon=DecisionHorizon.SHORT_TERM,
+                selected_scenario=short_term,
+                long_term=long_term,
+                short_term=short_term,
+                suppressed_horizons=(),
+                reasons=(
+                    "LONG_TERM_PRESENCE_UNRESOLVED",
+                    "SHORT_TERM_FALLBACK_WHILE_LONG_TERM_UNRESOLVED",
+                ),
+                waiting_for=(),
+            )
         return EntryScenarioArbitration(
             state=ArbiterState.WAITING_FOR_LONG_TERM_RESOLUTION,
             selection=ArbiterSelection.UNRESOLVED,
@@ -106,7 +151,7 @@ def arbitrate_entry_scenarios(
                 if short_term.presence is ScenarioPresence.PRESENT
                 else ()
             ),
-            reasons=("LONG_TERM_PRESENCE_UNRESOLVED_NO_SHORT_TERM_FALLBACK",),
+            reasons=("LONG_TERM_PRESENCE_UNRESOLVED_NO_QUALIFIED_SHORT_TERM",),
             waiting_for=("LONG_TERM_SCENARIO_PRESENCE_TO_RESOLVE",),
         )
 

@@ -362,6 +362,7 @@ def assess_horizon_decision(
         conflict=conflict,
         environment=environment,
         coverage=coverage,
+        reaction=reaction,
     )
     execution = assess_execution_trigger(
         structural.direction,

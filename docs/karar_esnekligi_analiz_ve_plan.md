@@ -103,7 +103,7 @@ hem trigger'ı besliyor): düzeltme anında üç kapı da aynı anda kapanıyor.
 
 ---
 
-## Tolerans Paketi (uygulama önerisi — onaya bağlı)
+## Tolerans Paketi — DURUM: **T1+T2+T4 UYGULANDI** (2026-08-28, kullanıcı onaylı; T3/T5 beklemede)
 
 > Amaç sinyali yapay artırmak değil; *istatistiksel olarak kaçınılmaz* olanı veto eden
 > kuralları, kalan sert kapıları koruyarak gevşetmek. Kusursuz işlem yoktur; iyi işlem
@@ -154,3 +154,27 @@ rebuild gerektirir (sınırlı-projeksiyon rebuild'i ile birleşir).
 
 ### Uygulama sırası
 T1 + T2 + T4 (tek commit, cache-güvenli) → ölçüm → T3 (rebuild'e biner) → ölçüm → T5 kararı.
+
+## Uygulama Notları (T1+T2+T4)
+
+- **T1** `decision/arbiter.py`: `st_qualified` (PRESENT + QUALIFIED) koşuluyla üç yeni dal
+  (LT BLOCKED/DEVELOPING → ST; LT UNKNOWN → ST). LT QUALIFIED önceliği ve skor-karşılaştırma
+  yasağı aynen korundu. Yeni reason'lar: `SHORT_TERM_FALLBACK_WHILE_LONG_TERM_BLOCKED`,
+  `SHORT_TERM_FALLBACK_WHILE_LONG_TERM_UNRESOLVED`.
+- **T2a** `decision/reaction.py`: FVG döngüsünde yalnız canlı `failed_reaction` failure oyu;
+  `invalid`/`full_fill` → `FVG_LIFECYCLE_COMPLETED` (nötr, developing de işaretlemiyor).
+  OB failure-mode oyları (GAP_THROUGH vb.) değişmedi; superseded mekanizması değişmedi.
+- **T2b** `decision/conflict.py`: `failure_present ∧ confirmation_present` →
+  `REACTION_FAILED_SECONDARY_LINEAGE`/LOW ("SECONDARY_LINEAGE"); failure tek başına →
+  MATERIAL (sert kapı aynen). *Birincil-bölge* kavramı, mevcut superseded-filtresi
+  (onaylı bölgeyle çakışan failure zaten atılıyor) + onay-kapısıyla gerçeklendi;
+  fiyat-mesafesi conflict katmanına taşınmadı.
+- **T4** `decision/eligibility.py` (+`engine.py` çağrısı): COMPRESSED + reaction
+  `confirmation_present` → `ROOM_COMPRESSED_AT_PRIMARY_ZONE_DISCOUNT` reason, WAIT yok;
+  confirmation yok / reaction verilmedi → eski `MORE_DIRECTIONAL_ROOM` WAIT aynen.
+  Tur4 sözleşme testi bilinçli güncellendi (yüzey tipli kaldı).
+- Testler: `tests/test_decision_tolerance_package.py` (14 yeni) + 5 eski sözleşme testi
+  yeni davranışa göre yeniden yazıldı (korunan kısımlar için karşıt vakalar eklendi).
+  Tam paket: **1188 passed / 4 skipped**.
+- Cache: dokunan dosyaların tamamı (`arbiter`, `reaction`, `conflict`, `eligibility`,
+  `engine`) parmak-izi kümelerinin DIŞINDA → mevcut cache HIT kalır, rebuild yok.
