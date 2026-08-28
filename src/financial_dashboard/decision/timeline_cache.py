@@ -44,12 +44,21 @@ def load_frozen_decision_timeline(
     clean_symbol = normalize_symbol(symbol)
     identity_runner = HistoricalDecisionInputReplayRunner(store)
     exact_identity = identity_runner._cache_identity(symbol=clean_symbol, config=cfg)
-    cached = PersistentObjectStore(store.root).load(exact_identity)
+    persistent = PersistentObjectStore(store.root)
+    cached = persistent.load(exact_identity)
+    cache_status = "HIT_EXACT_CACHE_ONLY"
     if not isinstance(cached, SinglePassHistoricalDecisionInputReplay):
-        raise DecisionTimelineCacheMiss(
-            "exact frozen DecisionInput timeline is unavailable for the current "
-            f"symbol/config/source identity: {clean_symbol}"
-        )
+        cached = find_compatible_exact_cache(persistent, exact_identity)
+        if not isinstance(cached, SinglePassHistoricalDecisionInputReplay):
+            raise DecisionTimelineCacheMiss(
+                "exact frozen DecisionInput timeline is unavailable for the current "
+                f"symbol/config/source identity: {clean_symbol}"
+            )
+        cache_status = "HIT_REBOUND_CONTENT_IDENTITY"
+        try:
+            _save_rebuildable_exact_cache(persistent, exact_identity, cached)
+        except Exception:
+            pass
 
     replay = SinglePassHistoricalDecisionInputReplay(
         symbol=cached.symbol,
@@ -60,7 +69,7 @@ def load_frozen_decision_timeline(
     )
     return FrozenDecisionTimelineLoad(
         replay=replay,
-        cache_status="HIT_EXACT_CACHE_ONLY",
+        cache_status=cache_status,
     )
 
 

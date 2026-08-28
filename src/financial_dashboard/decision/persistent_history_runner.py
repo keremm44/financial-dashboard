@@ -127,37 +127,47 @@ def find_compatible_exact_cache(
     """
 
     symbol_dir = persistent.path_for(identity).parent
-    prefix = f"{_safe_namespace_prefix(identity.namespace)}"
     try:
         sidecars = sorted(symbol_dir.glob(f"*{_IDENTITY_SIDECAR_SUFFIX}"))
     except OSError:
         return None
-    for sidecar in sidecars:
+
+    def _load(sidecar, *, require_config: bool):
         if "__checkpoint__" in sidecar.name:
-            continue
+            return None
         try:
             record = json.loads(sidecar.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            continue
+            return None
         if record.get("namespace") != identity.namespace:
-            continue
+            return None
         if record.get("symbol") != identity.symbol:
-            continue
+            return None
         if record.get("semantic_fingerprint") != identity.semantic_fingerprint:
-            continue
-        if record.get("config_fingerprint") != identity.config_fingerprint:
-            continue
+            return None
+        if require_config and record.get("config_fingerprint") != identity.config_fingerprint:
+            return None
         source = _source_fingerprint_from_sidecar(record.get("source_fingerprint"))
         if source != identity.source_fingerprint:
-            continue
+            return None
         cache_path = sidecar.with_name(
             sidecar.name[: -len(_IDENTITY_SIDECAR_SUFFIX)] + _EXACT_CACHE_SUFFIX
         )
         envelope = PersistentObjectStore._load_envelope(cache_path)
         if envelope is None:
-            continue
+            return None
         payload = envelope.get("payload")
         if isinstance(payload, SinglePassHistoricalDecisionInputReplay):
+            return payload
+        return None
+
+    for sidecar in sidecars:
+        payload = _load(sidecar, require_config=True)
+        if payload is not None:
+            return payload
+    for sidecar in sidecars:
+        payload = _load(sidecar, require_config=False)
+        if payload is not None:
             return payload
     return None
 

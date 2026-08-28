@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from financial_dashboard.decision.history_single_pass import (
     SinglePassHistoricalDecisionInputReplay,
 )
@@ -169,6 +171,60 @@ def test_content_identity_rebinds_when_code_digest_changes(tmp_path: Path):
     assert store.load(current) is None  # exact digest still missing until rebound save
 
 
+def test_load_frozen_rebounds_and_resaves_under_current_digest(tmp_path: Path, monkeypatch):
+    from financial_dashboard.data.parquet_store import ParquetOHLCVStore
+    from financial_dashboard.decision.history_replay import HistoricalDecisionInputReplayRunner
+    from financial_dashboard.decision.timeline_cache import load_frozen_decision_timeline
+
+    store = PersistentObjectStore(tmp_path)
+    current = _identity()
+    stale = PersistentCacheIdentity(
+        namespace=current.namespace,
+        symbol=current.symbol,
+        semantic_fingerprint=current.semantic_fingerprint,
+        config_fingerprint=current.config_fingerprint,
+        source_fingerprint=current.source_fingerprint,
+        implementation_fingerprint="old-code-digest",
+    )
+    assert stale.digest != current.digest
+    _save_rebuildable_exact_cache(store, stale, _payload())
+    sidecar = store.path_for(stale).with_name(store.path_for(stale).stem + ".identity.json")
+    record = json.loads(sidecar.read_text(encoding="utf-8"))
+    record.pop("implementation_fingerprint", None)
+    sidecar.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+
+    monkeypatch.setattr(
+        HistoricalDecisionInputReplayRunner,
+        "_cache_identity",
+        lambda self, *, symbol, config: current,
+    )
+    loaded = load_frozen_decision_timeline(ParquetOHLCVStore(tmp_path), "ASELS")
+    assert loaded.cache_status == "HIT_REBOUND_CONTENT_IDENTITY"
+    assert loaded.replay.symbol == "ASELS"
+    assert store.path_for(current).exists()
+
+
+def test_load_frozen_rebounds_when_config_string_differs_but_bars_match(
+    tmp_path: Path, monkeypatch
+):
+    from financial_dashboard.data.parquet_store import ParquetOHLCVStore
+    from financial_dashboard.decision.history_replay import HistoricalDecisionInputReplayRunner
+    from financial_dashboard.decision.timeline_cache import load_frozen_decision_timeline
+
+    store = PersistentObjectStore(tmp_path)
+    on_disk = _identity(config="cfg-warmup-old")
+    current = _identity(config="cfg-warmup-new")
+    _save_rebuildable_exact_cache(store, on_disk, _payload())
+
+    monkeypatch.setattr(
+        HistoricalDecisionInputReplayRunner,
+        "_cache_identity",
+        lambda self, *, symbol, config: current,
+    )
+    loaded = load_frozen_decision_timeline(ParquetOHLCVStore(tmp_path), "ASELS")
+    assert loaded.cache_status == "HIT_REBOUND_CONTENT_IDENTITY"
+
+
 def test_content_identity_does_not_rebind_different_source(tmp_path: Path):
     from financial_dashboard.decision.persistent_history_runner import find_compatible_exact_cache
 
@@ -176,6 +232,25 @@ def test_content_identity_does_not_rebind_different_source(tmp_path: Path):
     _save_rebuildable_exact_cache(store, _identity(source=(("1h", 10, 100),)), _payload())
     found = find_compatible_exact_cache(store, _identity(source=(("1h", 99, 999),)))
     assert found is None
+
+
+def test_load_frozen_misses_when_source_bars_differ(tmp_path: Path, monkeypatch):
+    from financial_dashboard.data.parquet_store import ParquetOHLCVStore
+    from financial_dashboard.decision.history_replay import HistoricalDecisionInputReplayRunner
+    from financial_dashboard.decision.timeline_cache import (
+        DecisionTimelineCacheMiss,
+        load_frozen_decision_timeline,
+    )
+
+    store = PersistentObjectStore(tmp_path)
+    _save_rebuildable_exact_cache(store, _identity(source=(("1h", 10, 100),)), _payload())
+    monkeypatch.setattr(
+        HistoricalDecisionInputReplayRunner,
+        "_cache_identity",
+        lambda self, *, symbol, config: _identity(source=(("1h", 99, 999),)),
+    )
+    with pytest.raises(DecisionTimelineCacheMiss):
+        load_frozen_decision_timeline(ParquetOHLCVStore(tmp_path), "ASELS")
 
 
 def test_eviction_never_touches_checkpoints(tmp_path: Path):
