@@ -149,7 +149,7 @@ def test_non_authoritative_lt_unknown_can_fall_back_to_qualified_st():
     assert result.action is DecisionAction.READY
 
 
-def test_unsafe_lt_unknown_waits_even_when_st_is_qualified():
+def test_unsafe_lt_unknown_still_allows_independently_qualified_st():
     arbitration = arbitrate_entry_scenarios(
         _scenario(
             DecisionHorizon.LONG_TERM,
@@ -158,9 +158,12 @@ def test_unsafe_lt_unknown_waits_even_when_st_is_qualified():
         ),
         _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT),
     )
-    result = compose_entry_decision(arbitration)
-    assert result.selected_horizon is None
-    assert result.action is DecisionAction.WAIT
+    result = compose_entry_decision(
+        arbitration,
+        selected_assessment=_assessment(DecisionHorizon.SHORT_TERM, DecisionAction.READY),
+    )
+    assert result.selected_horizon is DecisionHorizon.SHORT_TERM
+    assert result.action is DecisionAction.READY
 
 
 def test_unresolved_lt_waits_when_st_not_qualified():
