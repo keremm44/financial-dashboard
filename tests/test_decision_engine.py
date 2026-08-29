@@ -178,13 +178,14 @@ def test_engine_stops_at_ready_without_fresh_execution_event(monkeypatch):
     assert result.execution.state is ExecutionTriggerState.ABSENT
 
 
-def test_engine_ready_when_30m_channel_is_data_limited_without_event(monkeypatch):
+def test_engine_waits_when_30m_execution_channel_is_data_limited(monkeypatch):
     _patch_pipeline(monkeypatch)
     snapshot = _snapshot()
     snapshot.quality_for_timeframe = lambda timeframe: ContextDataQuality.DATA_LIMITED
     result = engine_module.assess_horizon_decision(snapshot, DecisionHorizon.SHORT_TERM)
-    assert result.execution.state is ExecutionTriggerState.ABSENT
-    assert result.final.action is DecisionAction.READY
+    assert result.execution.state is ExecutionTriggerState.UNAVAILABLE
+    assert result.final.action is DecisionAction.WAIT
+    assert "30m:EXECUTION_TRIGGER_DATA" in result.final.waiting_for
 
 
 def test_engine_emits_buy_only_with_fresh_current_execution_event(monkeypatch):
