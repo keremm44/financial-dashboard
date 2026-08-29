@@ -38,13 +38,6 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class PositionExitDecision:
-    """Final action layer for one already-open long position.
-
-    The decision does not create a bearish trade thesis. The immutable entry horizon
-    only selects which already-existing structural authority owns position health.
-    SELL remains gated by EXIT_READY plus one fresh 30m exit execution event.
-    """
-
     action: DecisionAction
     as_of: Any
     entry_horizon: DecisionHorizon | None
@@ -101,104 +94,65 @@ def _lineage_from_refs(refs: Iterable[FactRef]) -> tuple[str, ...]:
 
 
 def _short_term_position_exit(snapshot: HorizonStructuralSnapshot) -> LongExitAssessment:
-    """Use the canonical 1H ST Structure as authority for an ST-origin position.
-
-    No supporting-domain score, price threshold, ATR rule or new timeframe authority
-    is introduced here. The state mapping mirrors the existing structural exit FSM:
-    intact long protects ownership; 1H transition-down or established short arms
-    EXIT_READY without waiting for a 1H/4H/1D BOS. EXIT_READY still requires a
-    separate fresh 30m SHORT *pattern* click.
-    """
-
     st = snapshot.short_term
     refs = _canonical_refs(st.source_refs)
-
     if st.data_quality is not ContextDataQuality.VALID:
         return LongExitAssessment(
-            ExitStage.EXIT_WATCH,
-            PositionHealth.UNKNOWN,
+            ExitStage.EXIT_WATCH, PositionHealth.UNKNOWN,
             (f"ST_STRUCTURE_DATA_{st.data_quality.value}",),
-            ("ST_STRUCTURE_AUTHORITY_TO_RECOVER",),
-            refs,
+            ("ST_STRUCTURE_AUTHORITY_TO_RECOVER",), refs,
         )
-
     if st.thesis_state is ThesisState.INVALIDATED:
         return LongExitAssessment(
-            ExitStage.EXIT_READY,
-            PositionHealth.PRESSURED,
-            ("ST_LONG_THESIS_INVALIDATED",),
-            ("FRESH_LONG_EXIT_EXECUTION_EVENT",),
-            refs,
+            ExitStage.EXIT_READY, PositionHealth.PRESSURED,
+            ("ST_LONG_THESIS_INVALIDATED",), ("FRESH_LONG_EXIT_EXECUTION_EVENT",), refs,
         )
-
     if st.direction is StructuralDirection.UNRESOLVED or st.thesis_state is ThesisState.UNRESOLVED:
         return LongExitAssessment(
-            ExitStage.EXIT_WATCH,
-            PositionHealth.UNKNOWN,
+            ExitStage.EXIT_WATCH, PositionHealth.UNKNOWN,
             ("ST_STRUCTURE_UNRESOLVED_FOR_OPEN_LONG",),
-            ("ST_STRUCTURE_AUTHORITY_TO_RESOLVE",),
-            refs,
+            ("ST_STRUCTURE_AUTHORITY_TO_RESOLVE",), refs,
         )
-
     if st.direction is StructuralDirection.SHORT and st.thesis_state is ThesisState.INTACT:
         return LongExitAssessment(
-            ExitStage.EXIT_READY,
-            PositionHealth.PRESSURED,
+            ExitStage.EXIT_READY, PositionHealth.PRESSURED,
             ("ST_BEARISH_THESIS_ESTABLISHED_AGAINST_ST_POSITION",),
-            ("FRESH_LONG_EXIT_EXECUTION_EVENT",),
-            refs,
+            ("FRESH_LONG_EXIT_EXECUTION_EVENT",), refs,
         )
-
     if (
         st.direction is StructuralDirection.LONG
         and st.thesis_state is ThesisState.TRANSITIONING
         and st.transition_target is StructuralDirection.SHORT
     ):
         return LongExitAssessment(
-            ExitStage.EXIT_READY,
-            PositionHealth.PRESSURED,
+            ExitStage.EXIT_READY, PositionHealth.PRESSURED,
             ("ST_LONG_THESIS_TRANSITIONING_TOWARD_SHORT",),
-            ("FRESH_LONG_EXIT_EXECUTION_EVENT",),
-            refs,
+            ("FRESH_LONG_EXIT_EXECUTION_EVENT",), refs,
         )
-
     if st.direction is StructuralDirection.SHORT and st.thesis_state is ThesisState.TRANSITIONING:
         return LongExitAssessment(
-            ExitStage.EXIT_WATCH,
-            PositionHealth.PRESSURED,
+            ExitStage.EXIT_WATCH, PositionHealth.PRESSURED,
             ("ST_ESTABLISHED_SIDE_SHORT_BUT_TRANSITIONING",),
-            ("ST_TRANSITION_TO_RESOLVE",),
-            refs,
+            ("ST_TRANSITION_TO_RESOLVE",), refs,
         )
-
     if st.direction is StructuralDirection.LONG and st.thesis_state is ThesisState.INTACT:
         return LongExitAssessment(
-            ExitStage.MONITOR,
-            PositionHealth.HEALTHY,
-            ("ST_LONG_THESIS_INTACT",),
-            (),
-            refs,
+            ExitStage.MONITOR, PositionHealth.HEALTHY,
+            ("ST_LONG_THESIS_INTACT",), (), refs,
         )
-
     return LongExitAssessment(
-        ExitStage.EXIT_WATCH,
-        PositionHealth.UNKNOWN,
+        ExitStage.EXIT_WATCH, PositionHealth.UNKNOWN,
         ("OPEN_ST_LONG_EXIT_STATE_NOT_CANONICALLY_CLASSIFIED",),
-        ("CANONICAL_ST_STRUCTURE_STATE",),
-        refs,
+        ("CANONICAL_ST_STRUCTURE_STATE",), refs,
     )
 
 
 def _missing_entry_metadata_exit(snapshot: HorizonStructuralSnapshot) -> LongExitAssessment:
-    refs = _canonical_refs(
-        (*snapshot.long_term.source_refs, *snapshot.short_term.source_refs)
-    )
+    refs = _canonical_refs((*snapshot.long_term.source_refs, *snapshot.short_term.source_refs))
     return LongExitAssessment(
-        ExitStage.EXIT_WATCH,
-        PositionHealth.UNKNOWN,
+        ExitStage.EXIT_WATCH, PositionHealth.UNKNOWN,
         ("POSITION_ENTRY_HORIZON_UNAVAILABLE",),
-        ("POSITION_ENTRY_METADATA_TO_RECOVER",),
-        refs,
+        ("POSITION_ENTRY_METADATA_TO_RECOVER",), refs,
     )
 
 
@@ -210,14 +164,6 @@ def compose_position_exit_decision(
     execution_event: ExecutionTriggerEvent | None = None,
     channel_available: bool = True,
 ) -> PositionExitDecision:
-    """Compose HOLD/SELL for one OPEN position from frozen ownership metadata.
-
-    Intact LT ALIGNED/PULLBACK stays MONITOR. A fresh 30m SHORT event does not
-    arm EXIT_READY; 1H/LT must already be against. EXIT_READY plus one fresh
-    30m SHORT click can SELL. FAILED or missing events stay HOLD.
-    Ownership-less rows fail closed and do not guess a sell.
-    """
-
     if state.position is not PositionState.OPEN:
         raise ValueError("position exit decision requires OPEN lifecycle ownership")
     if as_of is None:
@@ -241,10 +187,7 @@ def compose_position_exit_decision(
 
     click = exit_click_event(execution_event)
     structural = arm_open_long_on_30m_short(
-        structural,
-        as_of=as_of,
-        event=click,
-        allow=metadata is not None,
+        structural, as_of=as_of, event=click, allow=metadata is not None,
     )
     armed = structural.stage is ExitStage.EXIT_READY
     event_for_execution = click if armed else None
@@ -255,11 +198,7 @@ def compose_position_exit_decision(
         channel_available=channel_available,
     )
     consumed = armed and click is not None
-    action = (
-        DecisionAction.SELL
-        if execution.state is ExitExecutionState.CONFIRMED
-        else DecisionAction.HOLD
-    )
+    action = DecisionAction.SELL if execution.state is ExitExecutionState.CONFIRMED else DecisionAction.HOLD
 
     refs = _canonical_refs((*structural.source_refs, *execution.source_refs))
     return PositionExitDecision(
@@ -284,8 +223,6 @@ def assess_position_exit_decision(
     *,
     execution_event: ExecutionTriggerEvent | None = None,
 ) -> PositionExitDecision:
-    """Build the causal Turn 8 exit decision from one frozen market snapshot."""
-
     if snapshot.as_of is None:
         raise ValueError("position exit snapshot as_of must be known")
     if state.entry_metadata is not None and state.entry_metadata.symbol != snapshot.symbol:
@@ -293,13 +230,8 @@ def assess_position_exit_decision(
 
     from .engine import _decision_structure_projection
 
-    structural_snapshot = build_horizon_structural_snapshot(
-        _decision_structure_projection(snapshot.structure)
-    )
-    channel_available = snapshot.quality_for_timeframe("30m") in {
-        ContextDataQuality.VALID,
-        ContextDataQuality.DATA_LIMITED,
-    }
+    structural_snapshot = build_horizon_structural_snapshot(_decision_structure_projection(snapshot.structure))
+    channel_available = snapshot.quality_for_timeframe("30m") is ContextDataQuality.VALID
     return compose_position_exit_decision(
         state,
         structural_snapshot,
@@ -313,8 +245,6 @@ def transition_position_exit_lifecycle(
     state: TradeLifecycleState,
     decision: PositionExitDecision,
 ) -> TradeLifecycleTransition:
-    """Apply one Turn 8 exit result to persistent ownership without reinterpretation."""
-
     if state.position is not PositionState.OPEN:
         raise ValueError("position exit lifecycle transition requires OPEN state")
     if state.entry_metadata is not None and decision.entry_horizon is not state.entry_metadata.entry_horizon:
