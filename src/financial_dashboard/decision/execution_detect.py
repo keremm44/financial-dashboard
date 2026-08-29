@@ -16,7 +16,8 @@ from .execution import (
 from .structural import StructuralDirection
 
 
-_EXECUTION_TIMEFRAME = "30m"
+_MICRO_EXECUTION_TIMEFRAME = "30m"
+_PRIMARY_EXECUTION_TIMEFRAME = "1h"
 _CONFIRMED_PATTERN_PHASES = frozenset({"BREAK_CONFIRMED", "RETEST_HELD"})
 _FAILED_PATTERN_PHASES = frozenset({"BREAK_FAILED", "INVALIDATED"})
 _BOS_EVENT_TYPES = frozenset({"BOS", "EVENT_BOS"})
@@ -47,7 +48,7 @@ def _direction(value: Any) -> StructuralDirection | None:
     return None
 
 
-def _pattern_row(snapshot: Any) -> Any | None:
+def _pattern_row(snapshot: Any, timeframe: str) -> Any | None:
     projection = getattr(snapshot, "pattern_behavior", None)
     if projection is None:
         return None
@@ -55,18 +56,13 @@ def _pattern_row(snapshot: Any) -> Any | None:
     if lookup is None:
         return None
     try:
-        return lookup(_EXECUTION_TIMEFRAME)
+        return lookup(timeframe.strip().lower())
     except (KeyError, AttributeError, TypeError):
         return None
 
 
 def _row_phase(row: Any | None) -> str:
-    """Recover the native price-pattern phase for transition detection only.
-
-    This does not make DATA_LIMITED executable. Final execution assessment still
-    requires a VALID 30m channel; recovery here merely prevents losing the identity
-    and native time of a real pattern transition in the frozen projection.
-    """
+    """Recover native price-pattern phase for causal transition detection."""
 
     if row is None:
         return ""
@@ -82,7 +78,10 @@ def _row_phase(row: Any | None) -> str:
     return phase if phase != "UNAVAILABLE" else ""
 
 
-def _confirmed_bos_ids(snapshot: Any) -> dict[str, tuple[StructuralDirection, Any | None]]:
+def _confirmed_bos_ids(
+    snapshot: Any,
+    timeframe: str,
+) -> dict[str, tuple[StructuralDirection, Any | None]]:
     structure = getattr(snapshot, "structure", None)
     if structure is None:
         return {}
@@ -90,7 +89,7 @@ def _confirmed_bos_ids(snapshot: Any) -> dict[str, tuple[StructuralDirection, An
     if lookup is None:
         return {}
     try:
-        row = lookup(_EXECUTION_TIMEFRAME)
+        row = lookup(timeframe.strip().lower())
     except (KeyError, AttributeError, TypeError):
         return {}
     found: dict[str, tuple[StructuralDirection, Any | None]] = {}
@@ -131,6 +130,7 @@ def _native_times(snapshot: Any, source_refs: tuple) -> tuple[Any, Any]:
 def _event(
     snapshot: Any,
     *,
+    timeframe: str,
     state: ExecutionTriggerState,
     side: StructuralDirection,
     kind: ExecutionEventKind,
@@ -138,14 +138,18 @@ def _event(
     source_refs: tuple = (),
 ) -> ExecutionTriggerEvent:
     as_of = snapshot.as_of
+    normalized = timeframe.strip().lower()
     usable_refs = tuple(
-        ref for ref in source_refs if getattr(ref, "is_available_at", lambda _as_of: True)(as_of)
+        ref
+        for ref in source_refs
+        if ref.timeframe.strip().lower() == normalized
+        and getattr(ref, "is_available_at", lambda _as_of: True)(as_of)
     )
     observed_at, available_at = _native_times(snapshot, usable_refs)
     return ExecutionTriggerEvent(
         state=state,
         side=side,
-        timeframe=_EXECUTION_TIMEFRAME,
+        timeframe=normalized,
         observed_at=observed_at,
         available_at=available_at,
         reason=reason,
@@ -154,7 +158,7 @@ def _event(
     )
 
 
-def _assign_to_decision_windows(
+def _assign_30m_to_decision_windows(
     snapshots: tuple[Any, ...],
     events: list[ExecutionTriggerEvent],
 ) -> dict[Any, ExecutionTriggerEvent]:
@@ -169,87 +173,121 @@ def _assign_to_decision_windows(
     return assigned
 
 
-def detect_30m_execution_events(
-    snapshots: Iterable[Any],
-) -> tuple[Mapping[Any, ExecutionTriggerEvent], Mapping[Any, ExecutionTriggerEvent]]:
-    """Detect native 30m events, then assign executable ones to 1h decision windows.
-
-    Pattern confirmations/failures retain their native observation/availability
-    timestamps. A :30 event is therefore offered once to the next eligible decision
-    bar. Structure BOS is still detected as thesis information but is deliberately
-    excluded from the executable entry/exit channels.
-    """
-
-    rows = tuple(snapshots)
-    raw_entry: list[ExecutionTriggerEvent] = []
-    raw_exit: list[ExecutionTriggerEvent] = []
+def _detect_pattern_events(
+    snapshots: tuple[Any, ...],
+    *,
+    timeframe: str,
+) -> tuple[list[tuple[Any, ExecutionTriggerEvent]], list[tuple[Any, ExecutionTriggerEvent]]]:
+    normalized = timeframe.strip().lower()
+    raw_entry: list[tuple[Any, ExecutionTriggerEvent]] = []
+    raw_exit: list[tuple[Any, ExecutionTriggerEvent]] = []
     previous_phase = ""
     previous_direction = 0
     previous_bos: frozenset[str] = frozenset()
     seen_previous = False
 
-    for snapshot in rows:
-        row = _pattern_row(snapshot)
+    for snapshot in snapshots:
+        row = _pattern_row(snapshot, normalized)
         phase = _row_phase(row)
         direction = 0 if row is None else int(getattr(row, "classic_direction", 0) or 0)
-        bos = _confirmed_bos_ids(snapshot)
+        bos = _confirmed_bos_ids(snapshot, normalized)
         refs = () if row is None or getattr(row, "ref", None) is None else (row.ref,)
         event: ExecutionTriggerEvent | None = None
 
-        if seen_previous and phase in _CONFIRMED_PATTERN_PHASES and previous_phase not in _CONFIRMED_PATTERN_PHASES:
+        if (
+            seen_previous
+            and phase in _CONFIRMED_PATTERN_PHASES
+            and previous_phase not in _CONFIRMED_PATTERN_PHASES
+        ):
             side = _direction(direction)
             if side is not None:
                 event = _event(
                     snapshot,
+                    timeframe=normalized,
                     state=ExecutionTriggerState.CONFIRMED,
                     side=side,
                     kind=ExecutionEventKind.PATTERN_CONFIRMATION,
-                    reason="30M_PATTERN_BREAK_CONFIRMED",
+                    reason=f"{normalized.upper()}_PATTERN_BREAK_CONFIRMED",
                     source_refs=refs,
                 )
-        elif seen_previous and previous_phase in _CONFIRMED_PATTERN_PHASES and phase in _FAILED_PATTERN_PHASES:
+        elif (
+            seen_previous
+            and previous_phase in _CONFIRMED_PATTERN_PHASES
+            and phase in _FAILED_PATTERN_PHASES
+        ):
             side = _direction(previous_direction)
             if side is not None:
                 event = _event(
                     snapshot,
+                    timeframe=normalized,
                     state=ExecutionTriggerState.FAILED,
                     side=side,
                     kind=ExecutionEventKind.PATTERN_CONFIRMATION,
-                    reason="30M_PATTERN_BREAK_FAILED",
+                    reason=f"{normalized.upper()}_PATTERN_BREAK_FAILED",
                     source_refs=refs,
                 )
 
+        # BOS is retained as diagnostic evidence only. It is never executable.
         if event is None and seen_previous:
             new_ids = tuple(native_id for native_id in bos if native_id not in previous_bos)
             sides = {bos[native_id][0] for native_id in new_ids}
             if len(sides) == 1:
                 bos_refs = tuple(
-                    ref for native_id in new_ids for ref in (bos[native_id][1],) if ref is not None
+                    ref
+                    for native_id in new_ids
+                    for ref in (bos[native_id][1],)
+                    if ref is not None
                 )
                 event = _event(
                     snapshot,
+                    timeframe=normalized,
                     state=ExecutionTriggerState.CONFIRMED,
                     side=next(iter(sides)),
                     kind=ExecutionEventKind.STRUCTURE_BOS,
-                    reason="30M_STRUCTURE_BOS_CONFIRMED",
+                    reason=f"{normalized.upper()}_STRUCTURE_BOS_CONFIRMED",
                     source_refs=bos_refs,
                 )
 
         if event is not None and event.state is ExecutionTriggerState.CONFIRMED:
             if event.side is StructuralDirection.LONG and is_entry_execution_click(event):
-                raw_entry.append(event)
+                raw_entry.append((snapshot.as_of, event))
             elif event.side is StructuralDirection.SHORT and is_exit_execution_click(event):
-                raw_exit.append(event)
+                raw_exit.append((snapshot.as_of, event))
 
         previous_phase = phase
         previous_direction = direction
         previous_bos = frozenset(bos)
         seen_previous = True
 
+    return raw_entry, raw_exit
+
+
+def detect_30m_execution_events(
+    snapshots: Iterable[Any],
+) -> tuple[Mapping[Any, ExecutionTriggerEvent], Mapping[Any, ExecutionTriggerEvent]]:
+    """Detect optional micro-timing events and assign them once to 1h decision windows."""
+
+    rows = tuple(snapshots)
+    raw_entry, raw_exit = _detect_pattern_events(rows, timeframe=_MICRO_EXECUTION_TIMEFRAME)
     return (
-        _assign_to_decision_windows(rows, raw_entry),
-        _assign_to_decision_windows(rows, raw_exit),
+        _assign_30m_to_decision_windows(rows, [event for _, event in raw_entry]),
+        _assign_30m_to_decision_windows(rows, [event for _, event in raw_exit]),
     )
 
 
-__all__ = ["detect_30m_execution_events"]
+def detect_1h_execution_events(
+    snapshots: Iterable[Any],
+) -> tuple[Mapping[Any, ExecutionTriggerEvent], Mapping[Any, ExecutionTriggerEvent]]:
+    """Detect primary ST execution events from closed 1h pattern transitions.
+
+    The 1h decision snapshot is the execution owner. Pattern confirmation is enough;
+    BOS is deliberately not required. 30m remains a separate optional micro-timing
+    channel and cannot create a primary BUY/SELL through this mapping.
+    """
+
+    rows = tuple(snapshots)
+    raw_entry, raw_exit = _detect_pattern_events(rows, timeframe=_PRIMARY_EXECUTION_TIMEFRAME)
+    return dict(raw_entry), dict(raw_exit)
+
+
+__all__ = ["detect_1h_execution_events", "detect_30m_execution_events"]
