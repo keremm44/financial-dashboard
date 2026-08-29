@@ -5,7 +5,11 @@ from typing import TYPE_CHECKING, Mapping
 
 from .arbiter import ArbiterState, EntryScenarioArbitration
 from .composer import DecisionAction, FinalDecision
-from .execution import ExecutionTriggerEvent, ExecutionTriggerState
+from .execution import (
+    ExecutionTriggerEvent,
+    ExecutionTriggerState,
+    is_entry_execution_click,
+)
 from .scenario import ScenarioPresence, ScenarioStage
 from .structural import DecisionHorizon, StructuralDirection
 
@@ -16,12 +20,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class EntryDecision:
-    """Final long-entry decision after scenario ownership has been resolved.
-
-    Turn 6 does not reinterpret domains or create a second market thesis. It only
-    converts the one scenario selected by the Turn 5 arbiter into WAIT/READY/BUY or
-    NO_TRADE using the existing fresh 30m execution-event contract.
-    """
+    """Final long-entry decision after scenario ownership has been resolved."""
 
     action: DecisionAction
     selected_horizon: DecisionHorizon | None
@@ -86,14 +85,6 @@ def compose_entry_decision(
     selected_assessment: "HorizonDecisionAssessment | None" = None,
     execution_event_consumed: bool = False,
 ) -> EntryDecision:
-    """Compose entry action from one already-arbitrated scenario.
-
-    A selected scenario must be PRESENT and long-entry compatible. BLOCKED and
-    DEVELOPING scenarios retain ownership but cannot execute. Only QUALIFIED may
-    delegate to the existing horizon composer, whose BUY still requires a fresh
-    confirmed execution event.
-    """
-
     scenario = arbitration.selected_scenario
     if arbitration.selected_horizon is None or scenario is None:
         if selected_assessment is not None:
@@ -156,9 +147,6 @@ def compose_entry_decision(
 
     lineage = tuple(sorted(set(base_lineage) | set(final.source_lineage)))
     reasons = _dedup(list(arbitration.reasons) + list(scenario.reasons) + list(final.reasons))
-
-    # The selected scenario is the ownership gate. The legacy horizon composer may
-    # only contribute execution readiness/action after that gate has qualified.
     return EntryDecision(
         action=final.action,
         selected_horizon=arbitration.selected_horizon,
@@ -181,30 +169,21 @@ def assess_entry_decision(
     arbitration: "EntryScenarioArbitration | None" = None,
     assessments: "Mapping[DecisionHorizon, HorizonDecisionAssessment] | None" = None,
 ) -> EntryDecision:
-    """Evaluate the complete Turn 4 -> Turn 5 -> Turn 6 entry chain causally.
-
-    ``arbitration`` and ``assessments`` let profiling/replay callers reuse an
-    already-computed arbitration result and horizon assessments. Reused
-    assessments are only valid for the fresh-event-free path: when an
-    ``execution_event`` is supplied, the selected horizon is re-evaluated so the
-    execution trigger state is always derived from that event.
-    """
+    """Evaluate the Turn 4->6 chain and consume only executable event kinds."""
 
     if arbitration is None:
         arbitration = snapshot.entry_arbitration(config=config)
     scenario = arbitration.selected_scenario
 
     if scenario is None or scenario.stage is not ScenarioStage.QUALIFIED:
-        # A fresh event is intentionally not consumed when ownership/setup is not
-        # qualified. It cannot be cached and reused later because execution events
-        # remain fresh-at-as_of by contract.
         return compose_entry_decision(arbitration)
 
     from .engine import assess_horizon_decision
 
     selected_horizon = arbitration.selected_horizon
+    click_event = execution_event if is_entry_execution_click(execution_event) else None
     assessment = None
-    if assessments is not None and execution_event is None:
+    if assessments is not None and click_event is None:
         assessment = assessments.get(selected_horizon)
         if assessment is not None and assessment.horizon is not selected_horizon:
             raise ValueError("injected assessment horizon must match the arbiter selection")
@@ -213,17 +192,13 @@ def assess_entry_decision(
             snapshot,
             selected_horizon,
             config=config,
-            execution_event=execution_event,
+            execution_event=click_event,
         )
     return compose_entry_decision(
         arbitration,
         selected_assessment=assessment,
-        execution_event_consumed=execution_event is not None,
+        execution_event_consumed=click_event is not None,
     )
 
 
-__all__ = [
-    "EntryDecision",
-    "assess_entry_decision",
-    "compose_entry_decision",
-]
+__all__ = ["EntryDecision", "assess_entry_decision", "compose_entry_decision"]
