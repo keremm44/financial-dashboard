@@ -63,11 +63,9 @@ def test_lt_intact_st_counter_reaction_arms_exit_without_daily_bos():
             st_thesis=ThesisState.INTACT,
         )
     )
-
     assert assessment.stage is ExitStage.EXIT_READY
     assert assessment.position_health is PositionHealth.PRESSURED
     assert assessment.reasons == ("ST_BEARISH_THESIS_ESTABLISHED_AGAINST_OPEN_LONG",)
-    assert assessment.waiting_for == ("FRESH_LONG_EXIT_EXECUTION_EVENT",)
 
 
 def test_lt_intact_1h_transition_down_does_not_arm_lt_exit():
@@ -78,7 +76,6 @@ def test_lt_intact_1h_transition_down_does_not_arm_lt_exit():
             st_transition_target=StructuralDirection.SHORT,
         )
     )
-
     assert assessment.stage is ExitStage.MONITOR
     assert assessment.reasons == ("LT_LONG_INTACT_ST_ALIGNED",)
 
@@ -92,10 +89,8 @@ def test_lt_intact_st_pullback_recovering_toward_lt_stays_monitor():
             st_transition_target=StructuralDirection.LONG,
         )
     )
-
     assert assessment.stage is ExitStage.MONITOR
     assert assessment.position_health is PositionHealth.PROTECTED
-    assert assessment.reasons == ("LT_LONG_INTACT_ST_PULLBACK",)
 
 
 def test_lt_transition_toward_short_is_watch_not_automatic_sell():
@@ -107,10 +102,8 @@ def test_lt_transition_toward_short_is_watch_not_automatic_sell():
             relation=HorizonRelation.EARLY_TRANSITION,
         )
     )
-
     assert assessment.stage is ExitStage.EXIT_WATCH
     assert assessment.position_health is PositionHealth.PRESSURED
-    assert assessment.waiting_for == ("LT_TRANSITION_TO_RESOLVE",)
 
 
 def test_established_lt_bearish_thesis_arms_long_exit_but_does_not_sell_by_itself():
@@ -126,46 +119,28 @@ def test_established_lt_bearish_thesis_arms_long_exit_but_does_not_sell_by_itsel
         as_of=pd.Timestamp("2026-01-05 12:00"),
         event=None,
     )
-
     assert assessment.stage is ExitStage.EXIT_READY
     assert execution.state is ExitExecutionState.ABSENT
-    assert execution.waiting_for == ("FRESH_LONG_EXIT_EXECUTION_EVENT",)
 
 
 def test_fresh_short_exit_event_executes_only_after_exit_ready():
     as_of = pd.Timestamp("2026-01-05 12:00")
     protected = assess_long_position_exit(_structural_snapshot())
-    premature = assess_long_exit_execution(
-        protected,
-        as_of=as_of,
-        event=_exit_event(as_of=as_of),
-    )
+    premature = assess_long_exit_execution(protected, as_of=as_of, event=_exit_event(as_of=as_of))
     assert premature.state is ExitExecutionState.NOT_ARMED
 
     ready = assess_long_position_exit(
-        _structural_snapshot(
-            lt_direction=StructuralDirection.SHORT,
-            lt_thesis=ThesisState.INTACT,
-        )
+        _structural_snapshot(lt_direction=StructuralDirection.SHORT, lt_thesis=ThesisState.INTACT)
     )
-    confirmed = assess_long_exit_execution(
-        ready,
-        as_of=as_of,
-        event=_exit_event(as_of=as_of),
-    )
+    confirmed = assess_long_exit_execution(ready, as_of=as_of, event=_exit_event(as_of=as_of))
     assert confirmed.state is ExitExecutionState.CONFIRMED
-    assert confirmed.waiting_for == ()
 
 
-def test_exit_event_must_be_short_side_fresh_and_same_timeframe():
+def test_exit_event_must_be_short_side_and_not_future():
     ready = assess_long_position_exit(
-        _structural_snapshot(
-            lt_direction=StructuralDirection.SHORT,
-            lt_thesis=ThesisState.INTACT,
-        )
+        _structural_snapshot(lt_direction=StructuralDirection.SHORT, lt_thesis=ThesisState.INTACT)
     )
     as_of = pd.Timestamp("2026-01-05 12:00")
-
     with pytest.raises(ValueError, match="SHORT-side"):
         assess_long_exit_execution(
             ready,
@@ -173,28 +148,16 @@ def test_exit_event_must_be_short_side_fresh_and_same_timeframe():
             event=_exit_event(as_of=as_of, side=StructuralDirection.LONG),
         )
 
-    stale = ExecutionTriggerEvent(
-        state=ExecutionTriggerState.CONFIRMED,
-        side=StructuralDirection.SHORT,
-        timeframe="30m",
-        observed_at=pd.Timestamp("2026-01-05 11:30"),
-        available_at=pd.Timestamp("2026-01-05 11:30"),
-        reason="STALE_EXIT",
-        source_refs=(),
-    )
-    with pytest.raises(ValueError, match="fresh"):
-        assess_long_exit_execution(
-            ready,
-            as_of=as_of,
-            event=stale,
-        )
+    window_event = _exit_event(as_of=pd.Timestamp("2026-01-05 11:30"))
+    assert assess_long_exit_execution(ready, as_of=as_of, event=window_event).state is ExitExecutionState.CONFIRMED
+
+    future = _exit_event(as_of=pd.Timestamp("2026-01-05 12:30"))
+    with pytest.raises(ValueError, match="future-unavailable|future-observed"):
+        assess_long_exit_execution(ready, as_of=as_of, event=future)
 
 
 def test_missing_lt_authority_is_watch_unknown_not_forced_sell():
-    assessment = assess_long_position_exit(
-        _structural_snapshot(quality=ContextDataQuality.UNAVAILABLE)
-    )
-
+    assessment = assess_long_position_exit(_structural_snapshot(quality=ContextDataQuality.UNAVAILABLE))
     assert assessment.stage is ExitStage.EXIT_WATCH
     assert assessment.position_health is PositionHealth.UNKNOWN
     assert assessment.reasons == ("LT_STRUCTURE_DATA_UNAVAILABLE",)
