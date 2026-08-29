@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from financial_dashboard.context.envelope import ContextDataQuality, FactRef
+from financial_dashboard.context.envelope import (
+    ContextDataQuality,
+    FactRef,
+    normalize_context_data_quality,
+)
 from financial_dashboard.context.projections import StabilSupportProjection
 
 
@@ -44,6 +48,11 @@ def assess_durability(
     persistence, ATR or score threshold; all category changes come from existing
     Stabil lifecycle/behavior states. Historical counters such as reclaim_count are
     preserved as facts but are not interpreted as monotonic weakness.
+
+    Frozen DecisionInput timelines created by older projection versions may contain
+    the serialized quality token as a plain string rather than ``ContextDataQuality``.
+    Normalize it here at the decision boundary so compatible frozen caches remain
+    reusable without replaying domains.
     """
 
     if stabil is None:
@@ -55,11 +64,12 @@ def assess_durability(
         )
 
     refs = _refs(stabil)
-    if stabil.data_quality is not ContextDataQuality.VALID:
+    quality = normalize_context_data_quality(stabil.data_quality)
+    if quality is not ContextDataQuality.VALID:
         return DurabilityAssessment(
             state=DurabilityState.UNKNOWN,
-            data_quality=stabil.data_quality,
-            reasons=(f"STABIL_DATA_{stabil.data_quality.value}",),
+            data_quality=quality,
+            reasons=(f"STABIL_DATA_{quality.value}",),
             source_refs=refs,
         )
 
@@ -72,7 +82,7 @@ def assess_durability(
     if validity == "BELOW_FLOOR" or interaction == "DOWNSIDE_CONTINUATION":
         return DurabilityAssessment(
             DurabilityState.BROKEN,
-            stabil.data_quality,
+            quality,
             ("STABIL_FOUNDATION_BROKEN", f"VALIDITY:{validity}", f"INTERACTION:{interaction}"),
             refs,
         )
@@ -80,7 +90,7 @@ def assess_durability(
     if validity == "BREACHED" or interaction in {"BREAKDOWN_ACCEPTED", "RECOVERY_FAILED"}:
         return DurabilityAssessment(
             DurabilityState.FRACTURED,
-            stabil.data_quality,
+            quality,
             ("STABIL_FOUNDATION_FRACTURED", f"VALIDITY:{validity}", f"INTERACTION:{interaction}"),
             refs,
         )
@@ -88,7 +98,7 @@ def assess_durability(
     if validity == "NO_SUPPORT" or stabil.support_ref is None:
         return DurabilityAssessment(
             DurabilityState.UNKNOWN,
-            stabil.data_quality,
+            quality,
             ("STABIL_SUPPORT_NOT_ESTABLISHED",),
             refs,
         )
@@ -107,7 +117,7 @@ def assess_durability(
     if softening:
         return DurabilityAssessment(
             DurabilityState.SOFTENING,
-            stabil.data_quality,
+            quality,
             (
                 "STABIL_FOUNDATION_SOFTENING",
                 f"PROGRESSION:{progression}",
@@ -119,7 +129,7 @@ def assess_durability(
 
     return DurabilityAssessment(
         DurabilityState.HEALTHY,
-        stabil.data_quality,
+        quality,
         ("STABIL_FOUNDATION_HEALTHY", f"VALIDITY:{validity}", f"INTERACTION:{interaction}"),
         refs,
     )
