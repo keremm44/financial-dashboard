@@ -228,10 +228,12 @@ def assess_position_exit_decision(
     if state.entry_metadata is not None and state.entry_metadata.symbol != snapshot.symbol:
         raise ValueError("position entry metadata symbol must match exit snapshot symbol")
 
-    from .engine import _decision_structure_projection
+    from .engine import _decision_structure_projection, _execution_channel_quality
 
     structural_snapshot = build_horizon_structural_snapshot(_decision_structure_projection(snapshot.structure))
-    channel_available = snapshot.quality_for_timeframe("30m") is ContextDataQuality.VALID
+    channel_available = (
+        _execution_channel_quality(snapshot, "30m") is ContextDataQuality.VALID
+    )
     return compose_position_exit_decision(
         state,
         structural_snapshot,
