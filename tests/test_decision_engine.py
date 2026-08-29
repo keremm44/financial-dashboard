@@ -80,13 +80,13 @@ def _pattern_projection(*, quality, native_state="ST_BREAK_CONFIRMED", phase="BR
     return SimpleNamespace(for_timeframe=lambda timeframe: row)
 
 
-def _patch_pipeline(monkeypatch, *, side=StructuralDirection.LONG, calls=None):
-    lt = _structural(DecisionHorizon.LONG_TERM, side)
+def _patch_pipeline(monkeypatch, *, side=StructuralDirection.LONG, calls=None, relation=HorizonRelation.ALIGNED, lt_side=None):
+    lt = _structural(DecisionHorizon.LONG_TERM, side if lt_side is None else lt_side)
     st = _structural(DecisionHorizon.SHORT_TERM, side)
     monkeypatch.setattr(
         engine_module,
         "build_horizon_structural_snapshot",
-        lambda structural: HorizonStructuralSnapshot(lt, st, HorizonRelation.ALIGNED, ("ALIGNED",)),
+        lambda structural: HorizonStructuralSnapshot(lt, st, relation, (relation.value,)),
     )
     monkeypatch.setattr(
         engine_module,
@@ -122,7 +122,7 @@ def _patch_pipeline(monkeypatch, *, side=StructuralDirection.LONG, calls=None):
             (),
         )
 
-    def timing(horizon, side_value, relation, *, reaction, pattern, timeframe, location_reaction=None):
+    def timing(horizon, side_value, relation_value, *, reaction, pattern, timeframe, location_reaction=None):
         if calls is not None:
             calls.setdefault("timing", []).append(timeframe)
         setup = SetupTriggerAssessment(SetupTriggerState.CONFIRMED, timeframe, ("SETUP",), ())
@@ -161,11 +161,11 @@ def test_permission_policy_uses_actual_horizon_structural_authorities():
     )
     assert engine_module._permission_policy(DecisionHorizon.SHORT_TERM) == (
         "1h",
-        ("30m",),
+        ("4h",),
     )
 
 
-def test_lt_and_st_use_distinct_role_aware_supporting_timeframes(monkeypatch):
+def test_lt_and_st_use_1h_for_primary_setup_timing(monkeypatch):
     calls = {}
     _patch_pipeline(monkeypatch, calls=calls)
     snapshot = _snapshot()
@@ -175,29 +175,30 @@ def test_lt_and_st_use_distinct_role_aware_supporting_timeframes(monkeypatch):
 
     assert calls["participation"] == ["4h", "1h"]
     assert calls["environment"] == ["4h", "1h"]
-    assert calls["timing"] == ["1h", "30m"]
+    assert calls["timing"] == ["1h", "1h"]
     assert calls["reaction"][0] == ("1d", "4h", "2h", "1h")
     assert calls["reaction"][2] == ("4h", "2h", "1h", "30m")
 
 
-def test_engine_stops_at_ready_without_fresh_execution_event(monkeypatch):
+def test_engine_stops_at_ready_without_fresh_1h_execution_event(monkeypatch):
     _patch_pipeline(monkeypatch)
     result = engine_module.assess_horizon_decision(_snapshot(), DecisionHorizon.SHORT_TERM)
     assert result.final.action is DecisionAction.READY
     assert result.execution.state is ExecutionTriggerState.ABSENT
+    assert result.execution.timeframe == "1h"
 
 
-def test_engine_waits_when_30m_execution_channel_is_data_limited_and_pattern_channel_missing(monkeypatch):
+def test_engine_waits_when_1h_execution_channel_is_data_limited_and_pattern_channel_missing(monkeypatch):
     _patch_pipeline(monkeypatch)
     snapshot = _snapshot()
     snapshot.quality_for_timeframe = lambda timeframe: ContextDataQuality.DATA_LIMITED
     result = engine_module.assess_horizon_decision(snapshot, DecisionHorizon.SHORT_TERM)
     assert result.execution.state is ExecutionTriggerState.UNAVAILABLE
     assert result.final.action is DecisionAction.WAIT
-    assert "30m:EXECUTION_TRIGGER_DATA" in result.final.waiting_for
+    assert "1h:EXECUTION_TRIGGER_DATA" in result.final.waiting_for
 
 
-def test_native_30m_pattern_channel_survives_generic_data_limited_quality(monkeypatch):
+def test_native_1h_pattern_channel_survives_generic_data_limited_quality(monkeypatch):
     _patch_pipeline(monkeypatch)
     snapshot = _snapshot()
     snapshot.quality_for_timeframe = lambda timeframe: ContextDataQuality.DATA_LIMITED
@@ -209,7 +210,7 @@ def test_native_30m_pattern_channel_survives_generic_data_limited_quality(monkey
     assert result.final.action is DecisionAction.READY
 
 
-def test_native_30m_pattern_event_executes_even_when_generic_quality_is_data_limited(monkeypatch):
+def test_native_1h_pattern_event_executes_even_when_generic_quality_is_data_limited(monkeypatch):
     _patch_pipeline(monkeypatch)
     snapshot = _snapshot()
     snapshot.quality_for_timeframe = lambda timeframe: ContextDataQuality.DATA_LIMITED
@@ -217,7 +218,7 @@ def test_native_30m_pattern_event_executes_even_when_generic_quality_is_data_lim
     event = ExecutionTriggerEvent(
         state=ExecutionTriggerState.CONFIRMED,
         side=StructuralDirection.LONG,
-        timeframe="30m",
+        timeframe="1h",
         observed_at=10,
         available_at=10,
         reason="FRESH_EVENT",
@@ -233,7 +234,7 @@ def test_native_30m_pattern_event_executes_even_when_generic_quality_is_data_lim
     assert result.final.action is DecisionAction.BUY
 
 
-def test_engine_emits_buy_only_with_fresh_current_execution_event(monkeypatch):
+def test_30m_micro_event_cannot_be_used_as_primary_execution(monkeypatch):
     _patch_pipeline(monkeypatch)
     event = ExecutionTriggerEvent(
         state=ExecutionTriggerState.CONFIRMED,
@@ -241,20 +242,44 @@ def test_engine_emits_buy_only_with_fresh_current_execution_event(monkeypatch):
         timeframe="30m",
         observed_at=10,
         available_at=10,
-        reason="FRESH_EVENT",
+        reason="MICRO_EVENT",
+    )
+    try:
+        engine_module.assess_horizon_decision(
+            _snapshot(),
+            DecisionHorizon.SHORT_TERM,
+            execution_event=event,
+        )
+    except ValueError as exc:
+        assert "timeframe" in str(exc)
+    else:
+        raise AssertionError("30m micro event must not execute the primary 1h path")
+
+
+def test_counter_lt_st_trade_is_allowed_when_quality_is_strong(monkeypatch):
+    _patch_pipeline(monkeypatch, lt_side=StructuralDirection.SHORT, relation=HorizonRelation.COUNTER_REACTION)
+    event = ExecutionTriggerEvent(
+        state=ExecutionTriggerState.CONFIRMED,
+        side=StructuralDirection.LONG,
+        timeframe="1h",
+        observed_at=10,
+        available_at=10,
+        reason="1H_PATTERN_BREAK_CONFIRMED",
     )
     result = engine_module.assess_horizon_decision(
         _snapshot(),
         DecisionHorizon.SHORT_TERM,
         execution_event=event,
     )
+    assert result.eligibility.state is EligibilityState.ELIGIBLE
+    assert "COUNTER_LT_ST_RISK_ACCEPTED" in result.eligibility.reasons
     assert result.final.action is DecisionAction.BUY
 
 
-def test_v1_execution_timeframe_cannot_be_silently_changed():
+def test_primary_execution_timeframe_cannot_be_silently_changed_back_to_30m():
     try:
-        engine_module.DecisionEngineConfig(execution_timeframe="1h")
+        engine_module.DecisionEngineConfig(execution_timeframe="30m")
     except ValueError as exc:
-        assert "30m" in str(exc)
+        assert "1h" in str(exc)
     else:
-        raise AssertionError("v1 execution timeframe change should fail")
+        raise AssertionError("primary execution timeframe change should fail")
