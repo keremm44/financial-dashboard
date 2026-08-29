@@ -154,6 +154,74 @@ def test_canonical_replay_does_not_reuse_event_from_another_bar():
     assert result.final_state.position is PositionState.FLAT
 
 
+def test_unconsumed_exit_click_can_bridge_exactly_one_decision_bar():
+    t1 = pd.Timestamp("2026-01-05 10:00")
+    t2 = pd.Timestamp("2026-01-05 10:30")
+    t3 = pd.Timestamp("2026-01-05 11:00")
+    result = replay_canonical_trade_lifecycle(
+        (
+            _Snapshot("TEST", t1, 100.0, entry_action=DecisionAction.BUY),
+            _Snapshot("TEST", t2, 101.0, exit_action=DecisionAction.HOLD),
+            _Snapshot("TEST", t3, 99.0, exit_action=DecisionAction.SELL),
+        ),
+        entry_execution_events={t1: _entry_event(t1)},
+        exit_execution_events={t2: _exit_event(t2)},
+    )
+
+    assert [row.action for row in result.rows] == [
+        DecisionAction.BUY,
+        DecisionAction.HOLD,
+        DecisionAction.SELL,
+    ]
+    assert result.rows[1].event_consumed is False
+    assert result.rows[2].event_consumed is True
+    assert result.final_state.position is PositionState.FLAT
+
+
+def test_unconsumed_exit_click_expires_after_one_decision_bar():
+    t1 = pd.Timestamp("2026-01-05 10:00")
+    t2 = pd.Timestamp("2026-01-05 10:30")
+    t3 = pd.Timestamp("2026-01-05 11:00")
+    t4 = pd.Timestamp("2026-01-05 11:30")
+    result = replay_canonical_trade_lifecycle(
+        (
+            _Snapshot("TEST", t1, 100.0, entry_action=DecisionAction.BUY),
+            _Snapshot("TEST", t2, 101.0, exit_action=DecisionAction.HOLD),
+            _Snapshot("TEST", t3, 100.0, exit_action=DecisionAction.HOLD),
+            _Snapshot("TEST", t4, 99.0, exit_action=DecisionAction.SELL),
+        ),
+        entry_execution_events={t1: _entry_event(t1)},
+        exit_execution_events={t2: _exit_event(t2)},
+    )
+
+    assert [row.action for row in result.rows] == [
+        DecisionAction.BUY,
+        DecisionAction.HOLD,
+        DecisionAction.HOLD,
+        DecisionAction.HOLD,
+    ]
+    assert result.final_state.position is PositionState.OPEN
+
+
+def test_exit_event_carry_can_be_disabled_explicitly():
+    t1 = pd.Timestamp("2026-01-05 10:00")
+    t2 = pd.Timestamp("2026-01-05 10:30")
+    t3 = pd.Timestamp("2026-01-05 11:00")
+    result = replay_canonical_trade_lifecycle(
+        (
+            _Snapshot("TEST", t1, 100.0, entry_action=DecisionAction.BUY),
+            _Snapshot("TEST", t2, 101.0, exit_action=DecisionAction.HOLD),
+            _Snapshot("TEST", t3, 99.0, exit_action=DecisionAction.SELL),
+        ),
+        entry_execution_events={t1: _entry_event(t1)},
+        exit_execution_events={t2: _exit_event(t2)},
+        exit_event_carry_decision_bars=0,
+    )
+
+    assert result.rows[2].action is DecisionAction.HOLD
+    assert result.final_state.position is PositionState.OPEN
+
+
 def test_canonical_replay_rejects_legacy_open_without_entry_metadata():
     legacy = TradeLifecycleState(
         position=PositionState.OPEN,
