@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import TypeVar
 
-from financial_dashboard.context.envelope import ContextDataQuality, FactRef
+from financial_dashboard.context.envelope import (
+    ContextDataQuality,
+    FactRef,
+    normalize_context_data_quality,
+)
 from financial_dashboard.context.volatility_environment_projection import (
     ExpansionCharacter,
     VolatilityEnvironmentProjection,
@@ -38,6 +43,27 @@ class EnvironmentAssessment:
     source_refs: tuple[FactRef, ...]
 
 
+_E = TypeVar("_E", bound=StrEnum)
+
+
+def _legacy_enum(enum_type: type[_E], value: object, fallback: _E) -> _E:
+    """Hydrate enum-like values from older frozen DecisionInput pickles.
+
+    Old caches can contain the string representation produced by projection
+    serialization while current in-memory projections contain the StrEnum member.
+    Decision consumers must accept both without requiring expensive domain replay.
+    Unknown tokens fail closed to the supplied UNAVAILABLE member.
+    """
+
+    if isinstance(value, enum_type):
+        return value
+    token = getattr(value, "value", value)
+    try:
+        return enum_type(str(token))
+    except (TypeError, ValueError):
+        return fallback
+
+
 def _direction_value(side: StructuralDirection) -> int:
     if side is StructuralDirection.LONG:
         return 1
@@ -57,6 +83,8 @@ def assess_environment(
     V1 has only two explicit risk policies here: SHOCK is marked for the later hard
     gate layer and UNSTABLE_CONFLICT is an elevated soft risk. Other native
     characters remain visible but are not assigned new severity heuristics yet.
+    Legacy frozen projections are normalized at this decision boundary so old
+    domain caches remain reusable after enum-backed projection upgrades.
     """
 
     normalized = timeframe.strip().lower()
@@ -83,11 +111,21 @@ def assess_environment(
             (),
         )
 
-    quality = row.ref.data_quality
-    if quality is not ContextDataQuality.VALID or row.range_regime is VolatilityRangeRegime.UNAVAILABLE:
+    quality = normalize_context_data_quality(row.ref.data_quality)
+    regime = _legacy_enum(
+        VolatilityRangeRegime,
+        row.range_regime,
+        VolatilityRangeRegime.UNAVAILABLE,
+    )
+    character = _legacy_enum(
+        ExpansionCharacter,
+        row.expansion_character,
+        ExpansionCharacter.UNAVAILABLE,
+    )
+    if quality is not ContextDataQuality.VALID or regime is VolatilityRangeRegime.UNAVAILABLE:
         return EnvironmentAssessment(
-            row.range_regime,
-            row.expansion_character,
+            regime,
+            character,
             EnvironmentAlignment.UNKNOWN,
             EnvironmentRisk.UNKNOWN,
             quality,
@@ -103,17 +141,17 @@ def assess_environment(
     else:
         alignment = EnvironmentAlignment.OPPOSING
 
-    if row.range_regime is VolatilityRangeRegime.SHOCK:
+    if regime is VolatilityRangeRegime.SHOCK:
         risk = EnvironmentRisk.HARD_BLOCK
         reasons = ("VOLATILITY_SHOCK",)
-    elif row.expansion_character is ExpansionCharacter.UNSTABLE_CONFLICT:
+    elif character is ExpansionCharacter.UNSTABLE_CONFLICT:
         risk = EnvironmentRisk.ELEVATED
         reasons = ("VOLATILITY_UNSTABLE_CONFLICT",)
     else:
         risk = EnvironmentRisk.NORMAL
         reasons = (
-            f"VOLATILITY_REGIME:{row.range_regime.value}",
-            f"VOLATILITY_CHARACTER:{row.expansion_character.value}",
+            f"VOLATILITY_REGIME:{regime.value}",
+            f"VOLATILITY_CHARACTER:{character.value}",
         )
 
     if alignment is EnvironmentAlignment.OPPOSING:
@@ -122,8 +160,8 @@ def assess_environment(
         reasons = (*reasons, "VOLATILITY_EXPANSION_ALIGNS_STRUCTURE")
 
     return EnvironmentAssessment(
-        row.range_regime,
-        row.expansion_character,
+        regime,
+        character,
         alignment,
         risk,
         quality,
