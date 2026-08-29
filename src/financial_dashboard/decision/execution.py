@@ -16,14 +16,28 @@ class ExecutionTriggerState(StrEnum):
     UNAVAILABLE = "UNAVAILABLE"
 
 
+class ExecutionEventKind(StrEnum):
+    """Semantic type of a fresh 30m event.
+
+    Structure BOS is intentionally diagnostic. It may strengthen a thesis but it is
+    not a trade-scale BUY/SELL click. Pattern/reaction confirmations are executable.
+    ``LEGACY`` preserves compatibility for older replay/test producers; its reason is
+    mapped deterministically by :func:`execution_event_kind`.
+    """
+
+    PATTERN_CONFIRMATION = "PATTERN_CONFIRMATION"
+    REACTION_CONFIRMATION = "REACTION_CONFIRMATION"
+    STRUCTURE_BOS = "STRUCTURE_BOS"
+    AUDIT_PROXY = "AUDIT_PROXY"
+    LEGACY = "LEGACY"
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionTriggerEvent:
-    """One fresh, closed-bar execution event supplied by an event detector.
+    """One causal, closed-bar execution event supplied by an event detector.
 
-    The decision composer intentionally does not infer a fresh event from a sticky
-    snapshot state. That would allow the same historical confirmation to emit BUY or
-    SELL repeatedly on later bars. A concrete detector/replay may create this object
-    only when a new event is observed at the current decision timestamp.
+    ``observed_at`` is the native event time. It does not have to equal the slower
+    decision-bar timestamp; an event queue decides which decision window owns it.
     """
 
     state: ExecutionTriggerState
@@ -33,6 +47,7 @@ class ExecutionTriggerEvent:
     available_at: Any
     reason: str
     source_refs: tuple[FactRef, ...] = ()
+    kind: ExecutionEventKind = ExecutionEventKind.LEGACY
 
     def __post_init__(self) -> None:
         if self.state not in {ExecutionTriggerState.CONFIRMED, ExecutionTriggerState.FAILED}:
@@ -45,6 +60,39 @@ class ExecutionTriggerEvent:
             raise ValueError("execution trigger timestamps must be known")
         if not self.reason.strip():
             raise ValueError("execution trigger reason must be non-empty")
+
+
+def execution_event_kind(event: ExecutionTriggerEvent) -> ExecutionEventKind:
+    if event.kind is not ExecutionEventKind.LEGACY:
+        return event.kind
+    reason = str(event.reason).strip().upper()
+    if "STRUCTURE_BOS" in reason:
+        return ExecutionEventKind.STRUCTURE_BOS
+    if "AUDIT_PROXY" in reason:
+        return ExecutionEventKind.AUDIT_PROXY
+    if "REACTION" in reason:
+        return ExecutionEventKind.REACTION_CONFIRMATION
+    return ExecutionEventKind.PATTERN_CONFIRMATION
+
+
+def is_entry_execution_click(event: ExecutionTriggerEvent | None) -> bool:
+    if event is None:
+        return False
+    return execution_event_kind(event) in {
+        ExecutionEventKind.PATTERN_CONFIRMATION,
+        ExecutionEventKind.REACTION_CONFIRMATION,
+        ExecutionEventKind.AUDIT_PROXY,
+    }
+
+
+def is_exit_execution_click(event: ExecutionTriggerEvent | None) -> bool:
+    if event is None:
+        return False
+    return execution_event_kind(event) in {
+        ExecutionEventKind.PATTERN_CONFIRMATION,
+        ExecutionEventKind.REACTION_CONFIRMATION,
+        ExecutionEventKind.AUDIT_PROXY,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,13 +112,12 @@ def assess_execution_trigger(
     data_quality: ContextDataQuality,
     event: ExecutionTriggerEvent | None = None,
 ) -> ExecutionTriggerAssessment:
-    """Validate one fresh execution event without inventing a trigger from state.
+    """Validate one causal event without synthesising a click from sticky state.
 
-    A usable trigger channel with no fresh event is ``ABSENT`` (READY, not BUY).
-    ``DATA_LIMITED`` does not erase that channel: generic OHLCV warnings such as
-    an open source tail or volume-only notes already have the same Decision-layer
-    treatment for Structure/Pattern. Truly missing/incomplete/unavailable 30m
-    data stays ``UNAVAILABLE``. Stale/future/mismatched events fail closed.
+    Execution timing is stricter than price-only Structure/Pattern interpretation:
+    only a fully VALID 30m channel can execute. DATA_LIMITED therefore fails closed.
+    Freshness across a 30m->1h cadence belongs to ``ExecutionEventQueue``; here we
+    only enforce causal availability and reject future events.
     """
 
     normalized = timeframe.strip().lower()
@@ -84,11 +131,7 @@ def assess_execution_trigger(
             ("EXECUTION_SIDE_UNRESOLVED",),
             (),
         )
-    channel_usable = data_quality in {
-        ContextDataQuality.VALID,
-        ContextDataQuality.DATA_LIMITED,
-    }
-    if not channel_usable:
+    if data_quality is not ContextDataQuality.VALID:
         return ExecutionTriggerAssessment(
             ExecutionTriggerState.UNAVAILABLE,
             side,
@@ -112,8 +155,8 @@ def assess_execution_trigger(
     try:
         if event.available_at > as_of:
             raise ValueError("future-unavailable execution trigger cannot be consumed")
-        if event.observed_at != as_of:
-            raise ValueError("execution trigger event must be fresh at decision as_of")
+        if event.observed_at > as_of:
+            raise ValueError("future-observed execution trigger cannot be consumed")
     except TypeError as exc:
         raise TypeError("execution trigger timestamps must be comparable") from exc
 
@@ -133,8 +176,12 @@ def assess_execution_trigger(
 
 
 __all__ = [
+    "ExecutionEventKind",
     "ExecutionTriggerAssessment",
     "ExecutionTriggerEvent",
     "ExecutionTriggerState",
     "assess_execution_trigger",
+    "execution_event_kind",
+    "is_entry_execution_click",
+    "is_exit_execution_click",
 ]
