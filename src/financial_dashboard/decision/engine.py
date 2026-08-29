@@ -13,17 +13,17 @@ from financial_dashboard.context.projections import StructuralFactsProjection
 from financial_dashboard.decision_input import DecisionInputSnapshot
 
 from .composer import ActionPolicy, FinalDecision, compose_final_decision
-from .conflict import ConflictAssessment, assess_conflict
+from .conflict import ConflictAssessment, ConflictState, assess_conflict
 from .coverage import CoverageAssessment, CoverageFamily, assess_coverage
 from .durability import DurabilityAssessment, assess_durability
-from .eligibility import EligibilityAssessment, assess_eligibility
+from .eligibility import EligibilityAssessment, EligibilityState, assess_eligibility
 from .environment import EnvironmentAssessment, assess_environment
 from .execution import (
     ExecutionTriggerAssessment,
     ExecutionTriggerEvent,
     assess_execution_trigger,
 )
-from .opportunity import OpportunityAssessment, OpportunityCalibration, assess_opportunity
+from .opportunity import OpportunityAssessment, OpportunityCalibration, OpportunityState, assess_opportunity
 from .participation import ParticipationAssessment, assess_participation
 from .reaction import (
     ReactionAssessment,
@@ -35,9 +35,11 @@ from .structural import (
     DecisionHorizon,
     HorizonStructuralSnapshot,
     StructuralAssessment,
+    StructuralDirection,
+    ThesisState,
     build_horizon_structural_snapshot,
 )
-from .timing import TimingAssessment, assess_timing
+from .timing import TimingAssessment, TimingState, assess_timing
 
 
 _LT_REACTION_TIMEFRAMES = ("1d", "4h", "2h", "1h")
@@ -46,17 +48,17 @@ _ST_REACTION_TIMEFRAMES = ("4h", "2h", "1h", "30m")
 
 @dataclass(frozen=True, slots=True)
 class DecisionEngineConfig:
-    """V1 policy/calibration inputs; no hidden market thresholds."""
+    """Decision policy/calibration inputs; primary execution is closed 1h."""
 
     opportunity_calibration: OpportunityCalibration | None = None
     reaction_relevance: ReactionRelevancePolicy | None = ReactionRelevancePolicy()
     participation_conflict_max_age_bars: int | None = 24
     action_policy: ActionPolicy = field(default_factory=ActionPolicy)
-    execution_timeframe: str = "30m"
+    execution_timeframe: str = "1h"
 
     def __post_init__(self) -> None:
-        if self.execution_timeframe.strip().lower() != "30m":
-            raise ValueError("v1 execution timeframe is architecturally fixed to 30m")
+        if self.execution_timeframe.strip().lower() != "1h":
+            raise ValueError("primary decision execution timeframe is architecturally fixed to 1h")
         if (
             self.participation_conflict_max_age_bars is not None
             and self.participation_conflict_max_age_bars < 0
@@ -87,39 +89,25 @@ class HorizonDecisionAssessment:
 
 def _timeframe_policy(horizon: DecisionHorizon) -> tuple[tuple[str, ...], str, str, str]:
     if horizon is DecisionHorizon.LONG_TERM:
-        # LT Structure remains 1D-owned. 4H describes supporting participation/regime,
-        # while 1H is the immediate LT setup-timing context. 30m remains execution.
+        # LT remains 1D-owned; 1H is its immediate setup/execution context.
         return _LT_REACTION_TIMEFRAMES, "4h", "4h", "1h"
-    # ST Structure remains 1H-owned. 30m is setup timing / trigger context.
-    return _ST_REACTION_TIMEFRAMES, "1h", "1h", "30m"
+    # ST is a 3-9 trading-day thesis. 1H owns setup maturity and primary execution;
+    # 30m stays inside the broad reaction sphere only as micro context.
+    return _ST_REACTION_TIMEFRAMES, "1h", "1h", "1h"
 
 
 def _permission_policy(horizon: DecisionHorizon) -> tuple[str, tuple[str, ...]]:
-    """Return the structural anchor and subordinate context TFs for permission.
-
-    Permission is derived cheaply from already-frozen read models. It must follow the
-    horizon's actual structural authority rather than reusing the workspace's generic
-    4H context anchor for both LT and ST decisions.
-    """
+    """Return structural anchor and context TFs without giving 30m veto authority."""
 
     if horizon is DecisionHorizon.LONG_TERM:
         return "1d", ("4h", "2h", "1h")
-    return "1h", ("30m",)
+    # 4H is context for an independently owned 1H ST thesis. 30m is intentionally
+    # absent here so a noisy micro move cannot flip or suppress ST permission.
+    return "1h", ("4h",)
 
 
 def _decision_structure_projection(structural):
-    """Normalize price-only Structure quality for Decision without mutating source diagnostics.
-
-    Generic OHLCV quality marks a batch DATA_LIMITED for warnings such as zero volume
-    or an open/incomplete source tail. Market Structure is price-only and its replay
-    already excludes unsafe candles, so those generic limitations must not erase 1D/1H
-    structural authority inside the Decision layer. Other domain projections retain
-    their native quality unchanged.
-
-    Some unit tests intentionally pass opaque pipeline doubles while monkeypatching the
-    downstream structural builder. Preserve those doubles unchanged; production calls
-    always provide ``StructuralFactsProjection``.
-    """
+    """Normalize price-only Structure quality for Decision without mutating source diagnostics."""
 
     if not isinstance(structural, StructuralFactsProjection):
         return structural
@@ -186,17 +174,7 @@ def _execution_channel_quality(
     snapshot: DecisionInputSnapshot,
     timeframe: str,
 ) -> ContextDataQuality:
-    """Return quality for the native price-pattern execution channel.
-
-    The legacy snapshot-wide timeframe quality is Structure-owned and may be
-    DATA_LIMITED because of generic OHLCV diagnostics that do not invalidate the
-    price-only 30m Pattern state. Execution events are currently detected from the
-    native 30m pattern transition, so its own ref is the authoritative channel.
-
-    DATA_LIMITED is normalized to VALID only when a concrete native pattern state is
-    present. Missing/unknown pattern channels still fail closed through the generic
-    timeframe quality fallback.
-    """
+    """Return quality for the native price-pattern execution channel."""
 
     normalized = timeframe.strip().lower()
     projection = getattr(snapshot, "pattern_behavior", None)
@@ -211,7 +189,9 @@ def _execution_channel_quality(
                 return quality
             if quality is ContextDataQuality.DATA_LIMITED:
                 native_state = str(getattr(row, "native_state", "") or "").strip()
-                phase = str(getattr(getattr(row, "phase", None), "value", getattr(row, "phase", "")) or "").strip().upper()
+                phase = str(
+                    getattr(getattr(row, "phase", None), "value", getattr(row, "phase", "")) or ""
+                ).strip().upper()
                 if native_state or (phase and phase != "UNAVAILABLE"):
                     return ContextDataQuality.VALID
             return quality
@@ -303,6 +283,56 @@ def _additional_lineage(
     return tuple(sorted(values))
 
 
+def _apply_counter_lt_st_risk(
+    horizon: DecisionHorizon,
+    structural_snapshot: HorizonStructuralSnapshot,
+    eligibility: EligibilityAssessment,
+    *,
+    timing: TimingAssessment,
+    opportunity: OpportunityAssessment,
+    conflict: ConflictAssessment,
+) -> EligibilityAssessment:
+    """Allow counter-LT ST trades, but require cleaner economics and conflict state."""
+
+    if horizon is not DecisionHorizon.SHORT_TERM:
+        return eligibility
+    lt = structural_snapshot.long_term
+    st = structural_snapshot.short_term
+    counter_lt = (
+        st.direction is StructuralDirection.LONG
+        and lt.direction is StructuralDirection.SHORT
+        and lt.thesis_state is ThesisState.INTACT
+        and lt.data_quality in {ContextDataQuality.VALID, ContextDataQuality.DATA_LIMITED}
+    )
+    if not counter_lt:
+        return eligibility
+    if eligibility.state is EligibilityState.BLOCKED:
+        return eligibility
+
+    waiting = list(eligibility.waiting_for)
+    reasons = list(eligibility.reasons)
+    if timing.state is not TimingState.READY:
+        waiting.append("COUNTER_LT_ST_REQUIRES_CONFIRMED_1H_SETUP")
+    if opportunity.state not in {OpportunityState.MODERATE, OpportunityState.AMPLE}:
+        waiting.append("COUNTER_LT_ST_REQUIRES_CLEAR_DIRECTIONAL_ROOM")
+    if conflict.state not in {ConflictState.NONE, ConflictState.LOW}:
+        waiting.append("COUNTER_LT_ST_REQUIRES_LOW_CONFLICT")
+
+    if waiting:
+        return EligibilityAssessment(
+            EligibilityState.WAITING,
+            tuple(dict.fromkeys((*reasons, "COUNTER_LT_ST_RISK_REQUIRES_STRONGER_EVIDENCE"))),
+            (),
+            tuple(dict.fromkeys(waiting)),
+        )
+    return EligibilityAssessment(
+        EligibilityState.ELIGIBLE,
+        tuple(dict.fromkeys((*reasons, "COUNTER_LT_ST_RISK_ACCEPTED"))),
+        (),
+        (),
+    )
+
+
 def assess_horizon_decision(
     snapshot: DecisionInputSnapshot,
     horizon: DecisionHorizon,
@@ -310,12 +340,10 @@ def assess_horizon_decision(
     config: DecisionEngineConfig | None = None,
     execution_event: ExecutionTriggerEvent | None = None,
 ) -> HorizonDecisionAssessment:
-    """Build one fully typed LT or ST v1 decision assessment.
+    """Build one fully typed LT or ST decision assessment.
 
-    The engine does not search history or infer fresh execution edges from sticky
-    snapshots. A BUY/SELL can occur only when ``execution_event`` is supplied as a
-    causal event for the current ``as_of``. Without it, an otherwise eligible path
-    stops at READY.
+    1H owns primary setup/execution. 30m may still be observed by diagnostics and
+    micro-timing helpers, but it cannot create a primary BUY/SELL in this path.
     """
 
     cfg = config or DecisionEngineConfig()
@@ -330,9 +358,6 @@ def assess_horizon_decision(
     permission = _horizon_permission(snapshot, horizon)
 
     durability = assess_durability(snapshot.stabil_support)
-    # One shared price-relevant reaction sphere feeds both the broad reaction
-    # assessment and the setup-timing assessment, so the same zone history is
-    # scanned once per snapshot instead of twice.
     reaction_ob = snapshot.order_block_behavior
     reaction_fvg = snapshot.fvg_engulfing_lifecycle
     if cfg.reaction_relevance is not None:
@@ -405,6 +430,14 @@ def assess_horizon_decision(
         environment=environment,
         coverage=coverage,
         reaction=reaction,
+    )
+    eligibility = _apply_counter_lt_st_risk(
+        horizon,
+        structural_snapshot,
+        eligibility,
+        timing=timing,
+        opportunity=opportunity,
+        conflict=conflict,
     )
     execution = assess_execution_trigger(
         structural.direction,
