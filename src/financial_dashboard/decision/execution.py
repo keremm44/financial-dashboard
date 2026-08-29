@@ -4,7 +4,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from financial_dashboard.context.envelope import ContextDataQuality, FactRef
+from financial_dashboard.context.envelope import (
+    ContextDataQuality,
+    FactRef,
+    normalize_context_data_quality,
+)
 
 from .structural import StructuralDirection
 
@@ -17,13 +21,7 @@ class ExecutionTriggerState(StrEnum):
 
 
 class ExecutionEventKind(StrEnum):
-    """Semantic type of a fresh 30m event.
-
-    Structure BOS is intentionally diagnostic. It may strengthen a thesis but it is
-    not a trade-scale BUY/SELL click. Pattern/reaction confirmations are executable.
-    ``LEGACY`` preserves compatibility for older replay/test producers; its reason is
-    mapped deterministically by :func:`execution_event_kind`.
-    """
+    """Semantic type of a fresh 30m event."""
 
     PATTERN_CONFIRMATION = "PATTERN_CONFIRMATION"
     REACTION_CONFIRMATION = "REACTION_CONFIRMATION"
@@ -34,12 +32,6 @@ class ExecutionEventKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ExecutionTriggerEvent:
-    """One causal, closed-bar execution event supplied by an event detector.
-
-    ``observed_at`` is the native event time. It does not have to equal the slower
-    decision-bar timestamp; an event queue decides which decision window owns it.
-    """
-
     state: ExecutionTriggerState
     side: StructuralDirection
     timeframe: str
@@ -63,8 +55,15 @@ class ExecutionTriggerEvent:
 
 
 def execution_event_kind(event: ExecutionTriggerEvent) -> ExecutionEventKind:
-    if event.kind is not ExecutionEventKind.LEGACY:
+    if isinstance(event.kind, ExecutionEventKind) and event.kind is not ExecutionEventKind.LEGACY:
         return event.kind
+    if not isinstance(event.kind, ExecutionEventKind):
+        try:
+            kind = ExecutionEventKind(str(getattr(event.kind, "value", event.kind)))
+        except (TypeError, ValueError):
+            kind = ExecutionEventKind.LEGACY
+        if kind is not ExecutionEventKind.LEGACY:
+            return kind
     reason = str(event.reason).strip().upper()
     if "STRUCTURE_BOS" in reason:
         return ExecutionEventKind.STRUCTURE_BOS
@@ -112,15 +111,10 @@ def assess_execution_trigger(
     data_quality: ContextDataQuality,
     event: ExecutionTriggerEvent | None = None,
 ) -> ExecutionTriggerAssessment:
-    """Validate one causal event without synthesising a click from sticky state.
-
-    Execution timing is stricter than price-only Structure/Pattern interpretation:
-    only a fully VALID 30m channel can execute. DATA_LIMITED therefore fails closed.
-    Freshness across a 30m->1h cadence belongs to ``ExecutionEventQueue``; here we
-    only enforce causal availability and reject future events.
-    """
+    """Validate one causal event without synthesising a click from sticky state."""
 
     normalized = timeframe.strip().lower()
+    quality = normalize_context_data_quality(data_quality)
     if as_of is None:
         raise ValueError("execution assessment as_of must be known")
     if side is StructuralDirection.UNRESOLVED:
@@ -131,12 +125,12 @@ def assess_execution_trigger(
             ("EXECUTION_SIDE_UNRESOLVED",),
             (),
         )
-    if data_quality is not ContextDataQuality.VALID:
+    if quality is not ContextDataQuality.VALID:
         return ExecutionTriggerAssessment(
             ExecutionTriggerState.UNAVAILABLE,
             side,
             normalized,
-            (f"EXECUTION_DATA_{data_quality.value}:{normalized}",),
+            (f"EXECUTION_DATA_{quality.value}:{normalized}",),
             (),
         )
     if event is None:
