@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, TypeVar
 
 
 class ContextDomain(StrEnum):
@@ -68,11 +68,7 @@ def _quality_tokens(value: object) -> tuple[str, ...]:
 
 
 def normalize_context_data_quality(value: object) -> ContextDataQuality:
-    """Normalize a native quality token without importing native-domain modules.
-
-    Unknown values fail closed instead of being silently interpreted as neutral or
-    valid. Domain-specific projections may extend the mapping explicitly later.
-    """
+    """Normalize native or legacy-cached quality tokens to the canonical enum."""
 
     if isinstance(value, ContextDataQuality):
         return value
@@ -92,13 +88,23 @@ def normalize_context_data_quality(value: object) -> ContextDataQuality:
     raise ValueError(f"unsupported native data-quality value: {value!r}")
 
 
+_E = TypeVar("_E", bound=StrEnum)
+
+
+def _coerce_cached_enum(enum_type: type[_E], value: object) -> _E:
+    if isinstance(value, enum_type):
+        return value
+    token = getattr(value, "value", value)
+    return enum_type(str(token))
+
+
 @dataclass(frozen=True, slots=True)
 class FactRef:
     """Minimal immutable reference to one native or projected domain fact.
 
-    ``native_id`` identifies the fact itself. ``lineage_id`` identifies a known
-    shared causal origin and is deliberately optional: an unknown lineage must not
-    be replaced with a fabricated identity.
+    Frozen DecisionInput timelines created by older code may deserialize StrEnum
+    fields as their plain string values. Attribute access hydrates those legacy
+    representations without mutating the persisted cache or replaying any domain.
     """
 
     domain: ContextDomain
@@ -115,6 +121,18 @@ class FactRef:
     source_family: SourceFamily
     data_quality: ContextDataQuality
 
+    def __getattribute__(self, name: str):
+        value = object.__getattribute__(self, name)
+        if name == "data_quality":
+            return normalize_context_data_quality(value)
+        if name == "domain":
+            return _coerce_cached_enum(ContextDomain, value)
+        if name == "causal_family":
+            return _coerce_cached_enum(CausalFamily, value)
+        if name == "source_family":
+            return _coerce_cached_enum(SourceFamily, value)
+        return value
+
     def __post_init__(self) -> None:
         for field_name in ("fact_type", "symbol", "timeframe", "native_id", "native_state"):
             value = getattr(self, field_name)
@@ -126,6 +144,11 @@ class FactRef:
             raise ValueError("available_at must be known")
         if self.lineage_id is not None and not self.lineage_id.strip():
             raise ValueError("lineage_id must be non-empty when provided")
+        # Validate enum-backed fields for newly created refs as well as legacy ones.
+        _ = self.domain
+        _ = self.causal_family
+        _ = self.source_family
+        _ = self.data_quality
 
     @property
     def is_confirmed(self) -> bool:
