@@ -71,6 +71,15 @@ def _snapshot(side=StructuralDirection.LONG):
     )
 
 
+def _pattern_projection(*, quality, native_state="ST_BREAK_CONFIRMED", phase="BREAK_CONFIRMED"):
+    row = SimpleNamespace(
+        ref=SimpleNamespace(data_quality=quality),
+        native_state=native_state,
+        phase=phase,
+    )
+    return SimpleNamespace(for_timeframe=lambda timeframe: row)
+
+
 def _patch_pipeline(monkeypatch, *, side=StructuralDirection.LONG, calls=None):
     lt = _structural(DecisionHorizon.LONG_TERM, side)
     st = _structural(DecisionHorizon.SHORT_TERM, side)
@@ -178,7 +187,7 @@ def test_engine_stops_at_ready_without_fresh_execution_event(monkeypatch):
     assert result.execution.state is ExecutionTriggerState.ABSENT
 
 
-def test_engine_waits_when_30m_execution_channel_is_data_limited(monkeypatch):
+def test_engine_waits_when_30m_execution_channel_is_data_limited_and_pattern_channel_missing(monkeypatch):
     _patch_pipeline(monkeypatch)
     snapshot = _snapshot()
     snapshot.quality_for_timeframe = lambda timeframe: ContextDataQuality.DATA_LIMITED
@@ -186,6 +195,42 @@ def test_engine_waits_when_30m_execution_channel_is_data_limited(monkeypatch):
     assert result.execution.state is ExecutionTriggerState.UNAVAILABLE
     assert result.final.action is DecisionAction.WAIT
     assert "30m:EXECUTION_TRIGGER_DATA" in result.final.waiting_for
+
+
+def test_native_30m_pattern_channel_survives_generic_data_limited_quality(monkeypatch):
+    _patch_pipeline(monkeypatch)
+    snapshot = _snapshot()
+    snapshot.quality_for_timeframe = lambda timeframe: ContextDataQuality.DATA_LIMITED
+    snapshot.pattern_behavior = _pattern_projection(quality=ContextDataQuality.DATA_LIMITED)
+
+    result = engine_module.assess_horizon_decision(snapshot, DecisionHorizon.SHORT_TERM)
+
+    assert result.execution.state is ExecutionTriggerState.ABSENT
+    assert result.final.action is DecisionAction.READY
+
+
+def test_native_30m_pattern_event_executes_even_when_generic_quality_is_data_limited(monkeypatch):
+    _patch_pipeline(monkeypatch)
+    snapshot = _snapshot()
+    snapshot.quality_for_timeframe = lambda timeframe: ContextDataQuality.DATA_LIMITED
+    snapshot.pattern_behavior = _pattern_projection(quality=ContextDataQuality.DATA_LIMITED)
+    event = ExecutionTriggerEvent(
+        state=ExecutionTriggerState.CONFIRMED,
+        side=StructuralDirection.LONG,
+        timeframe="30m",
+        observed_at=10,
+        available_at=10,
+        reason="FRESH_EVENT",
+    )
+
+    result = engine_module.assess_horizon_decision(
+        snapshot,
+        DecisionHorizon.SHORT_TERM,
+        execution_event=event,
+    )
+
+    assert result.execution.state is ExecutionTriggerState.CONFIRMED
+    assert result.final.action is DecisionAction.BUY
 
 
 def test_engine_emits_buy_only_with_fresh_current_execution_event(monkeypatch):
