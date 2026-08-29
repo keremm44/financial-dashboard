@@ -56,20 +56,18 @@ def _validate_horizons(long_term: EntryScenarioAssessment, short_term: EntryScen
         raise ValueError("short_term scenario must have SHORT_TERM horizon")
 
 
-def _lt_unknown_allows_st(long_term: EntryScenarioAssessment, short_term: EntryScenarioAssessment) -> bool:
-    reason = long_term.unknown_reason
-    if reason is ScenarioUnknownReason.OPPORTUNITY_UNOBSERVED:
-        return True
-    if reason is ScenarioUnknownReason.WARMUP:
-        return short_term.kind is ScenarioKind.SHORT_TERM_STANDALONE
-    return False
-
-
 def arbitrate_entry_scenarios(
     long_term: EntryScenarioAssessment,
     short_term: EntryScenarioAssessment,
 ) -> EntryScenarioArbitration:
-    """Apply semantic horizon ownership without using UNKNOWN as blanket permission."""
+    """Resolve horizon ownership without making LT a blanket veto over qualified ST.
+
+    A QUALIFIED short-term long scenario owns enough 1H/30m evidence to stand on its
+    own even when long-term context is currently UNKNOWN. LT context still owns its
+    own trade when it is present and qualified, and a merely DEVELOPING ST scenario
+    never bypasses unresolved LT authority. This changes horizon ownership only; no
+    eligibility, targeting, conflict, timing, or execution gate is softened here.
+    """
 
     _validate_horizons(long_term, short_term)
     st_qualified = (
@@ -112,14 +110,14 @@ def arbitrate_entry_scenarios(
 
     if long_term.presence is ScenarioPresence.UNKNOWN:
         reason = long_term.unknown_reason
-        if st_qualified and _lt_unknown_allows_st(long_term, short_term):
+        if st_qualified:
             return EntryScenarioArbitration(
                 ArbiterState.SELECTED, ArbiterSelection.SHORT_TERM,
                 DecisionHorizon.SHORT_TERM, short_term, long_term, short_term,
                 (),
                 (
-                    f"LONG_TERM_NONAUTHORITATIVE:{reason.value}",
-                    "SHORT_TERM_FALLBACK_WHILE_LONG_TERM_NONAUTHORITATIVE",
+                    f"LONG_TERM_CONTEXT_UNRESOLVED:{reason.value}",
+                    "SHORT_TERM_QUALIFIED_INDEPENDENT_OF_LONG_TERM",
                 ),
                 (),
             )
