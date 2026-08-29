@@ -104,13 +104,20 @@ def replay_canonical_trade_lifecycle(
     exit_execution_events: Mapping[Any, ExecutionTriggerEvent] | None = None,
     initial_state: TradeLifecycleState | None = None,
     readiness_execution_proxy: bool = False,
+    exit_event_carry_decision_bars: int = 1,
 ) -> CanonicalLifecycleReplayResult:
     """Replay the canonical long-only ownership path over frozen snapshots.
 
     FLAT bars evaluate only the Turn 6 entry path and can open only through the Turn 7
-    metadata transition. OPEN bars evaluate only the Turn 8 exit path. Entry and exit
-    execution maps are intentionally separate and looked up only at the current bar;
-    no event is cached or carried into a later snapshot.
+    metadata transition. OPEN bars evaluate only the Turn 8 exit path.
+
+    Entry events remain same-window only. Exit events have one narrowly bounded
+    synchronization exception: a confirmed 30m SHORT click that was causally available
+    while the position was OPEN but could not be consumed because the structural exit
+    path was not EXIT_READY may be offered to the next decision snapshot only. This
+    preserves the 1H structural exit gate while preventing a :30 click from disappearing
+    immediately before that gate becomes ready. The event is never carried across a
+    second decision bar, a closed position, or into a different trade.
 
     ``readiness_execution_proxy`` is hindsight-audit infrastructure only. When no raw
     execution event exists, it substitutes a same-bar confirmed 30m event exactly at
@@ -118,6 +125,9 @@ def replay_canonical_trade_lifecycle(
     structure, eligibility, target, or exit-stage semantics and is explicitly marked
     on the replay row so audit output cannot be confused with production execution.
     """
+
+    if exit_event_carry_decision_bars < 0:
+        raise ValueError("exit_event_carry_decision_bars must be >= 0")
 
     state = initial_state or TradeLifecycleState()
     _validate_initial_state(state)
@@ -127,6 +137,9 @@ def replay_canonical_trade_lifecycle(
     rows: list[CanonicalLifecycleReplayRow] = []
     previous_as_of: Any | None = None
     stream_symbol: str | None = None
+    pending_exit_event: ExecutionTriggerEvent | None = None
+    pending_exit_age = 0
+    pending_exit_trade_id: str | None = None
 
     for snapshot in snapshots:
         if snapshot.as_of is None:
@@ -151,6 +164,9 @@ def replay_canonical_trade_lifecycle(
         proxy_used = False
 
         if state.position is PositionState.FLAT:
+            pending_exit_event = None
+            pending_exit_age = 0
+            pending_exit_trade_id = None
             raw_entry_event = entry_events.get(snapshot.as_of)
             entry = snapshot.entry_decision(
                 config=config,
@@ -178,7 +194,23 @@ def replay_canonical_trade_lifecycle(
                 execution_event=raw_entry_event,
             )
         else:
-            raw_exit_event = exit_events.get(snapshot.as_of)
+            current_trade_id = state.trade_id
+            if pending_exit_trade_id is not None and pending_exit_trade_id != current_trade_id:
+                pending_exit_event = None
+                pending_exit_age = 0
+                pending_exit_trade_id = None
+
+            current_exit_event = exit_events.get(snapshot.as_of)
+            carried_exit_event = None
+            if (
+                current_exit_event is None
+                and pending_exit_event is not None
+                and pending_exit_age <= exit_event_carry_decision_bars
+                and pending_exit_trade_id == current_trade_id
+            ):
+                carried_exit_event = pending_exit_event
+            raw_exit_event = current_exit_event or carried_exit_event
+
             exit_decision = snapshot.position_exit_decision(
                 state,
                 execution_event=raw_exit_event,
@@ -200,6 +232,25 @@ def replay_canonical_trade_lifecycle(
                 )
                 proxy_used = exit_decision.action is DecisionAction.SELL
             transition = transition_position_exit_lifecycle(state, exit_decision)
+
+            if exit_decision.execution_event_consumed or transition.current.position is PositionState.FLAT:
+                pending_exit_event = None
+                pending_exit_age = 0
+                pending_exit_trade_id = None
+            elif current_exit_event is not None and exit_event_carry_decision_bars > 0:
+                pending_exit_event = current_exit_event
+                pending_exit_age = 1
+                pending_exit_trade_id = current_trade_id
+            elif carried_exit_event is not None:
+                pending_exit_age += 1
+                if pending_exit_age > exit_event_carry_decision_bars:
+                    pending_exit_event = None
+                    pending_exit_age = 0
+                    pending_exit_trade_id = None
+            else:
+                pending_exit_event = None
+                pending_exit_age = 0
+                pending_exit_trade_id = None
 
         state = transition.current
         rows.append(
