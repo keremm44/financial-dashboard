@@ -1,14 +1,17 @@
 """Tolerance package T1/T2/T4 — decision-flexibility contract tests.
 
 Market rationale (docs/karar_esnekligi_analiz_ve_plan.md):
-- T1: a blocked/developing/unresolved LT scenario must not veto a QUALIFIED ST
-  scenario forever; trend pullbacks are exactly where the executable edge is ST.
+- T1: a blocked/developing LT scenario may yield to a QUALIFIED ST scenario,
+  but an LT UNKNOWN caused by missing/unresolved structural authority is not a
+  blanket permission to trade ST.
 - T2: a lifecycle-completed zone (fully filled / invalidated FVG) is normal
   gap-fill price discovery, not a directional failure; a live failure on a
   secondary lineage while the current path holds a confirmation is LOW, not
   MATERIAL.
 - T4: at a confirmed primary zone, compressed room-to-target is the discount
   itself, not a blocker.
+- T5 revision: DEVELOPING is observable/armed context, not execution eligibility.
+  READY is required before a setup may become ELIGIBLE.
 """
 
 from __future__ import annotations
@@ -186,7 +189,7 @@ def test_compressed_room_without_reaction_input_still_waits():
 
 
 # --------------------------------------------------------------------------- #
-# T1: qualified-ST fallback while LT is blocked / developing / unresolved      #
+# T1: qualified-ST fallback while LT is blocked/developing, but not unsafe UNKNOWN
 # --------------------------------------------------------------------------- #
 
 def test_qualified_lt_keeps_absolute_priority_over_qualified_st():
@@ -213,20 +216,23 @@ def test_blocked_lt_yields_to_qualified_st():
     assert "SHORT_TERM_FALLBACK_WHILE_LONG_TERM_BLOCKED" in result.reasons
 
 
-def test_unresolved_lt_yields_to_qualified_st():
+def test_structurally_unresolved_lt_does_not_yield_to_qualified_st():
     result = arbitrate_entry_scenarios(
         _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.UNKNOWN),
         _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT),
     )
-    assert result.selection is ArbiterSelection.SHORT_TERM
-    assert "SHORT_TERM_FALLBACK_WHILE_LONG_TERM_UNRESOLVED" in result.reasons
+    assert result.state is ArbiterState.WAITING_FOR_LONG_TERM_RESOLUTION
+    assert result.selection is ArbiterSelection.UNRESOLVED
+    assert result.selected_horizon is None
+    assert "LONG_TERM_AUTHORITY_UNSAFE:STRUCTURE_UNRESOLVED" in result.reasons
+    assert result.waiting_for == ("LONG_TERM_STRUCTURAL_AUTHORITY_TO_RESOLVE",)
 
 
 # --------------------------------------------------------------------------- #
-# T5: ARMED sphere — forming setup + zone is one condition                     #
+# T5 revision: DEVELOPING is armed context, but not execution eligibility       #
 # --------------------------------------------------------------------------- #
 
-def test_armed_forming_setup_does_not_wait_for_confirmation():
+def test_developing_setup_waits_for_confirmation_and_material_conflict_resolution():
     from financial_dashboard.decision.conflict import ConflictState
     from financial_dashboard.decision.timing import TimingState
 
@@ -239,13 +245,13 @@ def test_armed_forming_setup_does_not_wait_for_confirmation():
         environment=_environment(),
         coverage=_coverage(),
     )
-    assert result.state is EligibilityState.ELIGIBLE
-    assert "SETUP_ARMED_AWAITING_CONFIRMATION" in result.reasons
-    assert "MATERIAL_CONFLICT_ARMED_SOFT" in result.reasons
-    assert result.waiting_for == ()
+    assert result.state is EligibilityState.WAITING
+    assert "SETUP_DEVELOPING_AWAITING_CONFIRMATION" in result.reasons
+    assert "WAIT_DEVELOPING" in result.waiting_for
+    assert "MATERIAL_CONFLICT_TO_RESOLVE" in result.waiting_for
 
 
-def test_armed_unknown_opportunity_does_not_wait_for_calibration():
+def test_developing_unknown_opportunity_waits_for_confirmation_and_calibration():
     from financial_dashboard.decision.timing import TimingState
 
     result = assess_eligibility(
@@ -257,9 +263,10 @@ def test_armed_unknown_opportunity_does_not_wait_for_calibration():
         environment=_environment(),
         coverage=_coverage(),
     )
-    assert result.state is EligibilityState.ELIGIBLE
-    assert "OPPORTUNITY_UNKNOWN_WHILE_ARMED" in result.reasons
-    assert "OPPORTUNITY_EVIDENCE_OR_CALIBRATION" not in result.waiting_for
+    assert result.state is EligibilityState.WAITING
+    assert "SETUP_DEVELOPING_AWAITING_CONFIRMATION" in result.reasons
+    assert "WAIT_DEVELOPING" in result.waiting_for
+    assert "OPPORTUNITY_EVIDENCE_OR_CALIBRATION" in result.waiting_for
 
 
 def test_failed_timing_is_not_armed():
