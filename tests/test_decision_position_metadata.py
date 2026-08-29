@@ -65,7 +65,7 @@ def _buy_entry():
         reasons=("ENTRY_EXECUTED",),
         blockers=(),
         waiting_for=(),
-        source_lineage=("30m:execution", "LONG_TERM:scenario"),
+        source_lineage=("1h:execution", "LONG_TERM:scenario"),
     )
 
 
@@ -75,10 +75,10 @@ def _event(observed_at, *, available_at=None):
     return ExecutionTriggerEvent(
         state=ExecutionTriggerState.CONFIRMED,
         side=StructuralDirection.LONG,
-        timeframe="30m",
+        timeframe="1h",
         observed_at=observed_at,
         available_at=available_at,
-        reason="FRESH_ENTRY_CONFIRMATION",
+        reason="FRESH_1H_ENTRY_CONFIRMATION",
     )
 
 
@@ -104,10 +104,10 @@ def test_buy_freezes_entry_origin_metadata_on_open_position():
     assert metadata.entry_as_of == as_of
     assert metadata.entry_price == 105.25
     assert metadata.active_target_identity == "target:1"
-    assert metadata.execution_timeframe == "30m"
+    assert metadata.execution_timeframe == "1h"
     assert metadata.execution_observed_at == as_of
     assert metadata.execution_available_at == as_of
-    assert metadata.execution_reason == "FRESH_ENTRY_CONFIRMATION"
+    assert metadata.execution_reason == "FRESH_1H_ENTRY_CONFIRMATION"
 
 
 def test_pullback_continuation_keeps_lt_thesis_but_uses_st_trade_clock():
@@ -130,7 +130,7 @@ def test_pullback_continuation_keeps_lt_thesis_but_uses_st_trade_clock():
         reasons=("ENTRY_EXECUTED",),
         blockers=(),
         waiting_for=(),
-        source_lineage=("30m:execution", "LONG_TERM:scenario"),
+        source_lineage=("1h:execution", "LONG_TERM:scenario"),
     )
     metadata = build_position_entry_metadata(_snapshot(as_of), entry, execution_event=_event(as_of))
     assert arbitration.selected_horizon is DecisionHorizon.LONG_TERM
@@ -142,9 +142,9 @@ def test_pullback_continuation_keeps_lt_thesis_but_uses_st_trade_clock():
     assert metadata.scenario_kind is ScenarioKind.PULLBACK_CONTINUATION
 
 
-def test_half_hour_native_event_can_be_frozen_at_next_hourly_entry_decision():
+def test_prior_available_1h_event_can_be_frozen_at_current_entry_decision():
     as_of = pd.Timestamp("2026-01-05 11:00")
-    event_time = pd.Timestamp("2026-01-05 10:30")
+    event_time = pd.Timestamp("2026-01-05 10:00")
     metadata = build_position_entry_metadata(
         _snapshot(as_of), _buy_entry(), execution_event=_event(event_time)
     )
@@ -154,7 +154,7 @@ def test_half_hour_native_event_can_be_frozen_at_next_hourly_entry_decision():
 
 def test_future_entry_event_is_rejected():
     as_of = pd.Timestamp("2026-01-05 10:00")
-    future = _event(pd.Timestamp("2026-01-05 10:30"))
+    future = _event(pd.Timestamp("2026-01-05 11:00"))
     with pytest.raises(ValueError, match="future-observed"):
         build_position_entry_metadata(_snapshot(as_of), _buy_entry(), execution_event=future)
 
@@ -203,7 +203,7 @@ def test_repeated_buy_cannot_replace_original_entry_metadata():
     repeated = transition_trade_lifecycle(
         opened,
         SimpleNamespace(action=DecisionAction.BUY),
-        as_of=pd.Timestamp("2026-01-05 10:30"),
+        as_of=pd.Timestamp("2026-01-05 11:00"),
         entry_metadata=conflicting,
     )
     assert repeated.action is DecisionAction.HOLD
