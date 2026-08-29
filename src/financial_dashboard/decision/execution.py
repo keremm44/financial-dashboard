@@ -21,7 +21,7 @@ class ExecutionTriggerState(StrEnum):
 
 
 class ExecutionEventKind(StrEnum):
-    """Semantic type of a fresh 30m event."""
+    """Semantic type of a fresh execution/timing event, independent of timeframe."""
 
     PATTERN_CONFIRMATION = "PATTERN_CONFIRMATION"
     REACTION_CONFIRMATION = "REACTION_CONFIRMATION"
