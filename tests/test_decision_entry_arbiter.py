@@ -24,20 +24,23 @@ def _scenario(
     *,
     stage=ScenarioStage.QUALIFIED,
     direction=StructuralDirection.LONG,
+    kind=None,
 ):
     if presence is ScenarioPresence.UNKNOWN:
         stage = ScenarioStage.UNAVAILABLE
     elif presence is ScenarioPresence.ABSENT:
         stage = ScenarioStage.NOT_APPLICABLE
+    if kind is None:
+        kind = (
+            ScenarioKind.NONE
+            if presence is not ScenarioPresence.PRESENT
+            else ScenarioKind.CONTINUATION
+        )
     return EntryScenarioAssessment(
         horizon=horizon,
         presence=presence,
         stage=stage,
-        kind=(
-            ScenarioKind.NONE
-            if presence is not ScenarioPresence.PRESENT
-            else ScenarioKind.CONTINUATION
-        ),
+        kind=kind,
         structural_direction=direction,
         thesis_state=ThesisState.INTACT,
         structural_regime=StructuralRegime.DIRECTIONAL,
@@ -195,6 +198,23 @@ def test_repeat_is_deterministic_and_never_selects_two_horizons():
     assert first == second
     assert first.selected_horizon is DecisionHorizon.LONG_TERM
     assert len(first.suppressed_horizons) == 1
+
+
+def test_qualified_lt_pullback_defers_to_qualified_st():
+    lt = _scenario(
+        DecisionHorizon.LONG_TERM,
+        ScenarioPresence.PRESENT,
+        kind=ScenarioKind.PULLBACK_CONTINUATION,
+    )
+    st = _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT)
+
+    result = arbitrate_entry_scenarios(lt, st)
+
+    assert result.selection is ArbiterSelection.SHORT_TERM
+    assert result.selected_horizon is DecisionHorizon.SHORT_TERM
+    assert result.selected_scenario is st
+    assert "SHORT_TERM_OWNS_PULLBACK_CONTINUATION" in result.reasons
+    assert DecisionHorizon.SHORT_TERM not in result.suppressed_horizons
 
 
 def test_horizon_arguments_are_validated_instead_of_swapped_silently():

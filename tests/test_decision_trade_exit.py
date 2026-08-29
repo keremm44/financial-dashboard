@@ -70,7 +70,7 @@ def test_lt_intact_st_counter_reaction_arms_exit_without_daily_bos():
     assert assessment.waiting_for == ("FRESH_LONG_EXIT_EXECUTION_EVENT",)
 
 
-def test_lt_intact_1h_transition_down_arms_exit_without_htf_bos():
+def test_lt_intact_1h_transition_down_does_not_arm_lt_exit():
     assessment = assess_long_position_exit(
         _structural_snapshot(
             st_direction=StructuralDirection.LONG,
@@ -79,8 +79,8 @@ def test_lt_intact_1h_transition_down_arms_exit_without_htf_bos():
         )
     )
 
-    assert assessment.stage is ExitStage.EXIT_READY
-    assert assessment.reasons == ("ST_LONG_THESIS_TRANSITIONING_TOWARD_SHORT",)
+    assert assessment.stage is ExitStage.MONITOR
+    assert assessment.reasons == ("LT_LONG_INTACT_ST_ALIGNED",)
 
 
 def test_lt_intact_st_pullback_recovering_toward_lt_stays_monitor():

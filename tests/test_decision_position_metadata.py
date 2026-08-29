@@ -112,6 +112,39 @@ def test_buy_freezes_entry_origin_metadata_on_open_position():
     assert metadata.source_lineage == ("30m:execution", "LONG_TERM:scenario")
 
 
+def test_pullback_continuation_freezes_short_term_exit_clock():
+    as_of = pd.Timestamp("2026-01-05 10:00")
+    lt = replace(
+        _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT),
+        kind=ScenarioKind.PULLBACK_CONTINUATION,
+    )
+    arbitration = arbitrate_entry_scenarios(
+        lt,
+        _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.ABSENT),
+    )
+    entry = EntryDecision(
+        action=DecisionAction.BUY,
+        selected_horizon=DecisionHorizon.LONG_TERM,
+        arbitration=arbitration,
+        scenario_stage=ScenarioStage.QUALIFIED,
+        execution_state=ExecutionTriggerState.CONFIRMED,
+        execution_event_consumed=True,
+        reasons=("ENTRY_EXECUTED",),
+        blockers=(),
+        waiting_for=(),
+        source_lineage=("30m:execution", "LONG_TERM:scenario"),
+    )
+    metadata = build_position_entry_metadata(
+        _snapshot(as_of),
+        entry,
+        execution_event=_event(as_of),
+    )
+
+    assert arbitration.selected_horizon is DecisionHorizon.LONG_TERM
+    assert metadata.entry_horizon is DecisionHorizon.SHORT_TERM
+    assert metadata.scenario_kind is ScenarioKind.PULLBACK_CONTINUATION
+
+
 def test_position_metadata_is_frozen_and_cannot_be_rewritten_in_place():
     as_of = pd.Timestamp("2026-01-05 10:00")
     metadata = build_position_entry_metadata(

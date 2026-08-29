@@ -64,9 +64,10 @@ def _refs(snapshot: HorizonStructuralSnapshot) -> tuple[FactRef, ...]:
 
 
 def st_pressures_open_long(st) -> str | None:
-    """1H structure that can arm a long exit without waiting for 1D/4H BOS.
+    """1H structure that can arm a long-term position exit.
 
-    Pullbacks that are already rotating back toward LT LONG are not pressure.
+    Only an established 1H short / invalidated 1H long is pressure. 1H
+    TRANSITIONING toward short is ST-clock noise on an LT hold.
     """
 
     if st is None:
@@ -76,17 +77,10 @@ def st_pressures_open_long(st) -> str | None:
         return None
     thesis = getattr(st, "thesis_state", None)
     direction = getattr(st, "direction", None)
-    target = getattr(st, "transition_target", None)
     if thesis is ThesisState.INVALIDATED:
         return "ST_LONG_THESIS_INVALIDATED"
     if direction is StructuralDirection.SHORT and thesis is ThesisState.INTACT:
         return "ST_BEARISH_THESIS_ESTABLISHED_AGAINST_OPEN_LONG"
-    if (
-        direction is StructuralDirection.LONG
-        and thesis is ThesisState.TRANSITIONING
-        and target is StructuralDirection.SHORT
-    ):
-        return "ST_LONG_THESIS_TRANSITIONING_TOWARD_SHORT"
     return None
 
 
@@ -94,9 +88,9 @@ def assess_long_position_exit(snapshot: HorizonStructuralSnapshot) -> LongExitAs
     """Classify one open-long exit stage without numeric voting or magic thresholds.
 
     LT invalidation / established 1D short still arms immediately. An intact LT
-    long no longer waits for 1D/4H BOS: established 1H short or 1H transition-down
-    arms EXIT_READY. A same-side 1H pullback recovering toward LT stays MONITOR.
-    EXIT_READY is not SELL; a fresh 30m SHORT execution event is still required.
+    long arms EXIT_READY only on established 1H short, not 1H transition-down.
+    A same-side 1H pullback recovering toward LT stays MONITOR. EXIT_READY is
+    not SELL; a fresh 30m SHORT *pattern* click is still required.
     """
 
     lt = snapshot.long_term
@@ -249,6 +243,22 @@ def _validate_exit_event(event: ExecutionTriggerEvent, *, as_of: Any, timeframe:
             raise ValueError("long exit execution refs must belong to exit timeframe")
         if not ref.is_available_at(as_of):
             raise ValueError("long exit execution cannot contain future-unavailable refs")
+
+
+_STRUCTURE_BOS_EVENT_REASON = "30M_STRUCTURE_BOS_CONFIRMED"
+
+
+def exit_click_event(event: ExecutionTriggerEvent | None) -> ExecutionTriggerEvent | None:
+    """30m structure BOS is thesis noise, never a SELL click.
+
+    Pattern SHORT remains the only trade-scale exit click after 1H/LT has armed.
+    """
+
+    if event is None:
+        return None
+    if str(event.reason).strip() == _STRUCTURE_BOS_EVENT_REASON:
+        return None
+    return event
 
 
 def arm_open_long_on_30m_short(

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from .scenario import EntryScenarioAssessment, ScenarioPresence, ScenarioStage
+from .scenario import EntryScenarioAssessment, ScenarioKind, ScenarioPresence, ScenarioStage
 from .structural import DecisionHorizon
 
 if TYPE_CHECKING:
@@ -30,13 +30,12 @@ class ArbiterState(StrEnum):
 class EntryScenarioArbitration:
     """Non-action ownership decision between LT and ST entry scenarios.
 
-    The arbiter never compares scores or readiness strength. LONG_TERM has semantic
-    priority whenever its scenario is qualified. A present-but-blocked (or still
-    developing) LONG_TERM scenario no longer suppresses a fully qualified
-    SHORT_TERM scenario: in a trend pullback the LT thesis stays alive while the
-    executable edge is the ST reaction, so ownership follows qualification, not
-    mere presence. UNKNOWN is not absence, but it is also not a veto: a qualified
-    ST scenario may act while LT presence is unresolved.
+    The arbiter never compares scores or readiness strength. LONG_TERM continuation
+    has semantic priority whenever it is qualified. A PULLBACK_CONTINUATION is the
+    ST swing even when LT is also qualified: LT thesis may permit the BUY, ST owns
+    the clock. A present-but-blocked (or still developing) LONG_TERM scenario no
+    longer suppresses a fully qualified SHORT_TERM scenario. UNKNOWN is not a veto:
+    a qualified ST scenario may act while LT presence is unresolved.
     """
 
     state: ArbiterState
@@ -80,12 +79,21 @@ def arbitrate_entry_scenarios(
     )
 
     if long_term.presence is ScenarioPresence.PRESENT:
-        # A qualified LT scenario keeps absolute priority; a blocked or still
-        # developing LT scenario cannot veto a fully qualified ST setup forever.
-        if (
-            long_term.stage is not ScenarioStage.QUALIFIED
-            and st_qualified
-        ):
+        # Qualified LT continuation keeps priority. A pullback is the ST swing
+        # even when LT is also qualified. Blocked/developing LT cannot veto ST.
+        lt_pullback = long_term.kind is ScenarioKind.PULLBACK_CONTINUATION
+        if st_qualified and (long_term.stage is not ScenarioStage.QUALIFIED or lt_pullback):
+            reasons = (
+                (
+                    "LONG_TERM_PULLBACK_IS_SHORT_TERM_TRADE",
+                    "SHORT_TERM_OWNS_PULLBACK_CONTINUATION",
+                )
+                if lt_pullback and long_term.stage is ScenarioStage.QUALIFIED
+                else (
+                    f"LONG_TERM_SCENARIO_{long_term.stage.value}_NOT_QUALIFIED",
+                    "SHORT_TERM_FALLBACK_WHILE_LONG_TERM_BLOCKED",
+                )
+            )
             return EntryScenarioArbitration(
                 state=ArbiterState.SELECTED,
                 selection=ArbiterSelection.SHORT_TERM,
@@ -94,10 +102,7 @@ def arbitrate_entry_scenarios(
                 long_term=long_term,
                 short_term=short_term,
                 suppressed_horizons=(),
-                reasons=(
-                    f"LONG_TERM_SCENARIO_{long_term.stage.value}_NOT_QUALIFIED",
-                    "SHORT_TERM_FALLBACK_WHILE_LONG_TERM_BLOCKED",
-                ),
+                reasons=reasons,
                 waiting_for=(),
             )
         suppressed = (

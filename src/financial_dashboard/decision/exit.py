@@ -29,6 +29,7 @@ from .trade_exit import (
     arm_open_long_on_30m_short,
     assess_long_exit_execution,
     assess_long_position_exit,
+    exit_click_event,
 )
 
 if TYPE_CHECKING:
@@ -106,7 +107,7 @@ def _short_term_position_exit(snapshot: HorizonStructuralSnapshot) -> LongExitAs
     is introduced here. The state mapping mirrors the existing structural exit FSM:
     intact long protects ownership; 1H transition-down or established short arms
     EXIT_READY without waiting for a 1H/4H/1D BOS. EXIT_READY still requires a
-    separate fresh 30m SHORT execution event.
+    separate fresh 30m SHORT *pattern* click.
     """
 
     st = snapshot.short_term
@@ -238,21 +239,22 @@ def compose_position_exit_decision(
     else:
         raise ValueError("unsupported position entry horizon")
 
+    click = exit_click_event(execution_event)
     structural = arm_open_long_on_30m_short(
         structural,
         as_of=as_of,
-        event=execution_event,
+        event=click,
         allow=metadata is not None,
     )
     armed = structural.stage is ExitStage.EXIT_READY
-    event_for_execution = execution_event if armed else None
+    event_for_execution = click if armed else None
     execution = assess_long_exit_execution(
         structural,
         as_of=as_of,
         event=event_for_execution,
         channel_available=channel_available,
     )
-    consumed = armed and execution_event is not None
+    consumed = armed and click is not None
     action = (
         DecisionAction.SELL
         if execution.state is ExitExecutionState.CONFIRMED

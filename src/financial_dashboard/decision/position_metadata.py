@@ -110,9 +110,18 @@ def build_position_entry_metadata(
     except TypeError as exc:
         raise TypeError("position entry event timestamps must be comparable") from exc
 
+    # Pullback continuation is an ST-duration swing even when LT thesis permitted
+    # the BUY. Freeze the exit clock to SHORT_TERM so 1H owns the trade, not a
+    # month-long LT hold that sells the washout.
+    entry_horizon = (
+        DecisionHorizon.SHORT_TERM
+        if scenario.kind is ScenarioKind.PULLBACK_CONTINUATION
+        else entry.selected_horizon
+    )
+
     return PositionEntryMetadata(
         symbol=str(snapshot.symbol),
-        entry_horizon=entry.selected_horizon,
+        entry_horizon=entry_horizon,
         scenario_kind=scenario.kind,
         entry_as_of=snapshot.as_of,
         entry_price=float(snapshot.current_price),
