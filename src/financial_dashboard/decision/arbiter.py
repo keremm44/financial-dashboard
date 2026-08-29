@@ -4,7 +4,13 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from .scenario import EntryScenarioAssessment, ScenarioKind, ScenarioPresence, ScenarioStage
+from .scenario import (
+    EntryScenarioAssessment,
+    ScenarioKind,
+    ScenarioPresence,
+    ScenarioStage,
+    ScenarioUnknownReason,
+)
 from .structural import DecisionHorizon
 
 if TYPE_CHECKING:
@@ -28,16 +34,6 @@ class ArbiterState(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class EntryScenarioArbitration:
-    """Non-action ownership decision between LT and ST entry scenarios.
-
-    The arbiter never compares scores or readiness strength. LONG_TERM continuation
-    has semantic priority whenever it is qualified. A PULLBACK_CONTINUATION is the
-    ST swing even when LT is also qualified: LT thesis may permit the BUY, ST owns
-    the clock. A present-but-blocked (or still developing) LONG_TERM scenario no
-    longer suppresses a fully qualified SHORT_TERM scenario. UNKNOWN is not a veto:
-    a qualified ST scenario may act while LT presence is unresolved.
-    """
-
     state: ArbiterState
     selection: ArbiterSelection
     selected_horizon: DecisionHorizon | None
@@ -50,37 +46,38 @@ class EntryScenarioArbitration:
 
     @property
     def is_actionable_signal(self) -> bool:
-        """Arbitration owns horizon selection only; Turn 6 owns entry actions."""
-
         return False
 
 
-def _validate_horizons(
-    long_term: EntryScenarioAssessment,
-    short_term: EntryScenarioAssessment,
-) -> None:
+def _validate_horizons(long_term: EntryScenarioAssessment, short_term: EntryScenarioAssessment) -> None:
     if long_term.horizon is not DecisionHorizon.LONG_TERM:
         raise ValueError("long_term scenario must have LONG_TERM horizon")
     if short_term.horizon is not DecisionHorizon.SHORT_TERM:
         raise ValueError("short_term scenario must have SHORT_TERM horizon")
 
 
+def _lt_unknown_allows_st(long_term: EntryScenarioAssessment, short_term: EntryScenarioAssessment) -> bool:
+    reason = long_term.unknown_reason
+    if reason is ScenarioUnknownReason.OPPORTUNITY_UNOBSERVED:
+        return True
+    if reason is ScenarioUnknownReason.WARMUP:
+        return short_term.kind is ScenarioKind.SHORT_TERM_STANDALONE
+    return False
+
+
 def arbitrate_entry_scenarios(
     long_term: EntryScenarioAssessment,
     short_term: EntryScenarioAssessment,
 ) -> EntryScenarioArbitration:
-    """Apply LONG_TERM-first, SHORT_TERM-fallback ownership deterministically."""
+    """Apply semantic horizon ownership without using UNKNOWN as blanket permission."""
 
     _validate_horizons(long_term, short_term)
-
     st_qualified = (
         short_term.presence is ScenarioPresence.PRESENT
         and short_term.stage is ScenarioStage.QUALIFIED
     )
 
     if long_term.presence is ScenarioPresence.PRESENT:
-        # Qualified LT continuation keeps priority. A pullback is the ST swing
-        # even when LT is also qualified. Blocked/developing LT cannot veto ST.
         lt_pullback = long_term.kind is ScenarioKind.PULLBACK_CONTINUATION
         if st_qualified and (long_term.stage is not ScenarioStage.QUALIFIED or lt_pullback):
             reasons = (
@@ -95,15 +92,9 @@ def arbitrate_entry_scenarios(
                 )
             )
             return EntryScenarioArbitration(
-                state=ArbiterState.SELECTED,
-                selection=ArbiterSelection.SHORT_TERM,
-                selected_horizon=DecisionHorizon.SHORT_TERM,
-                selected_scenario=short_term,
-                long_term=long_term,
-                short_term=short_term,
-                suppressed_horizons=(),
-                reasons=reasons,
-                waiting_for=(),
+                ArbiterState.SELECTED, ArbiterSelection.SHORT_TERM,
+                DecisionHorizon.SHORT_TERM, short_term, long_term, short_term,
+                (), reasons, (),
             )
         suppressed = (
             (DecisionHorizon.SHORT_TERM,)
@@ -114,95 +105,72 @@ def arbitrate_entry_scenarios(
         if suppressed:
             reasons.append("SHORT_TERM_SCENARIO_SUPPRESSED_BY_LONG_TERM")
         return EntryScenarioArbitration(
-            state=ArbiterState.SELECTED,
-            selection=ArbiterSelection.LONG_TERM,
-            selected_horizon=DecisionHorizon.LONG_TERM,
-            selected_scenario=long_term,
-            long_term=long_term,
-            short_term=short_term,
-            suppressed_horizons=suppressed,
-            reasons=tuple(reasons),
-            waiting_for=(),
+            ArbiterState.SELECTED, ArbiterSelection.LONG_TERM,
+            DecisionHorizon.LONG_TERM, long_term, long_term, short_term,
+            suppressed, tuple(reasons), (),
         )
 
-    # UNKNOWN is not a negative vote and therefore not a veto: a fully qualified
-    # ST scenario may own the decision while LT presence is unresolved. Without
-    # a qualified ST scenario the decision waits for LT resolution as before.
     if long_term.presence is ScenarioPresence.UNKNOWN:
-        if st_qualified:
+        reason = long_term.unknown_reason
+        if st_qualified and _lt_unknown_allows_st(long_term, short_term):
             return EntryScenarioArbitration(
-                state=ArbiterState.SELECTED,
-                selection=ArbiterSelection.SHORT_TERM,
-                selected_horizon=DecisionHorizon.SHORT_TERM,
-                selected_scenario=short_term,
-                long_term=long_term,
-                short_term=short_term,
-                suppressed_horizons=(),
-                reasons=(
-                    "LONG_TERM_PRESENCE_UNRESOLVED",
-                    "SHORT_TERM_FALLBACK_WHILE_LONG_TERM_UNRESOLVED",
+                ArbiterState.SELECTED, ArbiterSelection.SHORT_TERM,
+                DecisionHorizon.SHORT_TERM, short_term, long_term, short_term,
+                (),
+                (
+                    f"LONG_TERM_NONAUTHORITATIVE:{reason.value}",
+                    "SHORT_TERM_FALLBACK_WHILE_LONG_TERM_NONAUTHORITATIVE",
                 ),
-                waiting_for=(),
+                (),
             )
+        suppressed = (
+            (DecisionHorizon.SHORT_TERM,)
+            if short_term.presence is ScenarioPresence.PRESENT
+            else ()
+        )
+        unsafe = reason in {
+            ScenarioUnknownReason.DATA_UNAVAILABLE,
+            ScenarioUnknownReason.STRUCTURE_UNRESOLVED,
+            ScenarioUnknownReason.NONE,
+        }
         return EntryScenarioArbitration(
-            state=ArbiterState.WAITING_FOR_LONG_TERM_RESOLUTION,
-            selection=ArbiterSelection.UNRESOLVED,
-            selected_horizon=None,
-            selected_scenario=None,
-            long_term=long_term,
-            short_term=short_term,
-            suppressed_horizons=(
-                (DecisionHorizon.SHORT_TERM,)
-                if short_term.presence is ScenarioPresence.PRESENT
-                else ()
+            ArbiterState.WAITING_FOR_LONG_TERM_RESOLUTION,
+            ArbiterSelection.UNRESOLVED,
+            None,
+            None,
+            long_term,
+            short_term,
+            suppressed,
+            (
+                f"LONG_TERM_AUTHORITY_{'UNSAFE' if unsafe else 'UNRESOLVED'}:{reason.value}",
             ),
-            reasons=("LONG_TERM_PRESENCE_UNRESOLVED_NO_QUALIFIED_SHORT_TERM",),
-            waiting_for=("LONG_TERM_SCENARIO_PRESENCE_TO_RESOLVE",),
+            (
+                "LONG_TERM_STRUCTURAL_AUTHORITY_TO_RESOLVE"
+                if unsafe
+                else "LONG_TERM_SCENARIO_PRESENCE_TO_RESOLVE",
+            ),
         )
 
-    # Only explicit LT absence opens the ST fallback branch.
     if short_term.presence is ScenarioPresence.PRESENT:
         return EntryScenarioArbitration(
-            state=ArbiterState.SELECTED,
-            selection=ArbiterSelection.SHORT_TERM,
-            selected_horizon=DecisionHorizon.SHORT_TERM,
-            selected_scenario=short_term,
-            long_term=long_term,
-            short_term=short_term,
-            suppressed_horizons=(),
-            reasons=(
-                "LONG_TERM_SCENARIO_ABSENT",
-                "SHORT_TERM_FALLBACK_SELECTED",
-            ),
-            waiting_for=(),
+            ArbiterState.SELECTED, ArbiterSelection.SHORT_TERM,
+            DecisionHorizon.SHORT_TERM, short_term, long_term, short_term,
+            (), ("LONG_TERM_SCENARIO_ABSENT", "SHORT_TERM_FALLBACK_SELECTED"), (),
         )
 
     if short_term.presence is ScenarioPresence.UNKNOWN:
         return EntryScenarioArbitration(
-            state=ArbiterState.WAITING_FOR_SHORT_TERM_RESOLUTION,
-            selection=ArbiterSelection.UNRESOLVED,
-            selected_horizon=None,
-            selected_scenario=None,
-            long_term=long_term,
-            short_term=short_term,
-            suppressed_horizons=(),
-            reasons=(
-                "LONG_TERM_SCENARIO_ABSENT",
-                "SHORT_TERM_SCENARIO_PRESENCE_UNRESOLVED",
-            ),
-            waiting_for=("SHORT_TERM_SCENARIO_PRESENCE_TO_RESOLVE",),
+            ArbiterState.WAITING_FOR_SHORT_TERM_RESOLUTION,
+            ArbiterSelection.UNRESOLVED,
+            None, None, long_term, short_term, (),
+            ("LONG_TERM_SCENARIO_ABSENT", "SHORT_TERM_SCENARIO_PRESENCE_UNRESOLVED"),
+            ("SHORT_TERM_SCENARIO_PRESENCE_TO_RESOLVE",),
         )
 
     return EntryScenarioArbitration(
-        state=ArbiterState.NO_SCENARIO,
-        selection=ArbiterSelection.NONE,
-        selected_horizon=None,
-        selected_scenario=None,
-        long_term=long_term,
-        short_term=short_term,
-        suppressed_horizons=(),
-        reasons=("NO_LONG_OR_SHORT_TERM_ENTRY_SCENARIO",),
-        waiting_for=(),
+        ArbiterState.NO_SCENARIO, ArbiterSelection.NONE,
+        None, None, long_term, short_term, (),
+        ("NO_LONG_OR_SHORT_TERM_ENTRY_SCENARIO",), (),
     )
 
 
@@ -212,13 +180,6 @@ def assess_entry_arbitration(
     config: "DecisionEngineConfig | None" = None,
     scenarios: tuple[EntryScenarioAssessment, EntryScenarioAssessment] | None = None,
 ) -> EntryScenarioArbitration:
-    """Build both causal scenarios then apply strict horizon ownership.
-
-    ``scenarios`` allows callers that already built the two entry scenarios for this
-    snapshot/config to inject them as ``(long_term, short_term)`` instead of forcing
-    a second full evaluation chain.
-    """
-
     if scenarios is None:
         long_term = snapshot.entry_scenario(DecisionHorizon.LONG_TERM, config=config)
         short_term = snapshot.entry_scenario(DecisionHorizon.SHORT_TERM, config=config)
