@@ -108,10 +108,11 @@ def test_scenario_a_lt_bullish_st_counter_reaction_without_setup_stays_wait():
     )
     assert timing.state is TimingState.DEVELOPING
     eligibility = _eligibility(structural, timing)
-    assert eligibility.state is EligibilityState.ELIGIBLE
-    assert "SETUP_ARMED_AWAITING_CONFIRMATION" in eligibility.reasons
+    assert eligibility.state is EligibilityState.WAITING
+    assert "SETUP_DEVELOPING_AWAITING_CONFIRMATION" in eligibility.reasons
+    assert "SETUP_TRIGGER_CONFIRMATION" in eligibility.waiting_for
     final = compose_final_decision(structural, eligibility=eligibility, execution=_execution(StructuralDirection.LONG))
-    assert final.action is DecisionAction.READY
+    assert final.action is DecisionAction.WAIT
 
 
 def test_scenario_b_aligned_ready_with_low_conflict_can_buy_on_fresh_trigger():
