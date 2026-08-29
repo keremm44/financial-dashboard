@@ -142,11 +142,33 @@ def test_elevated_environment_is_soft_not_automatic_wait_or_block():
     assert "ENVIRONMENT_RISK_ELEVATED_SOFT" in result.reasons
 
 
-def test_developing_timing_is_armed_not_wait():
+def test_developing_timing_waits_for_confirmation():
     result = _assess(timing=_timing(TimingState.DEVELOPING))
+    assert result.state is EligibilityState.WAITING
+    assert "SETUP_DEVELOPING_AWAITING_CONFIRMATION" in result.reasons
+    assert "WAIT_DEVELOPING" in result.waiting_for
+
+
+def test_developing_does_not_soften_material_conflict_or_unknown_opportunity():
+    result = _assess(
+        timing=_timing(TimingState.DEVELOPING),
+        opportunity=_opportunity(OpportunityState.UNKNOWN),
+        conflict=_conflict(ConflictState.MATERIAL),
+    )
+    assert result.state is EligibilityState.WAITING
+    assert "OPPORTUNITY_EVIDENCE_OR_CALIBRATION" in result.waiting_for
+    assert "MATERIAL_CONFLICT_TO_RESOLVE" in result.waiting_for
+
+
+def test_ready_can_soften_material_conflict_and_unknown_opportunity_without_bypassing_hard_gates():
+    result = _assess(
+        timing=_timing(TimingState.READY),
+        opportunity=_opportunity(OpportunityState.UNKNOWN),
+        conflict=_conflict(ConflictState.MATERIAL),
+    )
     assert result.state is EligibilityState.ELIGIBLE
-    assert "SETUP_ARMED_AWAITING_CONFIRMATION" in result.reasons
-    assert result.waiting_for == ()
+    assert "OPPORTUNITY_UNKNOWN_WHILE_ARMED" in result.reasons
+    assert "MATERIAL_CONFLICT_ARMED_SOFT" in result.reasons
 
 
 def test_early_timing_is_wait():
