@@ -91,14 +91,14 @@ def _structural_snapshot(
     )
 
 
-def _exit_event(as_of, *, state=ExecutionTriggerState.CONFIRMED):
+def _exit_event(as_of, *, state=ExecutionTriggerState.CONFIRMED, reason="30M_PATTERN_BREAK_CONFIRMED"):
     return ExecutionTriggerEvent(
         state=state,
         side=StructuralDirection.SHORT,
         timeframe="30m",
         observed_at=as_of,
         available_at=as_of,
-        reason="FRESH_EXIT_CONFIRMATION",
+        reason=reason,
         source_refs=(),
     )
 
