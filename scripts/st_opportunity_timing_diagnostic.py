@@ -15,10 +15,12 @@ from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.decision.calibration import load_opportunity_calibration
 from financial_dashboard.decision.composer import DecisionAction
 from financial_dashboard.decision.engine import DecisionEngineConfig
-from financial_dashboard.decision.execution_detect import detect_30m_execution_events
+from financial_dashboard.decision.execution_detect import (
+    detect_1h_execution_events,
+    detect_30m_execution_events,
+)
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
 from financial_dashboard.decision.lifecycle_replay import replay_canonical_trade_lifecycle
-from financial_dashboard.decision.scenario import ScenarioStage
 from financial_dashboard.decision.timeline_cache import DecisionTimelineCacheMiss, load_frozen_decision_timeline
 from financial_dashboard.structure_location_replay import CausalBarClock
 
@@ -33,7 +35,8 @@ class SnapshotEntryRow:
     eligibility: str
     timing: str
     opportunity: str
-    event_same_bar: bool
+    primary_event_same_bar: bool
+    micro_event_same_bar: bool
     reasons: tuple[str, ...]
     waiting_for: tuple[str, ...]
 
@@ -112,11 +115,8 @@ def _prepare_bars(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _bars_per_trading_day(bars: pd.DataFrame) -> int:
-    dates = bars["timestamp"].dt.date
-    counts = dates.value_counts().tolist()
-    if not counts:
-        return 1
-    return max(1, int(round(float(median(counts)))))
+    counts = bars["timestamp"].dt.date.value_counts().tolist()
+    return 1 if not counts else max(1, int(round(float(median(counts)))))
 
 
 def _bar_index(bars: pd.DataFrame, timestamp: Any) -> int:
@@ -171,27 +171,18 @@ def _meaningful_moves(
 
 
 def _entry_strength(row: SnapshotEntryRow) -> tuple[int, int, int]:
-    action_rank = {
-        "BUY": 5,
-        "READY": 4,
-        "WAIT": 2,
-        "NO_TRADE": 1,
-    }.get(row.action, 0)
-    stage_rank = {
-        "QUALIFIED": 4,
-        "DEVELOPING": 3,
-        "BLOCKED": 1,
-        "UNAVAILABLE": 0,
-        "NONE": 0,
-    }.get(row.selected_stage, 0)
-    return action_rank, stage_rank, 1 if row.event_same_bar else 0
+    action_rank = {"BUY": 5, "READY": 4, "WAIT": 2, "NO_TRADE": 1}.get(row.action, 0)
+    stage_rank = {"QUALIFIED": 4, "DEVELOPING": 3, "BLOCKED": 1, "UNAVAILABLE": 0, "NONE": 0}.get(
+        row.selected_stage, 0
+    )
+    return action_rank, stage_rank, 1 if row.primary_event_same_bar else 0
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Frozen-cache-only ST diagnostic: 3-9 trading-day meaningful moves, missed-entry gates, "
-            "entry timing, and exit-click/readiness synchronization."
+            "Frozen-cache-only ST diagnostic: 3-9 trading-day meaningful moves, 1h primary execution, "
+            "30m micro context, entry timing, and exit persistence."
         )
     )
     parser.add_argument("cache_root", type=Path)
@@ -228,7 +219,8 @@ def main() -> None:
     calibration, calibration_path = _load_calibration(args.cache_root, clean_symbol)
     cfg = DecisionEngineConfig(opportunity_calibration=calibration)
     snapshots = tuple(frozen.replay.snapshots)
-    entry_events, exit_events = detect_30m_execution_events(snapshots)
+    entry_events, exit_events = detect_1h_execution_events(snapshots)
+    micro_entry_events, micro_exit_events = detect_30m_execution_events(snapshots)
 
     bars = _prepare_bars(store.load(clean_symbol, "30m"))
     bars_per_day = _bars_per_trading_day(bars)
@@ -238,15 +230,13 @@ def main() -> None:
     entry_rows: list[SnapshotEntryRow] = []
     for snapshot in snapshots:
         event = entry_events.get(snapshot.as_of)
+        micro_event = micro_entry_events.get(snapshot.as_of)
         arbitration = snapshot.entry_arbitration(config=cfg)
         decision = snapshot.entry_decision(config=cfg, execution_event=event)
         selected = arbitration.selected_scenario
         selected_horizon = arbitration.selected_horizon
         if selected is None or selected_horizon is None:
-            eligibility = "NONE"
-            timing = "NONE"
-            opportunity = "NONE"
-            stage = "NONE"
+            eligibility = timing = opportunity = stage = "NONE"
         else:
             assessment = __import__(
                 "financial_dashboard.decision.engine", fromlist=["assess_horizon_decision"]
@@ -265,7 +255,8 @@ def main() -> None:
                 eligibility=eligibility,
                 timing=timing,
                 opportunity=opportunity,
-                event_same_bar=event is not None,
+                primary_event_same_bar=event is not None,
+                micro_event_same_bar=micro_event is not None,
                 reasons=tuple(decision.reasons),
                 waiting_for=tuple(decision.waiting_for),
             )
@@ -299,12 +290,15 @@ def main() -> None:
     print(f"FROZEN_CACHE_STATUS\t{frozen.cache_status}")
     print("DOMAIN_REPLAY_SECONDS\t0.000")
     print(f"OPPORTUNITY_CALIBRATION\t{calibration_path}")
+    print(f"PRIMARY_EXECUTION_TIMEFRAME\t1h")
     print(f"BARS_PER_TRADING_DAY\t{bars_per_day}")
     print(f"ST_CAPTURE_WINDOW\t{args.capture_days}d / {capture_bars} 30m-bars")
     print(f"ST_MOVE_HORIZON\t{args.horizon_days}d / {horizon_bars} 30m-bars")
     print(f"MEANINGFUL_MOVE_ATR\t{args.min_move_atr}")
-    print(f"ENTRY_EVENTS\t{len(entry_events)}")
-    print(f"EXIT_EVENTS\t{len(exit_events)}")
+    print(f"PRIMARY_ENTRY_EVENTS_1H\t{len(entry_events)}")
+    print(f"PRIMARY_EXIT_EVENTS_1H\t{len(exit_events)}")
+    print(f"MICRO_ENTRY_EVENTS_30M\t{len(micro_entry_events)}")
+    print(f"MICRO_EXIT_EVENTS_30M\t{len(micro_exit_events)}")
     print(f"REAL_BUYS\t{len(buy_rows)}")
     print(f"REAL_SELLS\t{len(sell_rows)}")
     print(f"MEANINGFUL_ST_MOVES\t{len(moves)}")
@@ -313,15 +307,8 @@ def main() -> None:
     print("-----------------------------")
     for move in moves:
         capture_end = min(len(bars) - 1, move.start_index + capture_bars)
-        actual = next(
-            ((index, row) for index, row in buy_indices if move.start_index <= index <= capture_end),
-            None,
-        )
-        window = [
-            row
-            for row in entry_rows
-            if move.start_index <= row.bar_index <= capture_end
-        ]
+        actual = next(((index, row) for index, row in buy_indices if move.start_index <= index <= capture_end), None)
+        window = [row for row in entry_rows if move.start_index <= row.bar_index <= capture_end]
         strongest = max(window, key=_entry_strength, default=None)
         if actual is not None:
             captured += 1
@@ -336,10 +323,10 @@ def main() -> None:
             strongest_text = "candidate=NONE"
         else:
             strongest_text = (
-                f"candidate={strongest.as_of} action={strongest.action} "
-                f"horizon={strongest.selected_horizon} stage={strongest.selected_stage} "
-                f"elig={strongest.eligibility} timing={strongest.timing} opp={strongest.opportunity} "
-                f"event={strongest.event_same_bar} waiting={','.join(strongest.waiting_for) or '-'}"
+                f"candidate={strongest.as_of} action={strongest.action} horizon={strongest.selected_horizon} "
+                f"stage={strongest.selected_stage} elig={strongest.eligibility} timing={strongest.timing} "
+                f"opp={strongest.opportunity} primary1h={strongest.primary_event_same_bar} "
+                f"micro30m={strongest.micro_event_same_bar} waiting={','.join(strongest.waiting_for) or '-'}"
             )
         print(
             f"{status} low={start_time} peak={peak_time} move={move.move_pct:.2f}%/{move.move_atr:.2f}ATR "
@@ -364,42 +351,33 @@ def main() -> None:
         entry_price = float(row.snapshot.current_price)
         low = float(bars.at[low_index, "low"])
         downside = (low / entry_price - 1.0) * 100.0
+        micro = micro_entry_events.get(row.snapshot.as_of) is not None
         print(
             f"BUY={row.snapshot.as_of} horizon={row.current_state.entry_metadata.entry_horizon.value if row.current_state.entry_metadata else 'NONE'} "
-            f"entry={entry_price:.4f} next_low={bars.at[low_index, 'timestamp']} "
-            f"bars_to_low={low_index - index} downside={downside:.2f}%"
+            f"entry={entry_price:.4f} next_low={bars.at[low_index, 'timestamp']} bars_to_low={low_index - index} "
+            f"downside={downside:.2f}% micro30m_same_bar={micro}"
         )
 
-    print("\nEXIT READINESS / CLICK SYNCHRONIZATION")
-    print("------------------------------------")
+    print("\nEXIT READINESS / PRIMARY 1H CONFIRMATION")
+    print("---------------------------------------")
     active_buy = None
-    previous_raw_exit_event = None
     for row in lifecycle.rows:
         as_of = row.snapshot.as_of
         raw_exit = exit_events.get(as_of)
         if row.action is DecisionAction.BUY:
             active_buy = row
-            previous_raw_exit_event = None
             continue
         if active_buy is None:
             continue
         if row.exit_decision is not None and row.exit_decision.stage.value == "EXIT_READY":
-            source = (
-                "SAME_BAR_EVENT"
-                if raw_exit is not None
-                else "PREVIOUS_BAR_EVENT_AVAILABLE"
-                if previous_raw_exit_event is not None
-                else "NO_RECENT_RAW_EVENT"
+            source = "SAME_BAR_1H_EVENT" if raw_exit is not None else (
+                "PERSISTENCE" if "1H_EXIT_READY_PERSISTENCE_CONFIRMED" in row.exit_decision.reasons else "WAITING_1H_CONFIRM_OR_PERSISTENCE"
             )
             print(
-                f"READY={as_of} action={row.action.value} source={source} "
-                f"reasons={','.join(row.exit_decision.reasons)}"
+                f"READY={as_of} action={row.action.value} source={source} reasons={','.join(row.exit_decision.reasons)}"
             )
         if row.action is DecisionAction.SELL:
             active_buy = None
-            previous_raw_exit_event = None
-            continue
-        previous_raw_exit_event = raw_exit
 
     print("\nST_OPPORTUNITY_TIMING_DIAGNOSTIC_OK")
 
