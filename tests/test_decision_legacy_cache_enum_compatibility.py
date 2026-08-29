@@ -7,10 +7,19 @@ from financial_dashboard.context.envelope import (
     FactRef,
     SourceFamily,
 )
+from financial_dashboard.context.pattern_behavior_projection import (
+    PatternBehaviorPhase,
+    PatternBehaviorTimeframeProjection,
+)
 from financial_dashboard.context.projections import (
     StructuralScopeProjection,
     StructuralTimeframeProjection,
 )
+from financial_dashboard.context.volatility_environment_projection import (
+    ExpansionCharacter,
+    VolatilityRangeRegime,
+)
+from financial_dashboard.decision.coverage import CoverageFamily, assess_coverage
 from financial_dashboard.decision.environment import (
     EnvironmentAlignment,
     EnvironmentRisk,
@@ -22,14 +31,7 @@ from financial_dashboard.decision.execution import (
 )
 from financial_dashboard.decision.participation import ParticipationState, assess_participation
 from financial_dashboard.decision.reaction import ReactionState, assess_reaction
-from financial_dashboard.decision.structural import (
-    StructuralDirection,
-    assess_short_term_structure,
-)
-from financial_dashboard.context.volatility_environment_projection import (
-    ExpansionCharacter,
-    VolatilityRangeRegime,
-)
+from financial_dashboard.decision.structural import StructuralDirection, assess_short_term_structure
 
 
 def _legacy_ref(*, domain="VOLATILITY", quality="VALID", timeframe="1h") -> FactRef:
@@ -67,13 +69,7 @@ def test_environment_accepts_legacy_cached_string_enums() -> None:
         expansion_direction=1,
     )
     projection = SimpleNamespace(for_timeframe=lambda timeframe: row)
-
-    result = assess_environment(
-        StructuralDirection.LONG,
-        projection,
-        timeframe="1h",
-    )
-
+    result = assess_environment(StructuralDirection.LONG, projection, timeframe="1h")
     assert result.regime is VolatilityRangeRegime.BALANCED
     assert result.character is ExpansionCharacter.NEUTRAL
     assert result.data_quality is ContextDataQuality.VALID
@@ -89,9 +85,7 @@ def test_environment_unknown_legacy_token_fails_closed_instead_of_crashing() -> 
         expansion_direction=1,
     )
     projection = SimpleNamespace(for_timeframe=lambda timeframe: row)
-
     result = assess_environment(StructuralDirection.LONG, projection, timeframe="1h")
-
     assert result.regime is VolatilityRangeRegime.UNAVAILABLE
     assert result.character is ExpansionCharacter.UNAVAILABLE
     assert result.risk is EnvironmentRisk.UNKNOWN
@@ -111,13 +105,7 @@ def test_participation_accepts_legacy_cached_string_enums() -> None:
         heavy_conflict_bars=0,
     )
     projection = SimpleNamespace(for_timeframe=lambda timeframe: row)
-
-    result = assess_participation(
-        StructuralDirection.LONG,
-        projection,
-        timeframe="1h",
-    )
-
+    result = assess_participation(StructuralDirection.LONG, projection, timeframe="1h")
     assert result.state is ParticipationState.SUPPORTIVE
     assert result.data_quality is ContextDataQuality.VALID
 
@@ -167,9 +155,7 @@ def test_structure_accepts_legacy_cached_quality_string() -> None:
         events=(),
     )
     projection = SimpleNamespace(for_timeframe=lambda timeframe: row)
-
     result = assess_short_term_structure(projection)
-
     assert result.direction is StructuralDirection.LONG
     assert result.data_quality is ContextDataQuality.VALID
 
@@ -189,13 +175,54 @@ def test_reaction_treats_legacy_valid_fact_ref_as_usable_evidence() -> None:
         terminal_reason=None,
     )
     projection = SimpleNamespace(observations=(observation,))
-
     result = assess_reaction(
         StructuralDirection.LONG,
         order_blocks=projection,
         timeframes=("1h",),
     )
-
     assert result.state is ReactionState.CONFIRMED
     assert result.confirmation_present is True
     assert result.data_quality is ContextDataQuality.VALID
+
+
+def test_pattern_phase_hydrates_from_legacy_cached_string() -> None:
+    row = PatternBehaviorTimeframeProjection(
+        timeframe="30m",
+        ref=_legacy_ref(domain="PATTERN", timeframe="30m"),
+        phase="BREAK_CONFIRMED",
+        native_state="KIRILIM_TEYITLI",
+        pattern_state_code=None,
+        pattern_type_code=None,
+        classic_direction=1,
+        identity=None,
+        age_bars=1,
+        bars_since_known=1,
+        progress=None,
+        contraction=None,
+        raw_quality=None,
+        selection_score=None,
+        export_quality=None,
+        upper_touches=0,
+        lower_touches=0,
+        quality_frozen=False,
+        break_state_code=None,
+        break_level=None,
+        break_strength=None,
+        retest_state_code=None,
+        retest_tolerance=None,
+    )
+    assert row.phase is PatternBehaviorPhase.BREAK_CONFIRMED
+
+
+def test_coverage_normalizes_legacy_cached_quality_strings() -> None:
+    report = assess_coverage(
+        {
+            CoverageFamily.STRUCTURE: "VALID",
+            CoverageFamily.HAM: "DATA_LIMITED",
+        },
+        expected_families=(CoverageFamily.STRUCTURE, CoverageFamily.HAM),
+        critical_families=(CoverageFamily.STRUCTURE,),
+    )
+    assert report.valid_families == (CoverageFamily.STRUCTURE,)
+    assert report.degraded_families == (CoverageFamily.HAM,)
+    assert report.critical_path_missing == ()
