@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 
 from financial_dashboard.context.axes import evaluate_context_axes
-from financial_dashboard.context.envelope import ContextDataQuality, FactRef
+from financial_dashboard.context.envelope import (
+    ContextDataQuality,
+    FactRef,
+    normalize_context_data_quality,
+)
 from financial_dashboard.context.permissions import PermissionEnvelope, resolve_permission_axes
 from financial_dashboard.context.projections import StructuralFactsProjection
 from financial_dashboard.decision_input import DecisionInputSnapshot
@@ -173,9 +177,46 @@ def _pattern_quality(snapshot: DecisionInputSnapshot, timeframe: str) -> Context
     if projection is None:
         return ContextDataQuality.UNAVAILABLE
     try:
-        return projection.for_timeframe(timeframe).ref.data_quality
+        return normalize_context_data_quality(projection.for_timeframe(timeframe).ref.data_quality)
     except KeyError:
         return ContextDataQuality.UNAVAILABLE
+
+
+def _execution_channel_quality(
+    snapshot: DecisionInputSnapshot,
+    timeframe: str,
+) -> ContextDataQuality:
+    """Return quality for the native price-pattern execution channel.
+
+    The legacy snapshot-wide timeframe quality is Structure-owned and may be
+    DATA_LIMITED because of generic OHLCV diagnostics that do not invalidate the
+    price-only 30m Pattern state. Execution events are currently detected from the
+    native 30m pattern transition, so its own ref is the authoritative channel.
+
+    DATA_LIMITED is normalized to VALID only when a concrete native pattern state is
+    present. Missing/unknown pattern channels still fail closed through the generic
+    timeframe quality fallback.
+    """
+
+    normalized = timeframe.strip().lower()
+    projection = getattr(snapshot, "pattern_behavior", None)
+    if projection is not None:
+        try:
+            row = projection.for_timeframe(normalized)
+        except (KeyError, AttributeError, TypeError):
+            row = None
+        if row is not None:
+            quality = normalize_context_data_quality(row.ref.data_quality)
+            if quality is ContextDataQuality.VALID:
+                return quality
+            if quality is ContextDataQuality.DATA_LIMITED:
+                native_state = str(getattr(row, "native_state", "") or "").strip()
+                phase = str(getattr(getattr(row, "phase", None), "value", getattr(row, "phase", "")) or "").strip().upper()
+                if native_state or (phase and phase != "UNAVAILABLE"):
+                    return ContextDataQuality.VALID
+            return quality
+
+    return normalize_context_data_quality(snapshot.quality_for_timeframe(normalized))
 
 
 def _ham_quality(snapshot: DecisionInputSnapshot, timeframe: str) -> ContextDataQuality:
@@ -184,7 +225,7 @@ def _ham_quality(snapshot: DecisionInputSnapshot, timeframe: str) -> ContextData
     normalized = timeframe.strip().lower()
     for row in snapshot.ham.timeframe_facts:
         if row.timeframe == normalized:
-            return row.data_quality
+            return normalize_context_data_quality(row.data_quality)
     return ContextDataQuality.UNAVAILABLE
 
 
@@ -193,7 +234,7 @@ def _liquidity_quality(snapshot: DecisionInputSnapshot, timeframe: str) -> Conte
     if projection is None:
         return ContextDataQuality.UNAVAILABLE
     try:
-        return projection.for_timeframe(timeframe).ref.data_quality
+        return normalize_context_data_quality(projection.for_timeframe(timeframe).ref.data_quality)
     except KeyError:
         return ContextDataQuality.UNAVAILABLE
 
@@ -369,7 +410,7 @@ def assess_horizon_decision(
         structural.direction,
         as_of=snapshot.as_of,
         timeframe=cfg.execution_timeframe,
-        data_quality=snapshot.quality_for_timeframe(cfg.execution_timeframe),
+        data_quality=_execution_channel_quality(snapshot, cfg.execution_timeframe),
         event=execution_event,
     )
     final = compose_final_decision(
