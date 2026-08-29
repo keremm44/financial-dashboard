@@ -98,7 +98,7 @@ def _exit_event(as_of):
     return ExecutionTriggerEvent(
         state=ExecutionTriggerState.CONFIRMED,
         side=StructuralDirection.SHORT,
-        timeframe="30m",
+        timeframe="1h",
         observed_at=timestamp,
         available_at=timestamp,
         reason="TEST_LONG_EXIT_EVENT",
