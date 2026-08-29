@@ -69,15 +69,7 @@ def _phase(row) -> str:
     return row.entry_decision.action.value
 
 
-def canonical_decision_events_from_replay(
-    replay: CanonicalLifecycleReplayResult,
-) -> tuple[DecisionEvent, ...]:
-    """Project canonical lifecycle rows into hindsight-audit events.
-
-    This is a downstream adapter only. It never changes a decision, reconstructs a
-    position, or feeds hindsight information back into the decision engine.
-    """
-
+def canonical_decision_events_from_replay(replay: CanonicalLifecycleReplayResult) -> tuple[DecisionEvent, ...]:
     events: list[DecisionEvent] = []
     qualified_since: Any | None = None
     qualified_price: float | None = None
@@ -122,27 +114,31 @@ def canonical_decision_events_from_replay(
             exit_watch_price = None
             exit_ready_since = None
             exit_ready_price = None
-        else:
-            if exit_decision is not None:
-                if exit_decision.stage.value == "EXIT_WATCH" and exit_watch_since is None:
-                    exit_watch_since = snapshot.as_of
-                    exit_watch_price = float(snapshot.current_price)
-                elif exit_decision.stage.value == "MONITOR":
-                    exit_watch_since = None
-                    exit_watch_price = None
-                if exit_decision.stage.value == "EXIT_READY" and exit_ready_since is None:
-                    exit_ready_since = snapshot.as_of
-                    exit_ready_price = float(snapshot.current_price)
-                elif exit_decision.stage.value != "EXIT_READY":
-                    exit_ready_since = None
-                    exit_ready_price = None
+        elif exit_decision is not None:
+            if exit_decision.stage.value == "EXIT_WATCH" and exit_watch_since is None:
+                exit_watch_since = snapshot.as_of
+                exit_watch_price = float(snapshot.current_price)
+            elif exit_decision.stage.value == "MONITOR":
+                exit_watch_since = None
+                exit_watch_price = None
+            if exit_decision.stage.value == "EXIT_READY" and exit_ready_since is None:
+                exit_ready_since = snapshot.as_of
+                exit_ready_price = float(snapshot.current_price)
+            elif exit_decision.stage.value != "EXIT_READY":
+                exit_ready_since = None
+                exit_ready_price = None
 
         metadata = row.current_state.entry_metadata or row.previous_state.entry_metadata
         selected_scenario = None if entry is None else entry.arbitration.selected_scenario
-        entry_horizon = (
+        thesis_horizon = (
+            metadata.thesis_horizon.value
+            if metadata is not None and metadata.thesis_horizon is not None
+            else None if entry is None or entry.selected_horizon is None else entry.selected_horizon.value
+        )
+        trade_horizon = (
             metadata.entry_horizon.value
             if metadata is not None
-            else None if entry is None or entry.selected_horizon is None else entry.selected_horizon.value
+            else thesis_horizon
         )
         scenario_kind = (
             metadata.scenario_kind.value
@@ -156,7 +152,8 @@ def canonical_decision_events_from_replay(
             waiting_for = entry.waiting_for
             lineage = entry.source_lineage
             entry_payload = {
-                "selected_horizon": entry_horizon,
+                "selected_horizon": thesis_horizon,
+                "trade_horizon": trade_horizon,
                 "scenario_stage": None if entry.scenario_stage is None else entry.scenario_stage.value,
                 "scenario_kind": scenario_kind,
                 "execution_state": None if entry.execution_state is None else entry.execution_state.value,
@@ -174,7 +171,9 @@ def canonical_decision_events_from_replay(
             lineage = exit_decision.source_lineage
             entry_payload = None
             exit_payload = {
-                "entry_horizon": entry_horizon,
+                "entry_horizon": thesis_horizon,
+                "trade_horizon": trade_horizon,
+                "exit_authority_horizon": trade_horizon,
                 "stage": exit_decision.stage.value,
                 "position_health": exit_decision.position_health.value,
                 "execution": _jsonable(exit_decision.execution),
@@ -202,7 +201,9 @@ def canonical_decision_events_from_replay(
             "canonical_readiness_proxy": bool(row.execution_proxy_used),
             "lifecycle_phase": _phase(row),
             "trade_lifecycle": _lifecycle_payload(row),
-            "entry_horizon": entry_horizon,
+            "entry_horizon": thesis_horizon,
+            "trade_horizon": trade_horizon,
+            "exit_authority_horizon": trade_horizon,
             "scenario_kind": scenario_kind,
             "entry_metadata": None if metadata is None else _jsonable(metadata),
             "entry_decision": entry_payload,
