@@ -7,13 +7,16 @@ from pathlib import Path
 import pandas as pd
 
 from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES
-from financial_dashboard.context.envelope import ContextDataQuality, normalize_context_data_quality
+from financial_dashboard.context.envelope import normalize_context_data_quality
 from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.decision.arbiter import assess_entry_arbitration
 from financial_dashboard.decision.calibration import load_opportunity_calibration
-from financial_dashboard.decision.composer import DecisionAction
-from financial_dashboard.decision.engine import DecisionEngineConfig, assess_horizon_decision
+from financial_dashboard.decision.engine import (
+    DecisionEngineConfig,
+    _execution_channel_quality,
+    assess_horizon_decision,
+)
 from financial_dashboard.decision.execution_detect import detect_30m_execution_events
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
 from financial_dashboard.decision.scenario import ScenarioStage
@@ -114,7 +117,8 @@ def main() -> None:
         selected = arbitration.selected_scenario
         selected_horizon = arbitration.selected_horizon
         event = entry_events.get(snapshot.as_of)
-        q30 = normalize_context_data_quality(snapshot.quality_for_timeframe(cfg.execution_timeframe))
+        raw_q30 = normalize_context_data_quality(snapshot.quality_for_timeframe(cfg.execution_timeframe))
+        exec_q30 = _execution_channel_quality(snapshot, cfg.execution_timeframe)
 
         lt = assess_horizon_decision(snapshot, DecisionHorizon.LONG_TERM, config=cfg)
         st = assess_horizon_decision(snapshot, DecisionHorizon.SHORT_TERM, config=cfg)
@@ -141,9 +145,11 @@ def main() -> None:
         if selected is not None and selected_horizon is not None and selected.stage is ScenarioStage.QUALIFIED:
             assessment = assessments[selected_horizon]
             counters["QUALIFIED_SELECTED"] += 1
-            counters[f"QUALIFIED_EXEC_QUALITY:{q30.value}"] += 1
+            counters[f"QUALIFIED_RAW_Q30:{raw_q30.value}"] += 1
+            counters[f"QUALIFIED_EXEC_QUALITY:{exec_q30.value}"] += 1
             counters[f"QUALIFIED_ELIGIBILITY:{_value(assessment.eligibility.state)}"] += 1
             counters[f"QUALIFIED_NO_EVENT_ACTION:{_value(assessment.final.action)}"] += 1
+            action_with_event = None
             if event is not None:
                 with_event = assess_horizon_decision(
                     snapshot,
@@ -151,18 +157,21 @@ def main() -> None:
                     config=cfg,
                     execution_event=event,
                 )
-                counters[f"QUALIFIED_WITH_EVENT_ACTION:{_value(with_event.final.action)}"] += 1
+                action_with_event = _value(with_event.final.action)
+                counters[f"QUALIFIED_WITH_EVENT_ACTION:{action_with_event}"] += 1
             prev_distance, next_distance = _nearest_event_distance(index, event_indices)
             qualified_rows.append(
                 {
                     "as_of": snapshot.as_of,
                     "horizon": _value(selected_horizon),
-                    "quality_30m": q30.value,
+                    "raw_quality_30m": raw_q30.value,
+                    "execution_quality_30m": exec_q30.value,
                     "eligibility": _value(assessment.eligibility.state),
                     "timing": _value(assessment.timing.state),
                     "opportunity": _value(assessment.opportunity.state),
                     "conflict": _value(assessment.conflict.state),
                     "action_without_event": _value(assessment.final.action),
+                    "action_with_event": action_with_event,
                     "entry_event_same_bar": event is not None,
                     "prev_event_distance_bars": prev_distance,
                     "next_event_distance_bars": next_distance,
@@ -177,7 +186,8 @@ def main() -> None:
                     "event_observed_at": event.observed_at,
                     "event_available_at": event.available_at,
                     "event_reason": event.reason,
-                    "quality_30m": q30.value,
+                    "raw_quality_30m": raw_q30.value,
+                    "execution_quality_30m": exec_q30.value,
                     "selected_horizon": "NONE" if selected_horizon is None else _value(selected_horizon),
                     "selected_stage": "NONE" if selected is None else _value(selected.stage),
                     "lt_stage": _value(snapshot.entry_scenario(DecisionHorizon.LONG_TERM, config=cfg).stage),
@@ -217,9 +227,10 @@ def main() -> None:
     else:
         for row in qualified_rows:
             print(
-                f"{row['as_of']} horizon={row['horizon']} q30={row['quality_30m']} "
-                f"elig={row['eligibility']} timing={row['timing']} opp={row['opportunity']} "
-                f"conflict={row['conflict']} action={row['action_without_event']} "
+                f"{row['as_of']} horizon={row['horizon']} raw_q30={row['raw_quality_30m']} "
+                f"exec_q30={row['execution_quality_30m']} elig={row['eligibility']} "
+                f"timing={row['timing']} opp={row['opportunity']} conflict={row['conflict']} "
+                f"action={row['action_without_event']} with_event={row['action_with_event']} "
                 f"event_same_bar={row['entry_event_same_bar']} "
                 f"prev_event={row['prev_event_distance_bars']} next_event={row['next_event_distance_bars']} "
                 f"waiting={row['waiting_for']}"
@@ -230,7 +241,8 @@ def main() -> None:
     for row in event_rows:
         print(
             f"decision={row['decision_as_of']} observed={row['event_observed_at']} available={row['event_available_at']} "
-            f"q30={row['quality_30m']} selected={row['selected_horizon']}:{row['selected_stage']} "
+            f"raw_q30={row['raw_quality_30m']} exec_q30={row['execution_quality_30m']} "
+            f"selected={row['selected_horizon']}:{row['selected_stage']} "
             f"LT={row['lt_stage']}/{row['lt_eligibility']} ST={row['st_stage']}/{row['st_eligibility']} "
             f"reason={row['event_reason']}"
         )
