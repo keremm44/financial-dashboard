@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import TypeVar
 
-from financial_dashboard.context.envelope import ContextDataQuality, FactRef
+from financial_dashboard.context.envelope import (
+    ContextDataQuality,
+    FactRef,
+    normalize_context_data_quality,
+)
 from financial_dashboard.context.participation_behavior_projection import (
     BreakParticipationBehavior,
     EffortResultBehavior,
@@ -33,6 +38,19 @@ class ParticipationAssessment:
     heavy_conflict_bars: int | None = None
 
 
+_E = TypeVar("_E", bound=StrEnum)
+
+
+def _legacy_enum(enum_type: type[_E], value: object, fallback: _E) -> _E:
+    if isinstance(value, enum_type):
+        return value
+    token = getattr(value, "value", value)
+    try:
+        return enum_type(str(token))
+    except (TypeError, ValueError):
+        return fallback
+
+
 def _direction_value(side: StructuralDirection) -> int:
     if side is StructuralDirection.LONG:
         return 1
@@ -50,12 +68,9 @@ def assess_participation(
 ) -> ParticipationAssessment:
     """Classify participation severity relative to Structure without voting on side.
 
-    A native heavy-conflict flag stays MATERIAL while it is fresh enough to
-    describe the current path. Once its age in bars exceeds
-    ``max_heavy_conflict_age_bars`` it is reclassified as persistent ambiguity
-    (WEAK, ``PARTICIPATION_HEAVY_CONFLICT_STALE``) instead of a hard
-    contradiction: months-long "heavy conflict" is noise, not evidence. The
-    native predicate itself is never modified here.
+    Legacy frozen DecisionInput caches may contain the string form of enum-backed
+    participation fields. Normalize them at the decision boundary so cache reuse
+    cannot silently change severity or require a domain rebuild.
     """
 
     direction = _direction_value(side)
@@ -90,17 +105,24 @@ def assess_participation(
             (),
         )
 
-    quality = row.ref.data_quality
+    quality = normalize_context_data_quality(row.ref.data_quality)
+    trend = _legacy_enum(ParticipationTrend, row.participation_trend, ParticipationTrend.UNAVAILABLE)
+    effort_result = _legacy_enum(EffortResultBehavior, row.effort_result, EffortResultBehavior.UNAVAILABLE)
+    break_participation = _legacy_enum(
+        BreakParticipationBehavior,
+        row.break_participation,
+        BreakParticipationBehavior.UNAVAILABLE,
+    )
     same_side_unsupported_break = (
-        row.break_participation is BreakParticipationBehavior.UNSUPPORTED
+        break_participation is BreakParticipationBehavior.UNSUPPORTED
         and row.break_direction == direction
     )
     opposing_unsupported_break = (
-        row.break_participation is BreakParticipationBehavior.UNSUPPORTED
+        break_participation is BreakParticipationBehavior.UNSUPPORTED
         and row.break_direction == -direction
     )
 
-    if quality is not ContextDataQuality.VALID or row.participation_trend is ParticipationTrend.UNAVAILABLE:
+    if quality is not ContextDataQuality.VALID or trend is ParticipationTrend.UNAVAILABLE:
         return ParticipationAssessment(
             ParticipationState.UNKNOWN,
             bool(row.heavy_conflict),
@@ -111,11 +133,6 @@ def assess_participation(
         )
 
     reasons: list[str] = []
-
-    # Heavy conflict is an explicit native severity flag and remains OPPOSING even
-    # if other volume fields are weak. Ordinary LOW_PARTICIPATION, fading/ended
-    # participation, weak effort/result and an unsupported break only weaken the
-    # structural path when that unsupported break is on the structural side.
     if row.heavy_conflict:
         heavy_bars = getattr(row, "heavy_conflict_bars", None)
         stale = (
@@ -129,10 +146,7 @@ def assess_participation(
                 False,
                 same_side_unsupported_break,
                 quality,
-                (
-                    "PARTICIPATION_HEAVY_CONFLICT_STALE",
-                    f"HEAVY_CONFLICT_BARS:{int(heavy_bars)}",
-                ),
+                ("PARTICIPATION_HEAVY_CONFLICT_STALE", f"HEAVY_CONFLICT_BARS:{int(heavy_bars)}"),
                 (row.ref,),
                 heavy_conflict_bars=heavy_bars,
             )
@@ -148,16 +162,16 @@ def assess_participation(
 
     weak = (
         row.status.strip().upper() == "LOW_PARTICIPATION"
-        or row.participation_trend in {ParticipationTrend.FADING, ParticipationTrend.ENDED}
-        or row.effort_result is EffortResultBehavior.WEAK_RESULT
+        or trend in {ParticipationTrend.FADING, ParticipationTrend.ENDED}
+        or effort_result is EffortResultBehavior.WEAK_RESULT
         or same_side_unsupported_break
     )
     if weak:
         if row.status.strip().upper() == "LOW_PARTICIPATION":
             reasons.append("LOW_PARTICIPATION")
-        if row.participation_trend in {ParticipationTrend.FADING, ParticipationTrend.ENDED}:
-            reasons.append(f"PARTICIPATION_{row.participation_trend.value}")
-        if row.effort_result is EffortResultBehavior.WEAK_RESULT:
+        if trend in {ParticipationTrend.FADING, ParticipationTrend.ENDED}:
+            reasons.append(f"PARTICIPATION_{trend.value}")
+        if effort_result is EffortResultBehavior.WEAK_RESULT:
             reasons.append("WEAK_EFFORT_RESULT")
         if same_side_unsupported_break:
             reasons.append("UNSUPPORTED_BREAK_ALIGNS_STRUCTURE")
@@ -172,13 +186,11 @@ def assess_participation(
 
     opposed_participation = (
         row.participation_direction == -direction
-        and row.participation_trend
-        in {ParticipationTrend.BUILDING, ParticipationTrend.CONFIRMED, ParticipationTrend.PROTECTED}
+        and trend in {ParticipationTrend.BUILDING, ParticipationTrend.CONFIRMED, ParticipationTrend.PROTECTED}
     )
     opposed_break = (
         row.break_direction == -direction
-        and row.break_participation
-        in {BreakParticipationBehavior.SUPPORTED, BreakParticipationBehavior.PROTECTED}
+        and break_participation in {BreakParticipationBehavior.SUPPORTED, BreakParticipationBehavior.PROTECTED}
     )
     opposed_evidence = row.evidence_direction == -direction and row.evidence_direction != 0
     if opposed_participation or opposed_break or opposed_evidence:
@@ -199,13 +211,11 @@ def assess_participation(
 
     aligned_participation = (
         row.participation_direction == direction
-        and row.participation_trend
-        in {ParticipationTrend.BUILDING, ParticipationTrend.CONFIRMED, ParticipationTrend.PROTECTED}
+        and trend in {ParticipationTrend.BUILDING, ParticipationTrend.CONFIRMED, ParticipationTrend.PROTECTED}
     )
     aligned_break = (
         row.break_direction == direction
-        and row.break_participation
-        in {BreakParticipationBehavior.SUPPORTED, BreakParticipationBehavior.PROTECTED}
+        and break_participation in {BreakParticipationBehavior.SUPPORTED, BreakParticipationBehavior.PROTECTED}
     )
     aligned_evidence = row.evidence_direction == direction and row.evidence_direction != 0
     if aligned_participation or aligned_break or aligned_evidence:
