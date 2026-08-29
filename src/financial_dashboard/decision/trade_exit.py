@@ -251,9 +251,6 @@ def _validate_exit_event(event: ExecutionTriggerEvent, *, as_of: Any, timeframe:
             raise ValueError("long exit execution cannot contain future-unavailable refs")
 
 
-_STRUCTURE_BOS_EVENT_REASON = "30M_STRUCTURE_BOS_CONFIRMED"
-
-
 def arm_open_long_on_30m_short(
     assessment: LongExitAssessment,
     *,
@@ -261,27 +258,15 @@ def arm_open_long_on_30m_short(
     event: ExecutionTriggerEvent | None,
     allow: bool,
 ) -> LongExitAssessment:
-    """Arm a trade-scale exit from a fresh 30m SHORT *pattern* confirm.
+    """30m never arms EXIT_READY. Pattern SHORT and structure BOS are clicks.
 
-    30m structure BOS is not a click: it is thesis-scale noise on an intact LT
-    pullback. If 1H/LT already armed EXIT_READY, a BOS event may still execute
-    later in the validator. No event / FAILED / missing ownership stay HOLD.
+    Intact LT ALIGNED/PULLBACK stays MONITOR. SELL requires 1H/LT to already
+    have armed EXIT_READY; the validator then consumes a fresh 30m SHORT event.
+    Signature kept for compose/stream call sites.
     """
 
-    if not allow or assessment.stage is ExitStage.EXIT_READY or event is None:
-        return assessment
-    if event.state is not ExecutionTriggerState.CONFIRMED:
-        return assessment
-    if str(event.reason).strip() == _STRUCTURE_BOS_EVENT_REASON:
-        return assessment
-    _validate_exit_event(event, as_of=as_of, timeframe="30m")
-    return LongExitAssessment(
-        ExitStage.EXIT_READY,
-        PositionHealth.PRESSURED,
-        (*assessment.reasons, "30M_SHORT_CONFIRM_AGAINST_OPEN_LONG"),
-        ("FRESH_LONG_EXIT_EXECUTION_EVENT",),
-        assessment.source_refs,
-    )
+    del as_of, event, allow
+    return assessment
 
 
 def assess_long_exit_execution(

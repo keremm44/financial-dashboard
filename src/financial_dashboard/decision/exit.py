@@ -211,9 +211,9 @@ def compose_position_exit_decision(
 ) -> PositionExitDecision:
     """Compose HOLD/SELL for one OPEN position from frozen ownership metadata.
 
-    LT/1H thesis can stay MONITOR for months. The open trade is a shorter cycle:
-    a fresh same-bar 30m SHORT CONFIRMED event arms EXIT_READY and can SELL
-    without waiting for 1H/4H/1D BOS. FAILED or missing events stay HOLD.
+    Intact LT ALIGNED/PULLBACK stays MONITOR. A fresh 30m SHORT event does not
+    arm EXIT_READY; 1H/LT must already be against. EXIT_READY plus one fresh
+    30m SHORT click can SELL. FAILED or missing events stay HOLD.
     Ownership-less rows fail closed and do not guess a sell.
     """
 

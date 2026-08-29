@@ -202,7 +202,7 @@ def test_intact_lt_still_holds_without_30m_short_event():
     assert decision.execution_event_consumed is False
 
 
-def test_open_long_sells_on_fresh_30m_short_even_if_lt_stays_intact():
+def test_open_long_holds_on_fresh_30m_short_while_lt_stays_intact():
     as_of = pd.Timestamp("2026-01-05 12:00")
     decision = compose_position_exit_decision(
         _state(DecisionHorizon.LONG_TERM),
@@ -211,11 +211,31 @@ def test_open_long_sells_on_fresh_30m_short_even_if_lt_stays_intact():
         execution_event=_exit_event(as_of),
     )
 
-    assert decision.action is DecisionAction.SELL
-    assert decision.stage is ExitStage.EXIT_READY
-    assert decision.execution.state is ExitExecutionState.CONFIRMED
-    assert decision.execution_event_consumed is True
-    assert "30M_SHORT_CONFIRM_AGAINST_OPEN_LONG" in decision.reasons
+    assert decision.action is DecisionAction.HOLD
+    assert decision.stage is ExitStage.MONITOR
+    assert decision.execution.state is ExitExecutionState.NOT_ARMED
+    assert decision.execution_event_consumed is False
+    assert "30M_SHORT_CONFIRM_AGAINST_OPEN_LONG" not in decision.reasons
+
+
+def test_30m_pattern_does_not_sell_an_intact_lt_pullback():
+    as_of = pd.Timestamp("2026-01-05 12:00")
+    decision = compose_position_exit_decision(
+        _state(DecisionHorizon.LONG_TERM),
+        _structural_snapshot(
+            relation=HorizonRelation.PULLBACK,
+            st_direction=StructuralDirection.SHORT,
+            st_thesis=ThesisState.TRANSITIONING,
+            st_transition_target=StructuralDirection.LONG,
+        ),
+        as_of=as_of,
+        execution_event=_exit_event(as_of),
+    )
+
+    assert decision.action is DecisionAction.HOLD
+    assert decision.stage is ExitStage.MONITOR
+    assert decision.execution_event_consumed is False
+    assert "30M_SHORT_CONFIRM_AGAINST_OPEN_LONG" not in decision.reasons
 
 
 def test_30m_structure_bos_does_not_sell_an_intact_lt_pullback():
