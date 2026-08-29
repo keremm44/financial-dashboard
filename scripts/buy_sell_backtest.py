@@ -15,7 +15,10 @@ from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.decision.calibration import load_opportunity_calibration
 from financial_dashboard.decision.canonical_events import canonical_decision_events_from_replay
 from financial_dashboard.decision.engine import DecisionEngineConfig
-from financial_dashboard.decision.execution_detect import detect_30m_execution_events
+from financial_dashboard.decision.execution_detect import (
+    detect_1h_execution_events,
+    detect_30m_execution_events,
+)
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
 from financial_dashboard.decision.lifecycle_replay import replay_canonical_trade_lifecycle
 from financial_dashboard.decision.opportunity import OpportunityCalibration
@@ -323,9 +326,11 @@ def main() -> None:
     parser.add_argument("--pattern-profile", default=None)
     parser.add_argument("--canonical-readiness-proxy", action="store_true")
     parser.add_argument(
+        "--no-primary-execution",
         "--no-30m-execution",
+        dest="no_primary_execution",
         action="store_true",
-        help="Do not attach the 30m event detector (READY stays READY).",
+        help="Do not attach the primary 1h event detector (READY stays READY).",
     )
     parser.add_argument("--opportunity-calibration", type=Path, default=None)
     parser.add_argument(
@@ -390,11 +395,12 @@ def main() -> None:
         cache_root=args.cache_root,
         symbol=clean_symbol,
     )
-    if args.no_30m_execution:
+    micro_entry_events, micro_exit_events = detect_30m_execution_events(input_replay.snapshots)
+    if args.no_primary_execution:
         entry_events: dict = {}
         exit_events: dict = {}
     else:
-        entry_events, exit_events = detect_30m_execution_events(input_replay.snapshots)
+        entry_events, exit_events = detect_1h_execution_events(input_replay.snapshots)
 
     started = perf_counter()
     lifecycle = replay_canonical_trade_lifecycle(
@@ -459,8 +465,11 @@ def main() -> None:
     print(f"CAUSAL_WARMUP_START\t{effective_start}")
     print(f"CAUSAL_SNAPSHOTS\t{len(input_replay.snapshots)}")
     print(f"DECISION_EVENTS\t{len(decisions)}")
-    print(f"EXECUTION_EVENTS_ENTRY\t{len(entry_events)}")
-    print(f"EXECUTION_EVENTS_EXIT\t{len(exit_events)}")
+    print(f"PRIMARY_EXECUTION_TIMEFRAME\t1h")
+    print(f"EXECUTION_EVENTS_ENTRY_1H\t{len(entry_events)}")
+    print(f"EXECUTION_EVENTS_EXIT_1H\t{len(exit_events)}")
+    print(f"MICRO_EVENTS_ENTRY_30M\t{len(micro_entry_events)}")
+    print(f"MICRO_EVENTS_EXIT_30M\t{len(micro_exit_events)}")
     print(f"OPPORTUNITY_CALIBRATION\t{calibration_label}")
     print("INPUT_REPLAY_PATH\tFROZEN_DECISION_TIMELINE_CACHE_ONLY")
     print(f"FROZEN_CACHE_STATUS\t{frozen.cache_status}")
@@ -473,9 +482,9 @@ def main() -> None:
     print(
         "REPLAY_MODE\t"
         + (
-            "CANONICAL_TURN4_9_READINESS_PROXY"
+            "CANONICAL_1H_PRIMARY_READINESS_PROXY"
             if args.canonical_readiness_proxy
-            else "CANONICAL_TURN4_9_REAL_EXECUTION_ONLY"
+            else "CANONICAL_1H_PRIMARY_REAL_EXECUTION_ONLY"
         )
     )
     print(render_text(audit_report, worst_trade_limit=max(1, args.worst_trades)))
