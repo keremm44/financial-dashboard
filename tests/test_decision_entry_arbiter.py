@@ -112,10 +112,10 @@ def test_lt_unknown_opportunity_can_fall_back_to_qualified_st():
     result = arbitrate_entry_scenarios(lt, st)
     assert result.state is ArbiterState.SELECTED
     assert result.selection is ArbiterSelection.SHORT_TERM
-    assert "SHORT_TERM_FALLBACK_WHILE_LONG_TERM_NONAUTHORITATIVE" in result.reasons
+    assert "SHORT_TERM_QUALIFIED_INDEPENDENT_OF_LONG_TERM" in result.reasons
 
 
-def test_lt_data_unavailable_does_not_allow_st_bypass():
+def test_lt_data_unavailable_does_not_veto_qualified_st():
     lt = _scenario(
         DecisionHorizon.LONG_TERM,
         ScenarioPresence.UNKNOWN,
@@ -123,13 +123,13 @@ def test_lt_data_unavailable_does_not_allow_st_bypass():
     )
     st = _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT)
     result = arbitrate_entry_scenarios(lt, st)
-    assert result.state is ArbiterState.WAITING_FOR_LONG_TERM_RESOLUTION
-    assert result.selection is ArbiterSelection.UNRESOLVED
-    assert result.selected_horizon is None
-    assert "LONG_TERM_AUTHORITY_UNSAFE:DATA_UNAVAILABLE" in result.reasons
+    assert result.state is ArbiterState.SELECTED
+    assert result.selection is ArbiterSelection.SHORT_TERM
+    assert result.selected_horizon is DecisionHorizon.SHORT_TERM
+    assert "LONG_TERM_CONTEXT_UNRESOLVED:DATA_UNAVAILABLE" in result.reasons
 
 
-def test_lt_structure_unresolved_does_not_allow_st_bypass():
+def test_lt_structure_unresolved_does_not_veto_qualified_st():
     lt = _scenario(
         DecisionHorizon.LONG_TERM,
         ScenarioPresence.UNKNOWN,
@@ -137,27 +137,21 @@ def test_lt_structure_unresolved_does_not_allow_st_bypass():
     )
     st = _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT)
     result = arbitrate_entry_scenarios(lt, st)
-    assert result.state is ArbiterState.WAITING_FOR_LONG_TERM_RESOLUTION
-    assert result.selected_horizon is None
+    assert result.state is ArbiterState.SELECTED
+    assert result.selection is ArbiterSelection.SHORT_TERM
+    assert result.selected_horizon is DecisionHorizon.SHORT_TERM
 
 
-def test_lt_warmup_only_allows_true_standalone_fallback():
+def test_lt_warmup_does_not_veto_qualified_st():
     lt = _scenario(
         DecisionHorizon.LONG_TERM,
         ScenarioPresence.UNKNOWN,
         unknown_reason=ScenarioUnknownReason.WARMUP,
     )
-    st_continuation = _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT)
-    blocked = arbitrate_entry_scenarios(lt, st_continuation)
-    assert blocked.state is ArbiterState.WAITING_FOR_LONG_TERM_RESOLUTION
-
-    st_standalone = _scenario(
-        DecisionHorizon.SHORT_TERM,
-        ScenarioPresence.PRESENT,
-        kind=ScenarioKind.SHORT_TERM_STANDALONE,
-    )
-    allowed = arbitrate_entry_scenarios(lt, st_standalone)
-    assert allowed.selection is ArbiterSelection.SHORT_TERM
+    st = _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT)
+    result = arbitrate_entry_scenarios(lt, st)
+    assert result.selection is ArbiterSelection.SHORT_TERM
+    assert "SHORT_TERM_QUALIFIED_INDEPENDENT_OF_LONG_TERM" in result.reasons
 
 
 def test_lt_unknown_waits_when_st_not_qualified():
