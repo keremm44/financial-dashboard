@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from financial_dashboard.context.envelope import (
     CausalFamily,
     ContextDataQuality,
@@ -98,6 +100,19 @@ def test_missing_or_degraded_stabil_is_unknown_not_neutral() -> None:
     assert assess_durability(None).state is DurabilityState.UNKNOWN
     result = assess_durability(_projection(quality=ContextDataQuality.DATA_LIMITED))
     assert result.state is DurabilityState.UNKNOWN
+
+
+def test_legacy_cached_string_quality_is_normalized_without_domain_replay() -> None:
+    legacy_valid = replace(_projection(), data_quality="VALID")
+    valid = assess_durability(legacy_valid)
+    assert valid.state is DurabilityState.HEALTHY
+    assert valid.data_quality is ContextDataQuality.VALID
+
+    legacy_limited = replace(_projection(), data_quality="DATA_LIMITED")
+    limited = assess_durability(legacy_limited)
+    assert limited.state is DurabilityState.UNKNOWN
+    assert limited.data_quality is ContextDataQuality.DATA_LIMITED
+    assert limited.reasons == ("STABIL_DATA_DATA_LIMITED",)
 
 
 def test_no_native_support_is_unknown() -> None:
