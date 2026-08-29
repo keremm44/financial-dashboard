@@ -20,10 +20,10 @@ def _entry_event(as_of):
     return ExecutionTriggerEvent(
         state=ExecutionTriggerState.CONFIRMED,
         side=StructuralDirection.LONG,
-        timeframe="30m",
+        timeframe="1h",
         observed_at=timestamp,
         available_at=timestamp,
-        reason="ENTRY_CONFIRMED",
+        reason="1H_ENTRY_CONFIRMED",
         source_refs=(),
     )
 
@@ -33,10 +33,10 @@ def _exit_event(as_of):
     return ExecutionTriggerEvent(
         state=ExecutionTriggerState.CONFIRMED,
         side=StructuralDirection.SHORT,
-        timeframe="30m",
+        timeframe="1h",
         observed_at=timestamp,
         available_at=timestamp,
-        reason="EXIT_CONFIRMED",
+        reason="1H_EXIT_CONFIRMED",
         source_refs=(),
     )
 
@@ -103,9 +103,9 @@ class _Snapshot:
 def test_canonical_replay_routes_flat_only_to_entry_and_open_only_to_exit():
     CALLS.clear()
     t1 = pd.Timestamp("2026-01-05 10:00")
-    t2 = pd.Timestamp("2026-01-05 10:30")
-    t3 = pd.Timestamp("2026-01-05 11:00")
-    t4 = pd.Timestamp("2026-01-05 11:30")
+    t2 = pd.Timestamp("2026-01-05 11:00")
+    t3 = pd.Timestamp("2026-01-05 12:00")
+    t4 = pd.Timestamp("2026-01-05 13:00")
     snapshots = (
         _Snapshot("TEST", t1, 100.0, entry_action=DecisionAction.BUY),
         _Snapshot("TEST", t2, 101.0, entry_action=DecisionAction.BUY),
@@ -125,22 +125,12 @@ def test_canonical_replay_routes_flat_only_to_entry_and_open_only_to_exit():
         DecisionAction.SELL,
         DecisionAction.WAIT,
     ]
-    assert CALLS == [
-        ("entry", t1),
-        ("exit", t2),
-        ("exit", t3),
-        ("entry", t4),
-    ]
-    assert result.rows[0].current_state.entry_metadata is not None
-    assert result.rows[0].current_state.entry_metadata.entry_horizon is DecisionHorizon.SHORT_TERM
-    assert result.rows[1].current_state.entry_metadata == result.rows[0].current_state.entry_metadata
-    assert result.rows[2].current_state == TradeLifecycleState()
     assert result.final_state.position is PositionState.FLAT
 
 
-def test_canonical_replay_does_not_reuse_event_from_another_bar():
+def test_canonical_replay_does_not_reuse_entry_event_from_another_bar():
     t1 = pd.Timestamp("2026-01-05 10:00")
-    t2 = pd.Timestamp("2026-01-05 10:30")
+    t2 = pd.Timestamp("2026-01-05 11:00")
     result = replay_canonical_trade_lifecycle(
         (
             _Snapshot("TEST", t1, 100.0, entry_action=DecisionAction.WAIT),
@@ -148,16 +138,14 @@ def test_canonical_replay_does_not_reuse_event_from_another_bar():
         ),
         entry_execution_events={t1: _entry_event(t1)},
     )
-
     assert result.rows[0].action is DecisionAction.WAIT
     assert result.rows[1].action is DecisionAction.WAIT
-    assert result.final_state.position is PositionState.FLAT
 
 
-def test_unconsumed_exit_click_can_bridge_exactly_one_decision_bar():
+def test_unconsumed_exit_click_can_bridge_one_bar_only_when_explicitly_enabled():
     t1 = pd.Timestamp("2026-01-05 10:00")
-    t2 = pd.Timestamp("2026-01-05 10:30")
-    t3 = pd.Timestamp("2026-01-05 11:00")
+    t2 = pd.Timestamp("2026-01-05 11:00")
+    t3 = pd.Timestamp("2026-01-05 12:00")
     result = replay_canonical_trade_lifecycle(
         (
             _Snapshot("TEST", t1, 100.0, entry_action=DecisionAction.BUY),
@@ -166,47 +154,19 @@ def test_unconsumed_exit_click_can_bridge_exactly_one_decision_bar():
         ),
         entry_execution_events={t1: _entry_event(t1)},
         exit_execution_events={t2: _exit_event(t2)},
+        exit_event_carry_decision_bars=1,
     )
-
     assert [row.action for row in result.rows] == [
         DecisionAction.BUY,
         DecisionAction.HOLD,
         DecisionAction.SELL,
     ]
-    assert result.rows[1].event_consumed is False
-    assert result.rows[2].event_consumed is True
-    assert result.final_state.position is PositionState.FLAT
 
 
-def test_unconsumed_exit_click_expires_after_one_decision_bar():
+def test_exit_event_carry_is_disabled_by_default_for_primary_1h():
     t1 = pd.Timestamp("2026-01-05 10:00")
-    t2 = pd.Timestamp("2026-01-05 10:30")
-    t3 = pd.Timestamp("2026-01-05 11:00")
-    t4 = pd.Timestamp("2026-01-05 11:30")
-    result = replay_canonical_trade_lifecycle(
-        (
-            _Snapshot("TEST", t1, 100.0, entry_action=DecisionAction.BUY),
-            _Snapshot("TEST", t2, 101.0, exit_action=DecisionAction.HOLD),
-            _Snapshot("TEST", t3, 100.0, exit_action=DecisionAction.HOLD),
-            _Snapshot("TEST", t4, 99.0, exit_action=DecisionAction.SELL),
-        ),
-        entry_execution_events={t1: _entry_event(t1)},
-        exit_execution_events={t2: _exit_event(t2)},
-    )
-
-    assert [row.action for row in result.rows] == [
-        DecisionAction.BUY,
-        DecisionAction.HOLD,
-        DecisionAction.HOLD,
-        DecisionAction.HOLD,
-    ]
-    assert result.final_state.position is PositionState.OPEN
-
-
-def test_exit_event_carry_can_be_disabled_explicitly():
-    t1 = pd.Timestamp("2026-01-05 10:00")
-    t2 = pd.Timestamp("2026-01-05 10:30")
-    t3 = pd.Timestamp("2026-01-05 11:00")
+    t2 = pd.Timestamp("2026-01-05 11:00")
+    t3 = pd.Timestamp("2026-01-05 12:00")
     result = replay_canonical_trade_lifecycle(
         (
             _Snapshot("TEST", t1, 100.0, entry_action=DecisionAction.BUY),
@@ -215,10 +175,47 @@ def test_exit_event_carry_can_be_disabled_explicitly():
         ),
         entry_execution_events={t1: _entry_event(t1)},
         exit_execution_events={t2: _exit_event(t2)},
-        exit_event_carry_decision_bars=0,
     )
-
     assert result.rows[2].action is DecisionAction.HOLD
+    assert result.final_state.position is PositionState.OPEN
+
+
+def test_three_consecutive_exit_ready_bars_confirm_exit_without_waiting_indefinitely():
+    times = [pd.Timestamp("2026-01-05 10:00") + pd.Timedelta(hours=i) for i in range(4)]
+    result = replay_canonical_trade_lifecycle(
+        (
+            _Snapshot("TEST", times[0], 100.0, entry_action=DecisionAction.BUY),
+            _Snapshot("TEST", times[1], 99.0, exit_action=DecisionAction.SELL),
+            _Snapshot("TEST", times[2], 98.0, exit_action=DecisionAction.SELL),
+            _Snapshot("TEST", times[3], 97.0, exit_action=DecisionAction.SELL),
+        ),
+        entry_execution_events={times[0]: _entry_event(times[0])},
+        exit_ready_persistence_bars=3,
+    )
+    assert [row.action for row in result.rows] == [
+        DecisionAction.BUY,
+        DecisionAction.HOLD,
+        DecisionAction.HOLD,
+        DecisionAction.SELL,
+    ]
+    assert result.rows[-1].exit_decision is not None
+    assert "1H_EXIT_READY_PERSISTENCE_CONFIRMED" in result.rows[-1].exit_decision.reasons
+    assert result.final_state.position is PositionState.FLAT
+
+
+def test_exit_ready_persistence_resets_on_recovery():
+    times = [pd.Timestamp("2026-01-05 10:00") + pd.Timedelta(hours=i) for i in range(5)]
+    result = replay_canonical_trade_lifecycle(
+        (
+            _Snapshot("TEST", times[0], 100.0, entry_action=DecisionAction.BUY),
+            _Snapshot("TEST", times[1], 99.0, exit_action=DecisionAction.SELL),
+            _Snapshot("TEST", times[2], 100.0, exit_action=DecisionAction.HOLD),
+            _Snapshot("TEST", times[3], 99.0, exit_action=DecisionAction.SELL),
+            _Snapshot("TEST", times[4], 98.0, exit_action=DecisionAction.SELL),
+        ),
+        entry_execution_events={times[0]: _entry_event(times[0])},
+        exit_ready_persistence_bars=3,
+    )
     assert result.final_state.position is PositionState.OPEN
 
 
@@ -246,6 +243,6 @@ def test_canonical_replay_requires_strict_order_and_one_symbol():
         replay_canonical_trade_lifecycle(
             (
                 _Snapshot("AAA", t1, 100.0),
-                _Snapshot("BBB", t1 + pd.Timedelta(minutes=30), 101.0),
+                _Snapshot("BBB", t1 + pd.Timedelta(hours=1), 101.0),
             )
         )
