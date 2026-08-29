@@ -48,23 +48,18 @@ def assess_eligibility(
     coverage: CoverageAssessment,
     reaction: "ReactionAssessment | None" = None,
 ) -> EligibilityAssessment:
-    """Compose accepted hard gates and soft WAIT conditions hierarchically.
+    """Compose hard gates and WAIT conditions without letting FORMING execute.
 
-    This function does not produce BUY/SELL. It decides only whether a fresh action
-    path is blocked, still waiting, or market-eligible. Supporting weakness is not
-    promoted into a structural thesis change.
+    ``DEVELOPING`` means a setup exists and should be watched, not that it is ready
+    for a fresh trade. Only ``TimingState.READY`` is armed strongly enough to soften
+    same-zone opportunity/context conflicts and reach ELIGIBLE.
     """
 
     blockers: list[str] = []
     waiting: list[str] = []
     reasons: list[str] = []
-    # ARMED: setup is forming or confirmed. Zone-touch + trigger are one
-    # condition — compressed room, unknown target, material conflict and a
-    # forming trigger no longer have to clear on the same bar. FAILED/ABSENT
-    # timing, HIGH conflict and opportunity NONE stay hard.
-    armed = timing.state in {TimingState.DEVELOPING, TimingState.READY}
+    armed = timing.state is TimingState.READY
 
-    # G1/G2/G3: Structure remains the hard directional dependency.
     if structural.data_quality is not ContextDataQuality.VALID:
         blockers.append(f"STRUCTURE_DATA_{structural.data_quality.value}")
     if structural.direction is StructuralDirection.UNRESOLVED:
@@ -72,10 +67,6 @@ def assess_eligibility(
     if structural.thesis_state in {ThesisState.INVALIDATED, ThesisState.UNRESOLVED}:
         blockers.append(f"STRUCTURAL_THESIS_{structural.thesis_state.value}")
 
-    # G4: Permission remains scope/context only. A legacy context HIGH may describe
-    # the same structural event that is already represented by Structure, so it must
-    # not become a second hard veto here. The independent-family conflict layer below
-    # owns the hard HIGH gate. Any other Permission BLOCKED reason remains a hard gate.
     expected_permission_side = _permission_side(structural.direction)
     if permission.gate_state is GateState.BLOCKED:
         permission_blockers = tuple(permission.blocking_reasons or ("PERMISSION_BLOCKED",))
@@ -102,7 +93,6 @@ def assess_eligibility(
         else:
             waiting.append("PERMISSION_SIDE_TO_RESOLVE")
 
-    # G5/G6/G7.
     if environment.risk is EnvironmentRisk.HARD_BLOCK:
         blockers.append("VOLATILITY_SHOCK")
     if opportunity.state is OpportunityState.NONE:
@@ -110,10 +100,6 @@ def assess_eligibility(
     if conflict.state is ConflictState.HIGH:
         blockers.append("INDEPENDENT_FAMILY_CONFLICT_HIGH")
 
-    # Coverage may describe many missing families, but only Structure is a hard
-    # dependency at this layer. 30m execution availability is handled separately by
-    # the execution-trigger contract so missing trigger data remains WAIT, not a
-    # false structural NO_TRADE.
     if CoverageFamily.STRUCTURE in coverage.critical_path_missing:
         blockers.append("CRITICAL_STRUCTURE_COVERAGE_MISSING")
 
@@ -125,28 +111,18 @@ def assess_eligibility(
             (),
         )
 
-    # An established thesis that is structurally transitioning remains analyzable,
-    # but continuation on the old side is not fresh-entry eligible yet.
     if structural.thesis_state is ThesisState.TRANSITIONING:
         waiting.append("STRUCTURAL_TRANSITION_TO_RESOLVE")
 
     if permission.gate_state is GateState.WAITING:
         waiting.extend(permission.waiting_for or ("PERMISSION_TO_OPEN",))
-    # CONDITIONAL is intentionally not a WAIT by itself. Its historical placeholder
-    # FUTURE_ACTION_LAYER_TIMING is satisfied here by the explicit timing layer.
 
     if timing.state is not TimingState.READY:
-        if armed:
-            reasons.append("SETUP_ARMED_AWAITING_CONFIRMATION")
-        else:
-            waiting.extend(timing.waiting_for or (f"TIMING_{timing.state.value}",))
+        if timing.state is TimingState.DEVELOPING:
+            reasons.append("SETUP_DEVELOPING_AWAITING_CONFIRMATION")
+        waiting.extend(timing.waiting_for or (f"TIMING_{timing.state.value}",))
 
     if opportunity.state is OpportunityState.COMPRESSED:
-        # At a confirmed or armed primary zone the compressed room-to-target is
-        # the discount itself: price reaching a quality zone is the entry
-        # condition, not a blocker. Waiting would only be satisfiable AFTER the
-        # zone and the discount are gone. Off-zone (timing not armed, no
-        # confirmation) the original WAIT applies unchanged.
         if armed or (reaction is not None and reaction.confirmation_present):
             reasons.append("ROOM_COMPRESSED_AT_PRIMARY_ZONE_DISCOUNT")
         else:
