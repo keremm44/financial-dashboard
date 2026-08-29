@@ -87,13 +87,18 @@ class _Snapshot:
         if action is DecisionAction.SELL and execution_event is None:
             action = DecisionAction.HOLD
         stage = ExitStage.EXIT_READY if self.exit_action is DecisionAction.SELL else ExitStage.MONITOR
+        execution_reason = (
+            ()
+            if execution_event is None or action is not DecisionAction.SELL
+            else (execution_event.reason,)
+        )
         return SimpleNamespace(
             action=action,
             entry_horizon=state.entry_metadata.entry_horizon,
             as_of=self.as_of,
             stage=stage,
             execution_event_consumed=action is DecisionAction.SELL,
-            reasons=("EXIT_TEST",),
+            reasons=("EXIT_TEST", *execution_reason),
             blockers=(),
             waiting_for=() if action is DecisionAction.SELL else ("EXIT_CONDITION",),
             source_lineage=("exit:test",),
