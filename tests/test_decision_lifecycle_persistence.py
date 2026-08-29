@@ -31,7 +31,7 @@ def _event(as_of, side):
     return ExecutionTriggerEvent(
         state=ExecutionTriggerState.CONFIRMED,
         side=side,
-        timeframe="30m",
+        timeframe="1h",
         observed_at=timestamp,
         available_at=timestamp,
         reason="CONFIRMED",
@@ -104,7 +104,7 @@ def _open_state():
         entry_as_of=as_of,
         entry_price=100.0,
         active_target_identity="target:1",
-        execution_timeframe="30m",
+        execution_timeframe="1h",
         execution_observed_at=as_of,
         execution_reason="CONFIRMED",
         source_lineage=("entry:lineage",),
@@ -151,8 +151,8 @@ def test_persistent_runner_processes_only_new_tail_and_preserves_ownership(tmp_p
     CALLS.clear()
     runner = PersistentCanonicalLifecycleReplayRunner(tmp_path)
     t1 = pd.Timestamp("2026-01-05 10:00")
-    t2 = pd.Timestamp("2026-01-05 10:30")
-    t3 = pd.Timestamp("2026-01-05 11:00")
+    t2 = pd.Timestamp("2026-01-05 11:00")
+    t3 = pd.Timestamp("2026-01-05 12:00")
     entry_events = {t1: _event(t1, StructuralDirection.LONG)}
 
     first_snapshots = (
@@ -222,7 +222,7 @@ def test_persistent_runner_fails_closed_when_config_or_old_event_changes(tmp_pat
     altered_event = {t1: ExecutionTriggerEvent(
         state=ExecutionTriggerState.CONFIRMED,
         side=StructuralDirection.LONG,
-        timeframe="30m",
+        timeframe="1h",
         observed_at=t1,
         available_at=t1,
         reason="DIFFERENT_REASON",
