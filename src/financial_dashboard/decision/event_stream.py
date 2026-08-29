@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from numbers import Real
 from typing import Any, Iterable
 
 import pandas as pd
@@ -19,8 +20,29 @@ class ExecutionEventLedger:
     pending: int = 0
 
 
-def _timestamp(value: Any) -> pd.Timestamp:
-    return pd.Timestamp(value)
+def _order_value(value: Any) -> tuple[str, float | int]:
+    """Return a stable ordering value without corrupting numeric test clocks.
+
+    Production uses timestamp-like values, while focused contract tests also use
+    numeric clocks such as 10.0 / 10.5 / 11.0. ``pd.Timestamp(10.5)`` truncates
+    that distinction to integer nanoseconds, so numeric clocks must stay numeric.
+    """
+
+    if isinstance(value, Real) and not isinstance(value, bool):
+        return ("number", float(value))
+    return ("timestamp", int(pd.Timestamp(value).value))
+
+
+def _compare(left: Any, right: Any) -> int:
+    left_kind, left_value = _order_value(left)
+    right_kind, right_value = _order_value(right)
+    if left_kind != right_kind:
+        raise TypeError("execution event clocks must use comparable timestamp types")
+    if left_value < right_value:
+        return -1
+    if left_value > right_value:
+        return 1
+    return 0
 
 
 def _refs_key(source_refs) -> tuple:
@@ -37,8 +59,8 @@ def _refs_key(source_refs) -> tuple:
 
 def _dedup_key(event: ExecutionTriggerEvent) -> tuple:
     return (
-        _timestamp(event.observed_at),
-        _timestamp(event.available_at),
+        _order_value(event.observed_at),
+        _order_value(event.available_at),
         event.state.value,
         event.side.value,
         event.timeframe.strip().lower(),
@@ -49,11 +71,9 @@ def _dedup_key(event: ExecutionTriggerEvent) -> tuple:
 
 
 def _sort_key(event: ExecutionTriggerEvent) -> tuple:
-    observed = _timestamp(event.observed_at)
-    available = _timestamp(event.available_at)
     return (
-        observed.value,
-        available.value,
+        _order_value(event.observed_at),
+        _order_value(event.available_at),
         execution_event_kind(event).value,
         event.state.value,
         event.side.value,
@@ -62,11 +82,9 @@ def _sort_key(event: ExecutionTriggerEvent) -> tuple:
 
 
 def _freshness_key(event: ExecutionTriggerEvent) -> tuple:
-    observed = _timestamp(event.observed_at)
-    available = _timestamp(event.available_at)
     return (
-        observed.value,
-        available.value,
+        _order_value(event.observed_at),
+        _order_value(event.available_at),
         execution_event_kind(event).value,
         event.state.value,
         event.side.value,
@@ -112,26 +130,28 @@ class ExecutionEventQueue:
         *,
         previous_as_of: Any | None = None,
     ) -> ExecutionTriggerEvent | None:
-        as_of_value = _timestamp(as_of)
-        previous = None if previous_as_of is None else _timestamp(previous_as_of)
         ready: list[ExecutionTriggerEvent] = []
         keep: list[ExecutionTriggerEvent] = []
 
         for event in self._pending:
-            observed = _timestamp(event.observed_at)
-            available = _timestamp(event.available_at)
-            if observed > as_of_value or available > as_of_value:
+            observed_after_current = _compare(event.observed_at, as_of) > 0
+            available_after_current = _compare(event.available_at, as_of) > 0
+            if observed_after_current or available_after_current:
                 keep.append(event)
                 continue
 
-            if previous is None:
-                if observed == as_of_value or available == as_of_value:
+            if previous_as_of is None:
+                # First decision bar can consume only an event that is exactly fresh
+                # on that bar. Anything older is stale; anything newer stayed pending.
+                if _compare(event.observed_at, as_of) == 0 or _compare(event.available_at, as_of) == 0:
                     ready.append(event)
                 else:
                     self._expired += 1
                 continue
 
-            if observed > previous or available > previous:
+            became_observed = _compare(event.observed_at, previous_as_of) > 0
+            became_available = _compare(event.available_at, previous_as_of) > 0
+            if became_observed or became_available:
                 ready.append(event)
             else:
                 self._expired += 1
