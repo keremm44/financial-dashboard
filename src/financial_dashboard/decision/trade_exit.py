@@ -193,6 +193,8 @@ def arm_open_long_on_30m_short(
     event: ExecutionTriggerEvent | None,
     allow: bool,
 ) -> LongExitAssessment:
+    """Compatibility shim: execution events never arm structure by themselves."""
+
     del as_of, event, allow
     return assessment
 
@@ -202,7 +204,7 @@ def assess_long_exit_execution(
     *,
     as_of: Any,
     event: ExecutionTriggerEvent | None,
-    execution_timeframe: str = "30m",
+    execution_timeframe: str = "1h",
     channel_available: bool = True,
 ) -> LongExitExecutionAssessment:
     if as_of is None:
