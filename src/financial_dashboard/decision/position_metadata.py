@@ -5,7 +5,11 @@ from math import isfinite
 from typing import TYPE_CHECKING, Any
 
 from .composer import DecisionAction
-from .execution import ExecutionTriggerEvent, ExecutionTriggerState
+from .execution import (
+    ExecutionTriggerEvent,
+    ExecutionTriggerState,
+    is_entry_execution_click,
+)
 from .scenario import ScenarioKind, ScenarioPresence, ScenarioStage
 from .structural import DecisionHorizon, StructuralDirection
 
@@ -16,11 +20,12 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class PositionEntryMetadata:
-    """Immutable facts captured at the instant an entry BUY is executed.
+    """Immutable facts captured at an executed BUY.
 
-    This is ownership/audit metadata, not fresh market evidence. It must never be
-    recomputed from later bars or used to invent a different entry horizon while a
-    position remains open.
+    ``entry_horizon`` is retained as the trade/exit-management horizon for backward
+    compatibility. ``thesis_horizon`` and ``selected_scenario_horizon`` preserve why
+    the trade existed, so an LT-authorised pullback can be managed on the ST clock
+    without being misreported as an ST thesis.
     """
 
     symbol: str
@@ -33,14 +38,28 @@ class PositionEntryMetadata:
     execution_observed_at: Any
     execution_reason: str
     source_lineage: tuple[str, ...]
+    thesis_horizon: DecisionHorizon | None = None
+    selected_scenario_horizon: DecisionHorizon | None = None
+    execution_available_at: Any | None = None
 
     def __post_init__(self) -> None:
         if not self.symbol.strip():
             raise ValueError("position entry metadata symbol must be non-empty")
         if self.entry_as_of is None or self.execution_observed_at is None:
             raise ValueError("position entry metadata timestamps must be known")
-        if self.entry_as_of != self.execution_observed_at:
-            raise ValueError("position execution must be fresh at entry_as_of")
+        if self.thesis_horizon is None:
+            object.__setattr__(self, "thesis_horizon", self.entry_horizon)
+        if self.selected_scenario_horizon is None:
+            object.__setattr__(self, "selected_scenario_horizon", self.thesis_horizon)
+        if self.execution_available_at is None:
+            object.__setattr__(self, "execution_available_at", self.execution_observed_at)
+        try:
+            if self.execution_observed_at > self.entry_as_of:
+                raise ValueError("position execution cannot be observed after entry_as_of")
+            if self.execution_available_at > self.entry_as_of:
+                raise ValueError("position execution cannot become available after entry_as_of")
+        except TypeError as exc:
+            raise TypeError("position entry metadata timestamps must be comparable") from exc
         if not isfinite(float(self.entry_price)) or float(self.entry_price) <= 0.0:
             raise ValueError("position entry price must be finite and positive")
         if self.scenario_kind is ScenarioKind.NONE:
@@ -53,6 +72,14 @@ class PositionEntryMetadata:
         if self.source_lineage != canonical:
             raise ValueError("position entry source lineage must be sorted and unique")
 
+    @property
+    def trade_horizon(self) -> DecisionHorizon:
+        return self.entry_horizon
+
+    @property
+    def exit_authority_horizon(self) -> DecisionHorizon:
+        return self.entry_horizon
+
 
 def build_position_entry_metadata(
     snapshot: "DecisionInputSnapshot",
@@ -60,12 +87,6 @@ def build_position_entry_metadata(
     *,
     execution_event: ExecutionTriggerEvent,
 ) -> PositionEntryMetadata:
-    """Freeze entry-origin facts from one actually executed Turn 6 BUY.
-
-    The raw execution event is required even though Turn 6 already assessed it. This
-    prevents persistence from fabricating execution provenance from a boolean flag.
-    """
-
     if entry.action is not DecisionAction.BUY:
         raise ValueError("position metadata can be created only from an executed BUY")
     if entry.selected_horizon is None:
@@ -102,18 +123,17 @@ def build_position_entry_metadata(
         raise ValueError("position entry event must match long-entry product")
     if execution_event.timeframe.strip().lower() != "30m":
         raise ValueError("position entry event timeframe must be 30m")
-    if execution_event.observed_at != snapshot.as_of:
-        raise ValueError("position entry event must be fresh at snapshot as_of")
+    if not is_entry_execution_click(execution_event):
+        raise ValueError("position entry event kind is not an executable BUY click")
     try:
+        if execution_event.observed_at > snapshot.as_of:
+            raise ValueError("future-observed position entry event cannot be stored")
         if execution_event.available_at > snapshot.as_of:
             raise ValueError("future-unavailable position entry event cannot be stored")
     except TypeError as exc:
         raise TypeError("position entry event timestamps must be comparable") from exc
 
-    # Pullback continuation is an ST-duration swing even when LT thesis permitted
-    # the BUY. Freeze the exit clock to SHORT_TERM so 1H owns the trade, not a
-    # month-long LT hold that sells the washout.
-    entry_horizon = (
+    trade_horizon = (
         DecisionHorizon.SHORT_TERM
         if scenario.kind is ScenarioKind.PULLBACK_CONTINUATION
         else entry.selected_horizon
@@ -121,7 +141,7 @@ def build_position_entry_metadata(
 
     return PositionEntryMetadata(
         symbol=str(snapshot.symbol),
-        entry_horizon=entry_horizon,
+        entry_horizon=trade_horizon,
         scenario_kind=scenario.kind,
         entry_as_of=snapshot.as_of,
         entry_price=float(snapshot.current_price),
@@ -130,6 +150,9 @@ def build_position_entry_metadata(
         execution_observed_at=execution_event.observed_at,
         execution_reason=execution_event.reason.strip(),
         source_lineage=tuple(sorted(set(entry.source_lineage))),
+        thesis_horizon=entry.selected_horizon,
+        selected_scenario_horizon=scenario.horizon,
+        execution_available_at=execution_event.available_at,
     )
 
 
