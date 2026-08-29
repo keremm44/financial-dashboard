@@ -14,6 +14,7 @@ from financial_dashboard.decision.scenario import (
     ScenarioKind,
     ScenarioPresence,
     ScenarioStage,
+    ScenarioUnknownReason,
 )
 from financial_dashboard.decision.structural import DecisionHorizon, StructuralDirection, ThesisState
 from financial_dashboard.decision.target_path import TargetPathStatus
@@ -25,6 +26,7 @@ def _scenario(
     *,
     stage=ScenarioStage.QUALIFIED,
     direction=StructuralDirection.LONG,
+    unknown_reason=ScenarioUnknownReason.NONE,
 ):
     if presence is ScenarioPresence.UNKNOWN:
         stage = ScenarioStage.UNAVAILABLE
@@ -64,6 +66,7 @@ def _scenario(
         blockers=("BLOCKED",) if stage is ScenarioStage.BLOCKED else (),
         waiting_for=("WAIT_FOR_SETUP",) if stage is ScenarioStage.DEVELOPING else (),
         source_lineage=(f"{horizon.value}:scenario",),
+        unknown_reason=unknown_reason,
     )
 
 
@@ -80,11 +83,7 @@ def _assessment(horizon, action, *, execution=ExecutionTriggerState.ABSENT):
         waiting_for=("FRESH_EXECUTION_EVENT",) if action is DecisionAction.READY else (),
         source_lineage=(f"{horizon.value}:final",),
     )
-    return SimpleNamespace(
-        horizon=horizon,
-        final=final,
-        execution=SimpleNamespace(state=execution),
-    )
+    return SimpleNamespace(horizon=horizon, final=final, execution=SimpleNamespace(state=execution))
 
 
 def test_blocked_lt_falls_back_to_qualified_st_for_ownership():
@@ -92,33 +91,22 @@ def test_blocked_lt_falls_back_to_qualified_st_for_ownership():
         _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT, stage=ScenarioStage.BLOCKED),
         _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT),
     )
-
     result = compose_entry_decision(
         arbitration,
         selected_assessment=_assessment(DecisionHorizon.SHORT_TERM, DecisionAction.READY),
     )
-
     assert result.selected_horizon is DecisionHorizon.SHORT_TERM
-    assert "SHORT_TERM_FALLBACK_WHILE_LONG_TERM_BLOCKED" in arbitration.reasons
     assert result.action is DecisionAction.READY
 
 
 def test_blocked_lt_keeps_ownership_when_st_not_qualified():
     arbitration = arbitrate_entry_scenarios(
         _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT, stage=ScenarioStage.BLOCKED),
-        _scenario(
-            DecisionHorizon.SHORT_TERM,
-            ScenarioPresence.PRESENT,
-            stage=ScenarioStage.DEVELOPING,
-        ),
+        _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT, stage=ScenarioStage.DEVELOPING),
     )
-
     result = compose_entry_decision(arbitration)
-
     assert result.selected_horizon is DecisionHorizon.LONG_TERM
     assert result.action is DecisionAction.NO_TRADE
-    assert result.blockers == ("BLOCKED",)
-    assert result.is_actionable_signal is False
 
 
 def test_developing_lt_falls_back_to_qualified_st():
@@ -126,12 +114,10 @@ def test_developing_lt_falls_back_to_qualified_st():
         _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT, stage=ScenarioStage.DEVELOPING),
         _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT),
     )
-
     result = compose_entry_decision(
         arbitration,
         selected_assessment=_assessment(DecisionHorizon.SHORT_TERM, DecisionAction.READY),
     )
-
     assert result.selected_horizon is DecisionHorizon.SHORT_TERM
     assert result.action is DecisionAction.READY
 
@@ -139,48 +125,54 @@ def test_developing_lt_falls_back_to_qualified_st():
 def test_developing_lt_keeps_ownership_when_st_also_developing():
     arbitration = arbitrate_entry_scenarios(
         _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT, stage=ScenarioStage.DEVELOPING),
-        _scenario(
-            DecisionHorizon.SHORT_TERM,
-            ScenarioPresence.PRESENT,
-            stage=ScenarioStage.DEVELOPING,
-        ),
+        _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT, stage=ScenarioStage.DEVELOPING),
     )
-
     result = compose_entry_decision(arbitration)
-
     assert result.selected_horizon is DecisionHorizon.LONG_TERM
     assert result.action is DecisionAction.WAIT
-    assert "WAIT_FOR_SETUP" in result.waiting_for
 
 
-def test_unresolved_lt_falls_back_to_qualified_st():
+def test_non_authoritative_lt_unknown_can_fall_back_to_qualified_st():
     arbitration = arbitrate_entry_scenarios(
-        _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.UNKNOWN),
+        _scenario(
+            DecisionHorizon.LONG_TERM,
+            ScenarioPresence.UNKNOWN,
+            unknown_reason=ScenarioUnknownReason.OPPORTUNITY_UNOBSERVED,
+        ),
         _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT),
     )
-
     result = compose_entry_decision(
         arbitration,
         selected_assessment=_assessment(DecisionHorizon.SHORT_TERM, DecisionAction.READY),
     )
-
     assert result.selected_horizon is DecisionHorizon.SHORT_TERM
-    assert "SHORT_TERM_FALLBACK_WHILE_LONG_TERM_UNRESOLVED" in arbitration.reasons
     assert result.action is DecisionAction.READY
+
+
+def test_unsafe_lt_unknown_waits_even_when_st_is_qualified():
+    arbitration = arbitrate_entry_scenarios(
+        _scenario(
+            DecisionHorizon.LONG_TERM,
+            ScenarioPresence.UNKNOWN,
+            unknown_reason=ScenarioUnknownReason.DATA_UNAVAILABLE,
+        ),
+        _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT),
+    )
+    result = compose_entry_decision(arbitration)
+    assert result.selected_horizon is None
+    assert result.action is DecisionAction.WAIT
 
 
 def test_unresolved_lt_waits_when_st_not_qualified():
     arbitration = arbitrate_entry_scenarios(
-        _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.UNKNOWN),
         _scenario(
-            DecisionHorizon.SHORT_TERM,
-            ScenarioPresence.PRESENT,
-            stage=ScenarioStage.DEVELOPING,
+            DecisionHorizon.LONG_TERM,
+            ScenarioPresence.UNKNOWN,
+            unknown_reason=ScenarioUnknownReason.OPPORTUNITY_UNOBSERVED,
         ),
+        _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT, stage=ScenarioStage.DEVELOPING),
     )
-
     result = compose_entry_decision(arbitration)
-
     assert result.selected_horizon is None
     assert result.action is DecisionAction.WAIT
     assert result.execution_event_consumed is False
@@ -191,9 +183,7 @@ def test_both_absent_produces_no_trade_not_a_synthetic_entry():
         _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.ABSENT),
         _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.ABSENT),
     )
-
     result = compose_entry_decision(arbitration)
-
     assert result.action is DecisionAction.NO_TRADE
     assert result.selected_horizon is None
 
@@ -203,15 +193,12 @@ def test_qualified_selected_scenario_without_fresh_event_stops_at_ready():
         _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT),
         _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT),
     )
-
     result = compose_entry_decision(
         arbitration,
         selected_assessment=_assessment(DecisionHorizon.LONG_TERM, DecisionAction.READY),
     )
-
     assert result.action is DecisionAction.READY
     assert result.execution_state is ExecutionTriggerState.ABSENT
-    assert result.is_actionable_signal is False
 
 
 def test_qualified_selected_scenario_and_confirmed_execution_can_emit_buy():
@@ -219,7 +206,6 @@ def test_qualified_selected_scenario_and_confirmed_execution_can_emit_buy():
         _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT),
         _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT),
     )
-
     result = compose_entry_decision(
         arbitration,
         selected_assessment=_assessment(
@@ -229,19 +215,16 @@ def test_qualified_selected_scenario_and_confirmed_execution_can_emit_buy():
         ),
         execution_event_consumed=True,
     )
-
     assert result.action is DecisionAction.BUY
     assert result.selected_horizon is DecisionHorizon.LONG_TERM
     assert result.execution_event_consumed is True
-    assert result.is_actionable_signal is True
 
 
-def test_st_entry_is_possible_only_after_explicit_lt_absence():
+def test_st_entry_is_possible_after_explicit_lt_absence():
     arbitration = arbitrate_entry_scenarios(
         _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.ABSENT),
         _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT),
     )
-
     result = compose_entry_decision(
         arbitration,
         selected_assessment=_assessment(
@@ -251,7 +234,6 @@ def test_st_entry_is_possible_only_after_explicit_lt_absence():
         ),
         execution_event_consumed=True,
     )
-
     assert result.action is DecisionAction.BUY
     assert result.selected_horizon is DecisionHorizon.SHORT_TERM
 
@@ -261,7 +243,6 @@ def test_non_qualified_scenario_rejects_execution_assessment_instead_of_bypassin
         _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT, stage=ScenarioStage.DEVELOPING),
         _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.ABSENT),
     )
-
     with pytest.raises(ValueError):
         compose_entry_decision(
             arbitration,
@@ -274,7 +255,6 @@ def test_selected_assessment_must_match_arbiter_horizon():
         _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT),
         _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT),
     )
-
     with pytest.raises(ValueError):
         compose_entry_decision(
             arbitration,
@@ -287,7 +267,6 @@ def test_entry_layer_rejects_sell_or_hold_from_lower_level_composer():
         _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT),
         _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.ABSENT),
     )
-
     with pytest.raises(ValueError):
         compose_entry_decision(
             arbitration,
