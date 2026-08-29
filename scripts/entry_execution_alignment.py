@@ -17,7 +17,10 @@ from financial_dashboard.decision.engine import (
     _execution_channel_quality,
     assess_horizon_decision,
 )
-from financial_dashboard.decision.execution_detect import detect_30m_execution_events
+from financial_dashboard.decision.execution_detect import (
+    detect_1h_execution_events,
+    detect_30m_execution_events,
+)
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
 from financial_dashboard.decision.scenario import ScenarioStage
 from financial_dashboard.decision.structural import DecisionHorizon
@@ -70,14 +73,18 @@ def _load_calibration(cache_root: Path, symbol: str):
 def _nearest_event_distance(index: int, event_indices: list[int]) -> tuple[int | None, int | None]:
     previous = [item for item in event_indices if item <= index]
     following = [item for item in event_indices if item >= index]
-    prev_distance = None if not previous else index - previous[-1]
-    next_distance = None if not following else following[0] - index
-    return prev_distance, next_distance
+    return (
+        None if not previous else index - previous[-1],
+        None if not following else following[0] - index,
+    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Diagnose why frozen entry scenarios and 30m execution events do not intersect. Domains are never replayed."
+        description=(
+            "Diagnose frozen ST scenario alignment with primary 1h execution; 30m is reported only as micro timing. "
+            "Domains are never replayed."
+        )
     )
     parser.add_argument("cache_root", type=Path)
     parser.add_argument("symbol")
@@ -104,7 +111,8 @@ def main() -> None:
     calibration, calibration_path = _load_calibration(args.cache_root, clean_symbol)
     cfg = DecisionEngineConfig(opportunity_calibration=calibration)
     snapshots = tuple(frozen.replay.snapshots)
-    entry_events, _ = detect_30m_execution_events(snapshots)
+    entry_events, _ = detect_1h_execution_events(snapshots)
+    micro_entry_events, _ = detect_30m_execution_events(snapshots)
     event_indices = [index for index, snapshot in enumerate(snapshots) if snapshot.as_of in entry_events]
 
     counters: Counter[str] = Counter()
@@ -117,8 +125,9 @@ def main() -> None:
         selected = arbitration.selected_scenario
         selected_horizon = arbitration.selected_horizon
         event = entry_events.get(snapshot.as_of)
-        raw_q30 = normalize_context_data_quality(snapshot.quality_for_timeframe(cfg.execution_timeframe))
-        exec_q30 = _execution_channel_quality(snapshot, cfg.execution_timeframe)
+        micro_event = micro_entry_events.get(snapshot.as_of)
+        raw_q1h = normalize_context_data_quality(snapshot.quality_for_timeframe("1h"))
+        exec_q1h = _execution_channel_quality(snapshot, "1h")
 
         lt = assess_horizon_decision(snapshot, DecisionHorizon.LONG_TERM, config=cfg)
         st = assess_horizon_decision(snapshot, DecisionHorizon.SHORT_TERM, config=cfg)
@@ -131,7 +140,7 @@ def main() -> None:
             counters[f"SELECTED_HORIZON:{_value(selected_horizon)}"] += 1
 
         if event is not None:
-            counters["ENTRY_EVENT"] += 1
+            counters["PRIMARY_1H_ENTRY_EVENT"] += 1
             if selected is None:
                 counters["EVENT_WITHOUT_SELECTED_SCENARIO"] += 1
                 event_gate_reasons.update(arbitration.reasons)
@@ -141,12 +150,14 @@ def main() -> None:
                 event_gate_reasons.update(selected.reasons)
             else:
                 counters["EVENT_WITH_QUALIFIED_SCENARIO"] += 1
+        if micro_event is not None:
+            counters["MICRO_30M_ENTRY_EVENT"] += 1
 
         if selected is not None and selected_horizon is not None and selected.stage is ScenarioStage.QUALIFIED:
             assessment = assessments[selected_horizon]
             counters["QUALIFIED_SELECTED"] += 1
-            counters[f"QUALIFIED_RAW_Q30:{raw_q30.value}"] += 1
-            counters[f"QUALIFIED_EXEC_QUALITY:{exec_q30.value}"] += 1
+            counters[f"QUALIFIED_RAW_Q1H:{raw_q1h.value}"] += 1
+            counters[f"QUALIFIED_EXEC_QUALITY:{exec_q1h.value}"] += 1
             counters[f"QUALIFIED_ELIGIBILITY:{_value(assessment.eligibility.state)}"] += 1
             counters[f"QUALIFIED_NO_EVENT_ACTION:{_value(assessment.final.action)}"] += 1
             action_with_event = None
@@ -164,8 +175,8 @@ def main() -> None:
                 {
                     "as_of": snapshot.as_of,
                     "horizon": _value(selected_horizon),
-                    "raw_quality_30m": raw_q30.value,
-                    "execution_quality_30m": exec_q30.value,
+                    "raw_quality_1h": raw_q1h.value,
+                    "execution_quality_1h": exec_q1h.value,
                     "eligibility": _value(assessment.eligibility.state),
                     "timing": _value(assessment.timing.state),
                     "opportunity": _value(assessment.opportunity.state),
@@ -173,6 +184,7 @@ def main() -> None:
                     "action_without_event": _value(assessment.final.action),
                     "action_with_event": action_with_event,
                     "entry_event_same_bar": event is not None,
+                    "micro_event_same_bar": micro_event is not None,
                     "prev_event_distance_bars": prev_distance,
                     "next_event_distance_bars": next_distance,
                     "waiting_for": ",".join(assessment.final.waiting_for),
@@ -186,8 +198,9 @@ def main() -> None:
                     "event_observed_at": event.observed_at,
                     "event_available_at": event.available_at,
                     "event_reason": event.reason,
-                    "raw_quality_30m": raw_q30.value,
-                    "execution_quality_30m": exec_q30.value,
+                    "raw_quality_1h": raw_q1h.value,
+                    "execution_quality_1h": exec_q1h.value,
+                    "micro_same_bar": micro_event is not None,
                     "selected_horizon": "NONE" if selected_horizon is None else _value(selected_horizon),
                     "selected_stage": "NONE" if selected is None else _value(selected.stage),
                     "lt_stage": _value(snapshot.entry_scenario(DecisionHorizon.LONG_TERM, config=cfg).stage),
@@ -198,22 +211,23 @@ def main() -> None:
             )
 
     print("=" * 88)
-    print("ENTRY / 30M EXECUTION ALIGNMENT DIAGNOSTIC")
+    print("ENTRY / 1H PRIMARY EXECUTION ALIGNMENT DIAGNOSTIC")
     print("=" * 88)
     print(f"SYMBOL\t{clean_symbol}")
     print(f"SNAPSHOTS\t{len(snapshots)}")
     print(f"FROZEN_CACHE_STATUS\t{frozen.cache_status}")
     print("DOMAIN_REPLAY_SECONDS\t0.000")
     print(f"OPPORTUNITY_CALIBRATION\t{calibration_path}")
-    print(f"ENTRY_EVENTS\t{len(entry_events)}")
+    print(f"PRIMARY_ENTRY_EVENTS_1H\t{len(entry_events)}")
+    print(f"MICRO_ENTRY_EVENTS_30M\t{len(micro_entry_events)}")
 
     print("\nSUMMARY")
     print("-------")
     for key, count in counters.most_common():
-        print(f"{key:<42} {count:>6}")
+        print(f"{key:<44} {count:>6}")
 
-    print("\nENTRY EVENT BLOCKING REASONS")
-    print("----------------------------")
+    print("\nPRIMARY ENTRY EVENT BLOCKING REASONS")
+    print("------------------------------------")
     if not event_gate_reasons:
         print("None.")
     else:
@@ -227,22 +241,21 @@ def main() -> None:
     else:
         for row in qualified_rows:
             print(
-                f"{row['as_of']} horizon={row['horizon']} raw_q30={row['raw_quality_30m']} "
-                f"exec_q30={row['execution_quality_30m']} elig={row['eligibility']} "
-                f"timing={row['timing']} opp={row['opportunity']} conflict={row['conflict']} "
-                f"action={row['action_without_event']} with_event={row['action_with_event']} "
-                f"event_same_bar={row['entry_event_same_bar']} "
-                f"prev_event={row['prev_event_distance_bars']} next_event={row['next_event_distance_bars']} "
-                f"waiting={row['waiting_for']}"
+                f"{row['as_of']} horizon={row['horizon']} raw_q1h={row['raw_quality_1h']} "
+                f"exec_q1h={row['execution_quality_1h']} elig={row['eligibility']} timing={row['timing']} "
+                f"opp={row['opportunity']} conflict={row['conflict']} action={row['action_without_event']} "
+                f"with_event={row['action_with_event']} primary1h={row['entry_event_same_bar']} "
+                f"micro30m={row['micro_event_same_bar']} prev_event={row['prev_event_distance_bars']} "
+                f"next_event={row['next_event_distance_bars']} waiting={row['waiting_for']}"
             )
 
-    print("\nENTRY EVENT WINDOWS")
-    print("-------------------")
+    print("\nPRIMARY 1H ENTRY EVENT WINDOWS")
+    print("------------------------------")
     for row in event_rows:
         print(
             f"decision={row['decision_as_of']} observed={row['event_observed_at']} available={row['event_available_at']} "
-            f"raw_q30={row['raw_quality_30m']} exec_q30={row['execution_quality_30m']} "
-            f"selected={row['selected_horizon']}:{row['selected_stage']} "
+            f"raw_q1h={row['raw_quality_1h']} exec_q1h={row['execution_quality_1h']} "
+            f"micro30m={row['micro_same_bar']} selected={row['selected_horizon']}:{row['selected_stage']} "
             f"LT={row['lt_stage']}/{row['lt_eligibility']} ST={row['st_stage']}/{row['st_eligibility']} "
             f"reason={row['event_reason']}"
         )
