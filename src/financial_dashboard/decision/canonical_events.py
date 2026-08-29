@@ -153,6 +153,7 @@ def canonical_decision_events_from_replay(replay: CanonicalLifecycleReplayResult
             lineage = entry.source_lineage
             entry_payload = {
                 "selected_horizon": thesis_horizon,
+                "thesis_horizon": thesis_horizon,
                 "trade_horizon": trade_horizon,
                 "scenario_stage": None if entry.scenario_stage is None else entry.scenario_stage.value,
                 "scenario_kind": scenario_kind,
@@ -171,7 +172,8 @@ def canonical_decision_events_from_replay(replay: CanonicalLifecycleReplayResult
             lineage = exit_decision.source_lineage
             entry_payload = None
             exit_payload = {
-                "entry_horizon": thesis_horizon,
+                "entry_horizon": trade_horizon,
+                "thesis_horizon": thesis_horizon,
                 "trade_horizon": trade_horizon,
                 "exit_authority_horizon": trade_horizon,
                 "stage": exit_decision.stage.value,
@@ -201,7 +203,8 @@ def canonical_decision_events_from_replay(replay: CanonicalLifecycleReplayResult
             "canonical_readiness_proxy": bool(row.execution_proxy_used),
             "lifecycle_phase": _phase(row),
             "trade_lifecycle": _lifecycle_payload(row),
-            "entry_horizon": thesis_horizon,
+            "entry_horizon": trade_horizon,
+            "thesis_horizon": thesis_horizon,
             "trade_horizon": trade_horizon,
             "exit_authority_horizon": trade_horizon,
             "scenario_kind": scenario_kind,
