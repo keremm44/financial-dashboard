@@ -24,8 +24,8 @@ class PositionEntryMetadata:
 
     ``entry_horizon`` is retained as the trade/exit-management horizon for backward
     compatibility. ``thesis_horizon`` and ``selected_scenario_horizon`` preserve why
-    the trade existed, so an LT-authorised pullback can be managed on the ST clock
-    without being misreported as an ST thesis.
+    the trade existed. Primary execution provenance is now the closed 1H channel;
+    optional 30m micro timing is intentionally not frozen as entry authority.
     """
 
     symbol: str
@@ -64,8 +64,8 @@ class PositionEntryMetadata:
             raise ValueError("position entry price must be finite and positive")
         if self.scenario_kind is ScenarioKind.NONE:
             raise ValueError("open position metadata requires a concrete entry scenario")
-        if self.execution_timeframe.strip().lower() != "30m":
-            raise ValueError("v1 position entry execution timeframe is fixed to 30m")
+        if self.execution_timeframe.strip().lower() != "1h":
+            raise ValueError("primary position entry execution timeframe is fixed to 1h")
         if not self.execution_reason.strip():
             raise ValueError("position entry execution reason must be non-empty")
         canonical = tuple(sorted(set(self.source_lineage)))
@@ -121,8 +121,8 @@ def build_position_entry_metadata(
         raise ValueError("position entry event must be CONFIRMED")
     if execution_event.side is not StructuralDirection.LONG:
         raise ValueError("position entry event must match long-entry product")
-    if execution_event.timeframe.strip().lower() != "30m":
-        raise ValueError("position entry event timeframe must be 30m")
+    if execution_event.timeframe.strip().lower() != "1h":
+        raise ValueError("position entry event timeframe must be 1h")
     if not is_entry_execution_click(execution_event):
         raise ValueError("position entry event kind is not an executable BUY click")
     try:
