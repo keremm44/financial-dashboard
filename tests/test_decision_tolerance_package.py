@@ -1,9 +1,9 @@
 """Tolerance package T1/T2/T4 — decision-flexibility contract tests.
 
 Market rationale (docs/karar_esnekligi_analiz_ve_plan.md):
-- T1: a blocked/developing LT scenario may yield to a QUALIFIED ST scenario,
-  but an LT UNKNOWN caused by missing/unresolved structural authority is not a
-  blanket permission to trade ST.
+- T1: a blocked/developing LT scenario may yield to a QUALIFIED ST scenario. A
+  QUALIFIED ST scenario also stands on its own 1H/30m authority when LT context is
+  UNKNOWN; only a non-qualified ST keeps waiting for unresolved LT context.
 - T2: a lifecycle-completed zone (fully filled / invalidated FVG) is normal
   gap-fill price discovery, not a directional failure; a live failure on a
   secondary lineage while the current path holds a confirmation is LOW, not
@@ -189,7 +189,7 @@ def test_compressed_room_without_reaction_input_still_waits():
 
 
 # --------------------------------------------------------------------------- #
-# T1: qualified-ST fallback while LT is blocked/developing, but not unsafe UNKNOWN
+# T1: qualified ST is independent; developing ST still cannot bypass LT         #
 # --------------------------------------------------------------------------- #
 
 def test_qualified_lt_keeps_absolute_priority_over_qualified_st():
@@ -216,16 +216,29 @@ def test_blocked_lt_yields_to_qualified_st():
     assert "SHORT_TERM_FALLBACK_WHILE_LONG_TERM_BLOCKED" in result.reasons
 
 
-def test_structurally_unresolved_lt_does_not_yield_to_qualified_st():
+def test_structurally_unresolved_lt_yields_to_qualified_st():
     result = arbitrate_entry_scenarios(
         _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.UNKNOWN),
         _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT),
     )
+    assert result.state is ArbiterState.SELECTED
+    assert result.selection is ArbiterSelection.SHORT_TERM
+    assert result.selected_horizon is DecisionHorizon.SHORT_TERM
+    assert "SHORT_TERM_QUALIFIED_INDEPENDENT_OF_LONG_TERM" in result.reasons
+
+
+def test_structurally_unresolved_lt_still_waits_for_developing_st():
+    result = arbitrate_entry_scenarios(
+        _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.UNKNOWN),
+        _scenario(
+            DecisionHorizon.SHORT_TERM,
+            ScenarioPresence.PRESENT,
+            stage=ScenarioStage.DEVELOPING,
+        ),
+    )
     assert result.state is ArbiterState.WAITING_FOR_LONG_TERM_RESOLUTION
     assert result.selection is ArbiterSelection.UNRESOLVED
     assert result.selected_horizon is None
-    assert "LONG_TERM_AUTHORITY_UNSAFE:STRUCTURE_UNRESOLVED" in result.reasons
-    assert result.waiting_for == ("LONG_TERM_STRUCTURAL_AUTHORITY_TO_RESOLVE",)
 
 
 # --------------------------------------------------------------------------- #
