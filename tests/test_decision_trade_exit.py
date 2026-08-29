@@ -47,10 +47,10 @@ def _exit_event(*, as_of, side=StructuralDirection.SHORT, state=ExecutionTrigger
     return ExecutionTriggerEvent(
         state=state,
         side=side,
-        timeframe="30m",
+        timeframe="1h",
         observed_at=pd.Timestamp(as_of),
         available_at=pd.Timestamp(as_of),
-        reason="TEST_FRESH_EXIT_EVENT",
+        reason="TEST_FRESH_1H_EXIT_EVENT",
         source_refs=(),
     )
 
@@ -148,10 +148,10 @@ def test_exit_event_must_be_short_side_and_not_future():
             event=_exit_event(as_of=as_of, side=StructuralDirection.LONG),
         )
 
-    window_event = _exit_event(as_of=pd.Timestamp("2026-01-05 11:30"))
-    assert assess_long_exit_execution(ready, as_of=as_of, event=window_event).state is ExitExecutionState.CONFIRMED
+    prior_event = _exit_event(as_of=pd.Timestamp("2026-01-05 11:00"))
+    assert assess_long_exit_execution(ready, as_of=as_of, event=prior_event).state is ExitExecutionState.CONFIRMED
 
-    future = _exit_event(as_of=pd.Timestamp("2026-01-05 12:30"))
+    future = _exit_event(as_of=pd.Timestamp("2026-01-05 13:00"))
     with pytest.raises(ValueError, match="future-unavailable|future-observed"):
         assess_long_exit_execution(ready, as_of=as_of, event=future)
 
