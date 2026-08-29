@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
 
@@ -26,6 +27,16 @@ from financial_dashboard.decision.timeline_cache import (
 from financial_dashboard.structure_location_replay import CausalBarClock
 
 DECISION_TIMEFRAME = "1h"
+
+
+@dataclass(frozen=True, slots=True)
+class OpportunityOutcomeSample:
+    as_of: pd.Timestamp
+    horizon: DecisionHorizon
+    room_atr: float
+    future_mfe_atr: float
+    future_mae_atr: float
+    target_reached: bool
 
 
 def _align_requested_start(value: str, reference: pd.Timestamp) -> pd.Timestamp:
@@ -91,7 +102,7 @@ def _normalize_timestamp(value) -> pd.Timestamp:
     return timestamp
 
 
-def _forward_mfe_atr(
+def _forward_excursions_atr(
     *,
     direction: StructuralDirection,
     entry_price: float,
@@ -100,28 +111,101 @@ def _forward_mfe_atr(
     as_of: pd.Timestamp,
     forward_bars: int,
     reference_atr: float,
-) -> float | None:
+) -> tuple[float, float] | None:
     located = positions.get_indexer([_normalize_timestamp(as_of)])
     position = int(located[0]) if len(located) else -1
-    if position < 0:
+    if position < 0 or not reference_atr > 0:
         return None
     window = frame.iloc[position + 1 : position + 1 + forward_bars]
     if len(window) < forward_bars:
         return None
-    if not reference_atr > 0:
-        return None
     if direction is StructuralDirection.LONG:
-        extreme = float(window["high"].max())
-        return (extreme - entry_price) / reference_atr
-    extreme = float(window["low"].min())
-    return (entry_price - extreme) / reference_atr
+        mfe = (float(window["high"].max()) - entry_price) / reference_atr
+        mae = (entry_price - float(window["low"].min())) / reference_atr
+    else:
+        mfe = (entry_price - float(window["low"].min())) / reference_atr
+        mae = (float(window["high"].max()) - entry_price) / reference_atr
+    return max(0.0, mfe), max(0.0, mae)
+
+
+def _bucket(room_atr: float, calibration: OpportunityCalibration) -> str:
+    if room_atr <= calibration.none_max_atr:
+        return "NONE"
+    if room_atr <= calibration.compressed_max_atr:
+        return "COMPRESSED"
+    if room_atr <= calibration.moderate_max_atr:
+        return "MODERATE"
+    return "AMPLE"
+
+
+def _validation_summary(
+    samples: list[OpportunityOutcomeSample],
+    calibration: OpportunityCalibration,
+) -> dict[str, dict[str, float | int | None]]:
+    grouped: dict[str, list[OpportunityOutcomeSample]] = {
+        "NONE": [],
+        "COMPRESSED": [],
+        "MODERATE": [],
+        "AMPLE": [],
+    }
+    for sample in samples:
+        grouped[_bucket(sample.room_atr, calibration)].append(sample)
+
+    result: dict[str, dict[str, float | int | None]] = {}
+    for name, rows in grouped.items():
+        if not rows:
+            result[name] = {
+                "count": 0,
+                "target_hit_rate": None,
+                "median_mfe_atr": None,
+                "median_mae_atr": None,
+            }
+            continue
+        result[name] = {
+            "count": len(rows),
+            "target_hit_rate": sum(row.target_reached for row in rows) / len(rows),
+            "median_mfe_atr": float(pd.Series([row.future_mfe_atr for row in rows]).median()),
+            "median_mae_atr": float(pd.Series([row.future_mae_atr for row in rows]).median()),
+        }
+    return result
+
+
+def _calibrate_from_samples(
+    samples: list[OpportunityOutcomeSample],
+    *,
+    quantiles: tuple[float, float, float],
+    train_fraction: float,
+    min_samples: int,
+) -> tuple[OpportunityCalibration, list[OpportunityOutcomeSample], list[OpportunityOutcomeSample]]:
+    if len(samples) < min_samples:
+        raise SystemExit(
+            f"only {len(samples)} calibration samples available; --min-samples requires {min_samples}"
+        )
+    ordered = sorted(samples, key=lambda item: (item.as_of, item.horizon.value))
+    split = max(1, min(len(ordered) - 1, int(len(ordered) * train_fraction)))
+    train = ordered[:split]
+    validation = ordered[split:]
+    room = pd.Series([sample.room_atr for sample in train], dtype=float)
+    q1, q2, q3 = quantiles
+    none_max = float(room.quantile(q1))
+    compressed_max = float(room.quantile(q2))
+    moderate_max = float(room.quantile(q3))
+    try:
+        calibration = OpportunityCalibration(none_max, compressed_max, moderate_max)
+    except ValueError as error:
+        raise SystemExit(
+            "degenerate room_atr distribution produced invalid boundaries "
+            f"({none_max=:.6g}, {compressed_max=:.6g}, {moderate_max=:.6g}): {error}"
+        ) from error
+    return calibration, train, validation
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Build deterministic per-symbol OpportunityCalibration boundaries from a "
-            "frozen DecisionInput timeline plus forward MFE realised in ATR units."
+            "Build per-symbol OpportunityCalibration from paired current room_atr and "
+            "future MFE/MAE outcomes. Frozen DecisionInput cache is read by default; "
+            "domains are never replayed unless --build-cache is explicitly supplied."
         )
     )
     parser.add_argument("cache_root", type=Path)
@@ -132,26 +216,32 @@ def main() -> None:
     parser.add_argument("--pattern-profile", default=None)
     parser.add_argument("--forward-bars", type=int, default=24)
     parser.add_argument("--quantiles", default="0.25,0.5,0.75")
+    parser.add_argument("--train-fraction", type=float, default=0.70)
     parser.add_argument("--min-samples", type=int, default=50)
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument(
+        "--build-cache",
+        action="store_true",
+        help="Explicitly allow a missing frozen timeline to run domains and build the cache",
+    )
+    parser.add_argument(
         "--no-build-cache",
         action="store_true",
-        help="Fail on a missing frozen DecisionInput timeline instead of building it in place",
+        help="Deprecated compatibility flag; frozen-cache-only is already the default",
     )
     args = parser.parse_args()
 
     if args.forward_bars < 1:
         raise SystemExit("--forward-bars must be >= 1")
-    q1, q2, q3 = _parse_quantiles(args.quantiles)
+    if not 0.5 <= args.train_fraction < 1.0:
+        raise SystemExit("--train-fraction must be >= 0.5 and < 1.0")
+    if args.build_cache and args.no_build_cache:
+        raise SystemExit("--build-cache and --no-build-cache cannot be used together")
+    quantiles = _parse_quantiles(args.quantiles)
 
     store = ParquetOHLCVStore(args.cache_root)
     clean_symbol = normalize_symbol(args.symbol)
-    effective_start = _causal_warmup_start(
-        store,
-        symbol=clean_symbol,
-        requested_start=args.start,
-    )
+    effective_start = _causal_warmup_start(store, symbol=clean_symbol, requested_start=args.start)
     config = HistoricalDecisionInputConfig(
         pattern_profile=args.pattern_profile,
         max_bars=args.max_bars,
@@ -161,21 +251,8 @@ def main() -> None:
 
     runner = HistoricalDecisionInputReplayRunner(store)
     identity = runner._cache_identity(symbol=clean_symbol, config=config)
-
     started = perf_counter()
-    if args.no_build_cache:
-        try:
-            frozen = load_frozen_decision_timeline(store, clean_symbol, config=config)
-        except DecisionTimelineCacheMiss as error:
-            raise SystemExit(
-                "exact frozen DecisionInput timeline is missing; build it first with "
-                f"`python scripts/build_decision_timeline_cache.py {args.cache_root} "
-                f"{clean_symbol}` or drop --no-build-cache to build it automatically"
-            ) from error
-        load_seconds = perf_counter() - started
-        timeline_built = False
-        timeline_build_seconds = 0.0
-    else:
+    if args.build_cache:
         ensured = ensure_frozen_decision_timeline(
             store,
             clean_symbol,
@@ -186,12 +263,24 @@ def main() -> None:
         load_seconds = ensured.load_seconds
         timeline_built = ensured.built
         timeline_build_seconds = ensured.build_seconds
-    snapshots = frozen.replay.snapshots
+    else:
+        try:
+            frozen = load_frozen_decision_timeline(store, clean_symbol, config=config)
+        except DecisionTimelineCacheMiss as error:
+            raise SystemExit(
+                "exact frozen DecisionInput timeline is missing; domains were NOT replayed. "
+                "Build it explicitly with "
+                f"`python scripts/build_decision_timeline_cache.py {args.cache_root} {clean_symbol}`"
+            ) from error
+        load_seconds = perf_counter() - started
+        timeline_built = False
+        timeline_build_seconds = 0.0
 
+    snapshots = frozen.replay.snapshots
     decision_frame = store.load(clean_symbol, DECISION_TIMEFRAME)
     positions = pd.Index([_normalize_timestamp(value) for value in decision_frame["timestamp"]])
 
-    mfe_samples: list[float] = []
+    samples: list[OpportunityOutcomeSample] = []
     for snapshot in snapshots:
         targeting = snapshot.targeting
         if targeting is None:
@@ -200,11 +289,12 @@ def main() -> None:
         for horizon in (DecisionHorizon.LONG_TERM, DecisionHorizon.SHORT_TERM):
             assessment = assess_horizon_decision(snapshot, horizon)
             direction = assessment.structural.direction
+            room_atr = assessment.opportunity.room_atr
             if direction not in {StructuralDirection.LONG, StructuralDirection.SHORT}:
                 continue
-            if assessment.opportunity.room_atr is None:
+            if room_atr is None or room_atr < 0:
                 continue
-            mfe = _forward_mfe_atr(
+            excursions = _forward_excursions_atr(
                 direction=direction,
                 entry_price=float(snapshot.current_price),
                 frame=decision_frame,
@@ -213,36 +303,41 @@ def main() -> None:
                 forward_bars=args.forward_bars,
                 reference_atr=reference_atr,
             )
-            if mfe is None:
+            if excursions is None:
                 continue
-            mfe_samples.append(mfe)
+            mfe, mae = excursions
+            samples.append(
+                OpportunityOutcomeSample(
+                    as_of=pd.Timestamp(snapshot.as_of),
+                    horizon=horizon,
+                    room_atr=float(room_atr),
+                    future_mfe_atr=float(mfe),
+                    future_mae_atr=float(mae),
+                    target_reached=bool(mfe >= float(room_atr)),
+                )
+            )
 
-    if len(mfe_samples) < args.min_samples:
-        raise SystemExit(
-            f"only {len(mfe_samples)} calibration samples available; "
-            f"--min-samples requires {args.min_samples}"
-        )
-
-    series = pd.Series(mfe_samples)
-    none_max = float(series.quantile(q1))
-    compressed_max = float(series.quantile(q2))
-    moderate_max = float(series.quantile(q3))
-    try:
-        calibration = OpportunityCalibration(none_max, compressed_max, moderate_max)
-    except ValueError as error:
-        raise SystemExit(
-            f"degenerate MFE distribution produced invalid boundaries "
-            f"({none_max=:.6g}, {compressed_max=:.6g}, {moderate_max=:.6g}): {error}"
-        ) from error
+    calibration, train, validation = _calibrate_from_samples(
+        samples,
+        quantiles=quantiles,
+        train_fraction=args.train_fraction,
+        min_samples=args.min_samples,
+    )
+    validation_by_bucket = _validation_summary(validation, calibration)
 
     record = OpportunityCalibrationRecord(
         calibration=calibration,
         symbol=clean_symbol,
-        sample_size=len(mfe_samples),
+        sample_size=len(samples),
         version=1,
         meta={
+            "method": "paired_room_atr_train_quantiles_v2",
             "forward_bars": args.forward_bars,
-            "quantiles": [q1, q2, q3],
+            "quantiles": list(quantiles),
+            "train_fraction": args.train_fraction,
+            "train_samples": len(train),
+            "validation_samples": len(validation),
+            "validation_by_bucket": validation_by_bucket,
             "reference_timeframe": DECISION_TIMEFRAME,
             "source_identity": str(identity),
         },
@@ -257,18 +352,25 @@ def main() -> None:
     print("OPPORTUNITY CALIBRATION BUILT")
     print("=" * 72)
     print(f"SYMBOL\t{clean_symbol}")
-    print(f"SAMPLES\t{len(mfe_samples)}")
+    print(f"METHOD\tpaired_room_atr_train_quantiles_v2")
+    print(f"SAMPLES\t{len(samples)}")
+    print(f"TRAIN_SAMPLES\t{len(train)}")
+    print(f"VALIDATION_SAMPLES\t{len(validation)}")
     print(f"SNAPSHOTS\t{len(snapshots)}")
     print(f"FROZEN_TIMELINE_LOAD_SECONDS\t{load_seconds:.3f}")
     print(f"TIMELINE_BUILT\t{1 if timeline_built else 0}")
     print(f"TIMELINE_BUILD_SECONDS\t{timeline_build_seconds:.3f}")
     print(f"FORWARD_BARS\t{args.forward_bars}")
-    print(f"QUANTILES\t{q1},{q2},{q3}")
-    print(f"NONE_MAX_ATR\t{none_max:.6g}")
-    print(f"COMPRESSED_MAX_ATR\t{compressed_max:.6g}")
-    print(f"MODERATE_MAX_ATR\t{moderate_max:.6g}")
-    print(f"MFE_ATR_P10\t{float(series.quantile(0.10)):.6g}")
-    print(f"MFE_ATR_P90\t{float(series.quantile(0.90)):.6g}")
+    print(f"NONE_MAX_ATR\t{calibration.none_max_atr:.6g}")
+    print(f"COMPRESSED_MAX_ATR\t{calibration.compressed_max_atr:.6g}")
+    print(f"MODERATE_MAX_ATR\t{calibration.moderate_max_atr:.6g}")
+    for bucket_name, stats in validation_by_bucket.items():
+        print(
+            f"VALIDATION_{bucket_name}\tcount={stats['count']}\t"
+            f"target_hit_rate={stats['target_hit_rate']}\t"
+            f"median_mfe_atr={stats['median_mfe_atr']}\t"
+            f"median_mae_atr={stats['median_mae_atr']}"
+        )
     print(f"OUTPUT\t{output}")
     print(f"SOURCE_IDENTITY\t{identity}")
     print("OPPORTUNITY_CALIBRATION_OK")
