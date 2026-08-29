@@ -74,6 +74,15 @@ class PatternBehaviorTimeframeProjection:
     retest_state_code: int | None
     retest_tolerance: float | None
 
+    def __getattribute__(self, name: str):
+        value = object.__getattribute__(self, name)
+        if name == "phase" and not isinstance(value, PatternBehaviorPhase):
+            try:
+                return PatternBehaviorPhase(str(getattr(value, "value", value)))
+            except (TypeError, ValueError):
+                return PatternBehaviorPhase.UNAVAILABLE
+        return value
+
 
 @dataclass(frozen=True, slots=True)
 class PatternBehaviorProjection:
@@ -195,16 +204,8 @@ def project_pattern_behavior(
         current_index = max(0, int(snapshot.bar_count) - 1)
         active_start_bar = getattr(snapshot, "active_start_bar", None)
         active_known_bar = getattr(snapshot, "active_known_bar", None)
-        age_bars = (
-            None
-            if active_start_bar is None
-            else max(0, current_index - int(active_start_bar))
-        )
-        bars_since_known = (
-            None
-            if active_known_bar is None
-            else max(0, current_index - int(active_known_bar))
-        )
+        age_bars = None if active_start_bar is None else max(0, current_index - int(active_start_bar))
+        bars_since_known = None if active_known_bar is None else max(0, current_index - int(active_known_bar))
         rows.append(
             PatternBehaviorTimeframeProjection(
                 timeframe=snapshot.timeframe,
