@@ -25,6 +25,10 @@ from financial_dashboard.decision_audit.early_move_research import (
     render_early_move_text,
 )
 from financial_dashboard.decision_audit.research import detect_large_market_moves
+from financial_dashboard.decision_audit.structure_reaction_research import (
+    audit_structure_reaction_age,
+    render_structure_reaction_text,
+)
 from financial_dashboard.structure_location_replay import CausalBarClock
 
 
@@ -162,12 +166,20 @@ def main() -> None:
         snapshots=frozen.replay.snapshots,
         decision_config=decision_config,
     )
+    structure_reaction_report = audit_structure_reaction_age(
+        symbol=symbol,
+        early_report=report,
+        snapshots=frozen.replay.snapshots,
+        decision_config=decision_config,
+    )
 
     print(f"FROZEN_CACHE_STATUS\t{frozen.cache_status}")
     print("DOMAIN_REPLAY_AND_SNAPSHOT_SECONDS\t0.00")
     print(render_early_move_text(report))
     print()
     print(render_domain_lock_text(domain_report))
+    print()
+    print(render_structure_reaction_text(structure_reaction_report))
     print("EARLY_MOVE_STATE_AUDIT_OK")
 
 
