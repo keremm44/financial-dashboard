@@ -32,6 +32,12 @@ from .reaction import (
     assess_reaction,
     select_relevant_zones,
 )
+from .st_transition import (
+    STLongTransitionAssessment,
+    apply_strong_st_long_transition,
+    assess_st_long_transition,
+    reconcile_st_transition_permission,
+)
 from .structural import (
     DecisionHorizon,
     HorizonStructuralSnapshot,
@@ -86,6 +92,7 @@ class HorizonDecisionAssessment:
     execution: ExecutionTriggerAssessment
     eligibility: EligibilityAssessment
     final: FinalDecision
+    st_transition: STLongTransitionAssessment | None = None
 
 
 def _timeframe_policy(horizon: DecisionHorizon) -> tuple[tuple[str, ...], str, str, str]:
@@ -287,6 +294,7 @@ def _additional_lineage(
 def _apply_counter_lt_st_risk(
     horizon: DecisionHorizon,
     structural_snapshot: HorizonStructuralSnapshot,
+    structural: StructuralAssessment,
     eligibility: EligibilityAssessment,
     *,
     timing: TimingAssessment,
@@ -298,9 +306,8 @@ def _apply_counter_lt_st_risk(
     if horizon is not DecisionHorizon.SHORT_TERM:
         return eligibility
     lt = structural_snapshot.long_term
-    st = structural_snapshot.short_term
     counter_lt = (
-        st.direction is StructuralDirection.LONG
+        structural.direction is StructuralDirection.LONG
         and lt.direction is StructuralDirection.SHORT
         and lt.thesis_state is ThesisState.INTACT
         and lt.data_quality in {ContextDataQuality.VALID, ContextDataQuality.DATA_LIMITED}
@@ -343,20 +350,36 @@ def assess_horizon_decision(
 ) -> HorizonDecisionAssessment:
     """Build one fully typed LT or ST decision assessment.
 
-    1H owns primary setup/execution. 30m may still be observed by diagnostics and
-    micro-timing helpers, but it cannot create a primary BUY/SELL in this path.
+    Native Structure remains immutable.  A SHORT_TERM assessment may use an explicit
+    Decision-only LONG trade-thesis overlay while native 1H Structure is in a
+    quality-gated canonical transition toward LONG.  The overlay cannot exist from
+    an intact bearish state and cannot bypass permission, setup, opportunity,
+    conflict, volatility, or execution gates.
     """
 
     cfg = config or DecisionEngineConfig()
     decision_structure = _decision_structure_projection(snapshot.structure)
     structural_snapshot = build_horizon_structural_snapshot(decision_structure)
-    structural = (
+    native_structural = (
         structural_snapshot.long_term
         if horizon is DecisionHorizon.LONG_TERM
         else structural_snapshot.short_term
     )
     reaction_timeframes, participation_tf, environment_tf, timing_tf = _timeframe_policy(horizon)
     permission = _horizon_permission(snapshot, horizon)
+
+    st_transition = None
+    structural = native_structural
+    if horizon is DecisionHorizon.SHORT_TERM and native_structural.direction is StructuralDirection.SHORT:
+        st_transition = assess_st_long_transition(
+            snapshot,
+            native_structural,
+            opportunity_calibration=cfg.opportunity_calibration,
+            reaction_relevance=cfg.reaction_relevance,
+            participation_conflict_max_age_bars=cfg.participation_conflict_max_age_bars,
+        )
+        structural = apply_strong_st_long_transition(native_structural, st_transition)
+        permission = reconcile_st_transition_permission(permission, st_transition)
 
     durability = assess_durability(snapshot.stabil_support)
     reaction_ob, reaction_fvg = normalize_decision_reaction_projections(
@@ -437,6 +460,7 @@ def assess_horizon_decision(
     eligibility = _apply_counter_lt_st_risk(
         horizon,
         structural_snapshot,
+        structural,
         eligibility,
         timing=timing,
         opportunity=opportunity,
@@ -483,6 +507,7 @@ def assess_horizon_decision(
         execution=execution,
         eligibility=eligibility,
         final=final,
+        st_transition=st_transition,
     )
 
 
