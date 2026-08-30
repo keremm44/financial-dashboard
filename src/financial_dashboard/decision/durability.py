@@ -44,15 +44,9 @@ def assess_durability(
 ) -> DurabilityAssessment:
     """Classify Stabil foundation health using only native lifecycle semantics.
 
-    This function intentionally cannot modify LT/ST Structure. It adds no distance,
-    persistence, ATR or score threshold; all category changes come from existing
-    Stabil lifecycle/behavior states. Historical counters such as reclaim_count are
-    preserved as facts but are not interpreted as monotonic weakness.
-
-    Frozen DecisionInput timelines created by older projection versions may contain
-    the serialized quality token as a plain string rather than ``ContextDataQuality``.
-    Normalize it here at the decision boundary so compatible frozen caches remain
-    reusable without replaying domains.
+    DATA_LIMITED remains lower-quality evidence but is still usable when Stabil has
+    actually emitted an observed lifecycle/behavior state. WARMING_UP/UNAVAILABLE
+    remain UNKNOWN. No source fact is promoted or mutated at the Decision boundary.
     """
 
     if stabil is None:
@@ -65,7 +59,7 @@ def assess_durability(
 
     refs = _refs(stabil)
     quality = normalize_context_data_quality(stabil.data_quality)
-    if quality is not ContextDataQuality.VALID:
+    if quality not in {ContextDataQuality.VALID, ContextDataQuality.DATA_LIMITED}:
         return DurabilityAssessment(
             state=DurabilityState.UNKNOWN,
             data_quality=quality,
@@ -78,12 +72,17 @@ def assess_durability(
     interaction = "UNAVAILABLE" if behavior is None else behavior.interaction.strip().upper()
     motion = "UNAVAILABLE" if behavior is None else behavior.motion.strip().upper()
     progression = stabil.progression.strip().upper()
+    quality_reason = (
+        "STABIL_DATA_LIMITED_BUT_OBSERVED"
+        if quality is ContextDataQuality.DATA_LIMITED
+        else "STABIL_DATA_VALID"
+    )
 
     if validity == "BELOW_FLOOR" or interaction == "DOWNSIDE_CONTINUATION":
         return DurabilityAssessment(
             DurabilityState.BROKEN,
             quality,
-            ("STABIL_FOUNDATION_BROKEN", f"VALIDITY:{validity}", f"INTERACTION:{interaction}"),
+            (quality_reason, "STABIL_FOUNDATION_BROKEN", f"VALIDITY:{validity}", f"INTERACTION:{interaction}"),
             refs,
         )
 
@@ -91,7 +90,7 @@ def assess_durability(
         return DurabilityAssessment(
             DurabilityState.FRACTURED,
             quality,
-            ("STABIL_FOUNDATION_FRACTURED", f"VALIDITY:{validity}", f"INTERACTION:{interaction}"),
+            (quality_reason, "STABIL_FOUNDATION_FRACTURED", f"VALIDITY:{validity}", f"INTERACTION:{interaction}"),
             refs,
         )
 
@@ -99,7 +98,7 @@ def assess_durability(
         return DurabilityAssessment(
             DurabilityState.UNKNOWN,
             quality,
-            ("STABIL_SUPPORT_NOT_ESTABLISHED",),
+            (quality_reason, "STABIL_SUPPORT_NOT_ESTABLISHED"),
             refs,
         )
 
@@ -119,6 +118,7 @@ def assess_durability(
             DurabilityState.SOFTENING,
             quality,
             (
+                quality_reason,
                 "STABIL_FOUNDATION_SOFTENING",
                 f"PROGRESSION:{progression}",
                 f"MOTION:{motion}",
@@ -130,7 +130,7 @@ def assess_durability(
     return DurabilityAssessment(
         DurabilityState.HEALTHY,
         quality,
-        ("STABIL_FOUNDATION_HEALTHY", f"VALIDITY:{validity}", f"INTERACTION:{interaction}"),
+        (quality_reason, "STABIL_FOUNDATION_HEALTHY", f"VALIDITY:{validity}", f"INTERACTION:{interaction}"),
         refs,
     )
 
