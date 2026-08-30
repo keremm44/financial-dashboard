@@ -239,24 +239,25 @@ def build_entry_scenario(
             waiting.append("STABIL_FOUNDATION_TO_RECOVER")
             reasons.append("STABIL_BREAKDOWN_NOT_YET_RECOVERED")
 
-    # Opportunity describes economics/path quality; it does not decide whether the
-    # market thesis exists. A true hard economic NONE prevents qualification; a
-    # reaction-only technical cluster remains visible but soft.
+    # Opportunity owns the hard economic-room decision. Scenario records the market
+    # meaning but must not ask for the same room evidence a second time.
     if opportunity.state is OpportunityState.NONE:
         if bool(getattr(opportunity, "hard_room_constraint", True)):
             reasons.append("OBSERVED_DIRECTIONAL_ROOM_INSUFFICIENT")
-            waiting.append("MORE_DIRECTIONAL_ROOM")
         else:
             reasons.append("SOFT_TECHNICAL_ROOM_CONSTRAINT")
 
+    # Target-path disposition is distinct from raw room: a defended active node still
+    # matters, while a missing/unresolved path remains a scenario-maturity condition.
     if target_path.status is not TargetPathStatus.READY:
         waiting.append("TARGET_PATH_TO_RESOLVE")
     elif active is not None and active.state is TargetPathNodeState.DEFENDED:
         waiting.append("ACTIVE_TARGET_PATH_NODE_DEFENDED")
         reasons.append("TARGET_PATH_DEFENSE_REQUIRES_REASSESSMENT")
 
+    # Eligibility/permission owns structural-transition readiness. Scenario preserves
+    # the context label without creating a second transition gate.
     if structural.thesis_state is ThesisState.TRANSITIONING:
-        waiting.append("STRUCTURAL_TRANSITION_TO_RESOLVE")
         reasons.append("EXISTING_LONG_SCENARIO_IN_TRANSITION")
 
     if eligibility.state is EligibilityState.BLOCKED or stabil_hard_block:
