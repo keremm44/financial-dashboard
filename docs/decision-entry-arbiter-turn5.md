@@ -1,25 +1,45 @@
-# Entry Scenario Arbiter — Turn 5
+# Entry Scenario Arbiter — Current Authority Contract
 
-Turn 5 adds a non-action horizon ownership layer above the Turn 4 Scenario Engine.
+The arbiter is a non-action horizon-ownership layer above the Scenario Engine.
+It does not emit BUY/SELL or soften any setup, conflict, targeting, timing, or execution gate.
 
-## Canonical priority
+## Current priority
+
+Trade-horizon ownership is intentionally different from context authority:
 
 ```text
-LONG_TERM > SHORT_TERM
+QUALIFIED SHORT_TERM trade setup -> SHORT_TERM trade horizon
+LONG_TERM -> thesis/context/risk authority remains visible
 ```
 
-The arbiter implements the hierarchy as a semantic rule, not a score comparison:
+Rules:
 
-1. If the LONG_TERM scenario is `PRESENT`, LONG_TERM owns the decision.
-2. SHORT_TERM is considered only when LONG_TERM is explicitly `ABSENT`.
-3. LONG_TERM `UNKNOWN` never means absence, so SHORT_TERM cannot be selected while LT presence is unresolved.
-4. If LONG_TERM is absent and SHORT_TERM is present, SHORT_TERM owns the decision.
-5. At most one horizon can be selected.
+1. A `PRESENT + QUALIFIED` SHORT_TERM scenario owns the trade horizon, including when LONG_TERM is also `PRESENT + QUALIFIED`.
+2. LONG_TERM remains attached as context/risk evidence; selecting SHORT_TERM does not erase LT information.
+3. If SHORT_TERM is only `DEVELOPING`, it does not displace a present LONG_TERM scenario.
+4. If LONG_TERM is `UNKNOWN` because structural/data authority is unresolved, a merely developing SHORT_TERM scenario still waits.
+5. A `PRESENT + QUALIFIED` SHORT_TERM scenario may stand on its own when LT is unresolved, preserving the existing independent-ST exception.
+6. At most one trade horizon is selected.
 
-A blocked or developing LONG_TERM scenario is still present and therefore retains ownership. This prevents a locally stronger/cleaner SHORT_TERM setup from bypassing the higher-priority opportunity class.
+This distinction prevents an otherwise valid 1H-owned, 3-9 trading-day setup from being labelled LONG_TERM solely because a longer-horizon thesis is also present.
+
+## Scenario existence versus economics
+
+Targeting/Opportunity describes path economics; it does not define whether a structurally valid long scenario exists.
+
+Therefore an observed `OpportunityState.NONE` means:
+
+```text
+scenario = PRESENT
+stage = DEVELOPING (or BLOCKED if another hard blocker exists)
+waiting_for += MORE_DIRECTIONAL_ROOM
+```
+
+It no longer means `ScenarioPresence.ABSENT`.
+
+`UNKNOWN` opportunity remains distinct: when directional opportunity has not actually been observed, scenario presence can remain unresolved.
 
 ## Non-action boundary
 
-Arbitration does not emit `READY`, `BUY`, `SELL`, `HOLD`, or lifecycle transitions. It only identifies the scenario owner that Turn 6 may evaluate for entry execution.
-
-The result exposes `is_actionable_signal = False` explicitly.
+Arbitration still exposes `is_actionable_signal = False`.
+Entry execution remains downstream and still requires the normal eligibility/setup/execution path.
