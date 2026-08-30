@@ -109,7 +109,22 @@ def _native(*, transitioning: bool) -> StructuralAssessment:
     )
 
 
-def _snapshot(*events):
+def _stabil(interaction: str):
+    return SimpleNamespace(
+        data_quality=ContextDataQuality.VALID,
+        support_ref=None,
+        events=(),
+        validity="HELD",
+        progression="SAME",
+        behavior=SimpleNamespace(
+            interaction=interaction,
+            motion=("FALLING" if interaction == "DOWNSIDE_CONTINUATION" else "FLAT_AFTER_FALL"),
+            relation=("BELOW_FAR" if interaction == "DOWNSIDE_CONTINUATION" else "ABOVE_FAR"),
+        ),
+    )
+
+
+def _snapshot(*events, stabil_interaction: str | None = None):
     structure = SimpleNamespace(
         for_timeframe=lambda timeframe: SimpleNamespace(events=tuple(events))
     )
@@ -139,6 +154,7 @@ def _snapshot(*events):
         participation_behavior=None,
         volatility_environment=None,
         targeting=targeting,
+        stabil_support=None if stabil_interaction is None else _stabil(stabil_interaction),
     )
 
 
@@ -178,6 +194,42 @@ def test_canonical_transition_with_current_choch_and_ready_reaction_is_strong() 
     assert overlay.thesis_state is ThesisState.INTACT
     assert overlay.native_state == "STATE_TRANSITION_UP"
     assert "DECISION_ST_TRANSITION_LONG_OVERLAY" in overlay.reasons
+
+
+def test_stabil_recovery_can_own_transition_before_native_structure_transitions() -> None:
+    snapshot = _snapshot(
+        _event("EVENT_CHOCH", 1, at="2026-01-02 11:00:00"),
+        stabil_interaction="RECOVERY_CONFIRMED",
+    )
+    native = _native(transitioning=False)
+
+    result = _assess(snapshot, native)
+    overlay = apply_strong_st_long_transition(native, result)
+
+    assert not result.canonical_transition_up
+    assert result.stabil.recovery_confirmed
+    assert result.state is STTransitionState.STRONG
+    assert overlay.direction is StructuralDirection.LONG
+    assert overlay.thesis_state is ThesisState.INTACT
+    assert overlay.native_state == "STATE_BEARISH"
+    assert "NATIVE_1H_STRUCTURE_REMAINS_BEARISH_INTACT" in overlay.reasons
+    assert "STABIL_RECOVERY_CONFIRMED_EARLY_LONG_AUTHORITY" in overlay.reasons
+
+
+def test_bearish_stabil_blocks_even_canonical_bullish_transition_overlay() -> None:
+    snapshot = _snapshot(
+        _event("EVENT_CHOCH", 1, at="2026-01-02 11:00:00"),
+        stabil_interaction="DOWNSIDE_CONTINUATION",
+    )
+    native = _native(transitioning=True)
+
+    result = _assess(snapshot, native)
+
+    assert result.canonical_transition_up
+    assert result.stabil.breakdown_confirmed
+    assert result.state is not STTransitionState.STRONG
+    assert not result.can_own_trade_thesis
+    assert "STABIL_BEARISH_AUTHORITY_OPPOSES_EARLY_LONG" in result.blockers
 
 
 def test_newer_bearish_bos_supersedes_older_bullish_choch() -> None:
