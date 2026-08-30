@@ -109,8 +109,8 @@ def _print_checkpoint(snapshot, event, *, threshold_pct, threshold_price, config
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Find price-only 4H rises, then report what the frozen causal decision system "
-            "said at each first +1%, +2%, +3%... progress checkpoint."
+            "Find price-only 4H rises, rank them from largest to smallest, then report what "
+            "the frozen causal decision system said at each first +1%, +2%, +3%... checkpoint."
         )
     )
     parser.add_argument("cache_root", type=Path)
@@ -120,6 +120,8 @@ def main() -> None:
     parser.add_argument("--min-move-pct", type=float, default=7.0)
     parser.add_argument("--reversal-pct", type=float, default=5.0)
     parser.add_argument("--checkpoint-step-pct", type=float, default=1.0)
+    parser.add_argument("--from-move", type=int, default=1)
+    parser.add_argument("--to-move", type=int, default=None)
     args = parser.parse_args()
 
     if args.min_move_pct <= 0.0:
@@ -128,6 +130,10 @@ def main() -> None:
         raise SystemExit("--reversal-pct must be > 0")
     if args.checkpoint_step_pct <= 0.0:
         raise SystemExit("--checkpoint-step-pct must be > 0")
+    if args.from_move < 1:
+        raise SystemExit("--from-move must be >= 1")
+    if args.to_move is not None and args.to_move < args.from_move:
+        raise SystemExit("--to-move must be >= --from-move")
 
     store = ParquetOHLCVStore(args.cache_root)
     symbol = normalize_symbol(args.symbol)
@@ -161,7 +167,7 @@ def main() -> None:
     if bars_4h.empty:
         raise SystemExit("4H bars are required")
 
-    moves = tuple(
+    detected_moves = tuple(
         move
         for move in detect_large_market_moves(
             bars_4h,
@@ -170,6 +176,16 @@ def main() -> None:
         )
         if move.direction == "UP"
     )
+    ranked_moves = tuple(
+        sorted(
+            detected_moves,
+            key=lambda move: (-float(move.move_pct), pd.Timestamp(move.start_time)),
+        )
+    )
+
+    first_index = args.from_move - 1
+    last_index = len(ranked_moves) if args.to_move is None else min(args.to_move, len(ranked_moves))
+    selected = tuple(enumerate(ranked_moves[first_index:last_index], start=args.from_move))
 
     print("EARLY RISE PERCENT AUDIT")
     print("========================")
@@ -177,13 +193,18 @@ def main() -> None:
     print("DOMAIN_REPLAY\tNOT_RUN")
     print(f"SYMBOL\t{symbol}")
     print(f"MOVE_RULE\tprice-only 4H, min=+{args.min_move_pct:g}%, reversal={args.reversal_pct:g}%")
+    print("MOVE_ORDER\tlargest rise to smallest rise")
     print(f"CHECKPOINTS\tfirst causal snapshot at every +{args.checkpoint_step_pct:g}% from move start")
-    print(f"UP_MOVES\t{len(moves)}")
+    print(f"UP_MOVES_TOTAL\t{len(ranked_moves)}")
+    if selected:
+        print(f"SHOWING\tMOVE #{selected[0][0]} .. MOVE #{selected[-1][0]}")
+    else:
+        print("SHOWING\tNONE")
     print()
 
-    for index, move in enumerate(moves, start=1):
+    for rank, move in selected:
         print(
-            f"MOVE #{index}  {move.start_time} -> {move.end_time} | "
+            f"MOVE #{rank}  {move.start_time} -> {move.end_time} | "
             f"{move.start_price:.2f} -> {move.end_price:.2f} | {move.move_pct:+.2f}%"
         )
         threshold = float(args.checkpoint_step_pct)
