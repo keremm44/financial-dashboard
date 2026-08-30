@@ -159,15 +159,13 @@ def refine_short_term_exit_with_stabil(
 ) -> LongExitAssessment:
     """Make ST long exits Stabil-aware without turning Stabil into a SELL signal.
 
-    Invalidated Structure remains sufficient to arm an exit.  Otherwise, an intact
+    Invalidated Structure remains sufficient to arm an exit. Otherwise, an intact
     bearish or transition-down 1H Structure needs confirmed Stabil breakdown before
-    EXIT_READY.  Stabil deterioration without Structure deterioration can only raise
+    EXIT_READY. Stabil deterioration without Structure deterioration can only raise
     EXIT_WATCH, so a single daily support event can never directly sell the position.
     """
 
-    if stabil is None or stabil.data_quality is not ContextDataQuality.VALID:
-        return assessment
-    if stabil.state is StabilDecisionState.UNKNOWN:
+    if stabil is None or not stabil.usable:
         return assessment
 
     refs = _canonical_refs((*assessment.source_refs, *stabil.source_refs))
