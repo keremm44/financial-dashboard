@@ -48,6 +48,17 @@ def test_breakdown_attempt_is_warning_not_confirmed_breakdown() -> None:
     assert result.opposes_early_long
 
 
+def test_failed_recovery_is_developing_breakdown_not_confirmed_breakdown() -> None:
+    result = assess_stabil_authority(
+        _stabil("RECOVERY_FAILED", relation="BELOW_NEAR")
+    )
+
+    assert result.state is StabilDecisionState.BREAKDOWN_DEVELOPING
+    assert result.breakdown_developing
+    assert not result.breakdown_confirmed
+    assert result.opposes_early_long
+
+
 def test_breakdown_accepted_is_confirmed_bearish_authority() -> None:
     result = assess_stabil_authority(
         _stabil("BREAKDOWN_ACCEPTED", relation="BELOW_NEAR")
