@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from financial_dashboard.context.envelope import ContextDataQuality
 from financial_dashboard.context.permissions import GateState, PermissionEnvelope, PermittedSide
@@ -96,7 +97,10 @@ def assess_eligibility(
     if environment.risk is EnvironmentRisk.HARD_BLOCK:
         blockers.append("VOLATILITY_SHOCK")
     if opportunity.state is OpportunityState.NONE:
-        blockers.append("OPPORTUNITY_NONE")
+        if bool(getattr(opportunity, "hard_room_constraint", True)):
+            blockers.append("OPPORTUNITY_NONE")
+        else:
+            reasons.append("SOFT_TECHNICAL_ROOM_CONSTRAINT_NOT_HARD_BLOCK")
     if conflict.state is ConflictState.HIGH:
         blockers.append("INDEPENDENT_FAMILY_CONFLICT_HIGH")
 
