@@ -82,11 +82,11 @@ def _token(value: object | None) -> str:
 def _target_semantics(cluster: TargetCluster) -> tuple[str, bool]:
     """Classify whether the nearest cluster is a true economic obstacle.
 
-    Liquidity and structural S/R remain hard room constraints.  A cluster made only
-    from OB/FVG/engulfing evidence is reaction/imbalance context: it may describe a
-    nearby technical zone, but it must not by itself assert that no ST profit room
-    exists.  Unknown/legacy shapes fail closed to hard=True to preserve historical
-    safety semantics.
+    Structural support/resistance remains a hard room constraint. Nearby liquidity
+    magnets remain visible as profit-path context but are soft by themselves: the
+    calibrated early-rise audit showed that most such magnets are crossed during the
+    same strong move. Reaction-only OB/FVG/engulfing clusters are also soft context.
+    Unknown/legacy shapes fail closed to hard=True to preserve safety semantics.
     """
 
     evidence = tuple(getattr(cluster, "evidence", ()) or ())
@@ -95,15 +95,17 @@ def _target_semantics(cluster: TargetCluster) -> tuple[str, bool]:
     kind = _token(getattr(cluster, "kind", None))
     liquidity_anchor = getattr(cluster, "liquidity_anchor", None)
 
+    # Explicit structural S/R remains the hard economic barrier even when the same
+    # cluster also contains liquidity evidence.
+    if TargetEvidenceType.SUPPORT_RESISTANCE.value in evidence_types:
+        return "STRUCTURAL_SUPPORT_RESISTANCE", True
+
     if (
         liquidity_anchor is not None
         or TargetEvidenceType.LIQUIDITY.value in evidence_types
         or kind == TargetClusterKind.LIQUIDITY_TARGET.value
     ):
-        return "LIQUIDITY_MAGNET", True
-
-    if TargetEvidenceType.SUPPORT_RESISTANCE.value in evidence_types:
-        return "STRUCTURAL_SUPPORT_RESISTANCE", True
+        return "LIQUIDITY_MAGNET", False
 
     reaction_only = {
         TargetEvidenceType.ORDER_BLOCK.value,
@@ -126,9 +128,9 @@ def assess_opportunity(
 
     A calibration object is mandatory for AMPLE/MODERATE/COMPRESSED/NONE. If it is
     not supplied, the system explicitly returns UNKNOWN instead of silently using a
-    magic constant.  Room state and target semantics are deliberately separate:
-    nearby reaction-only OB/FVG/engulfing clusters remain visible but are not hard
-    economic vetoes by themselves.
+    magic constant. Room state and target semantics are deliberately separate:
+    nearby liquidity/reaction targets can describe compressed room without becoming
+    an automatic hard veto; explicit structural S/R can still impose a hard barrier.
     """
 
     if side is StructuralDirection.UNRESOLVED:
@@ -173,7 +175,10 @@ def assess_opportunity(
     semantics, hard_room_constraint = _target_semantics(target)
     semantic_reasons = [f"TARGET_SEMANTICS:{semantics}"]
     if not hard_room_constraint:
-        semantic_reasons.append("REACTION_TECHNICAL_ZONE_IS_SOFT_ROOM_CONTEXT")
+        if semantics == "LIQUIDITY_MAGNET":
+            semantic_reasons.append("LIQUIDITY_MAGNET_IS_SOFT_ROOM_CONTEXT")
+        else:
+            semantic_reasons.append("REACTION_TECHNICAL_ZONE_IS_SOFT_ROOM_CONTEXT")
 
     if calibration is None:
         return OpportunityAssessment(
