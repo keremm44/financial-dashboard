@@ -25,6 +25,7 @@ from .evidence_quality import normalize_decision_reaction_projections
 from .opportunity import OpportunityAssessment, OpportunityCalibration, OpportunityState, assess_opportunity
 from .participation import assess_participation
 from .reaction import ReactionAssessment, ReactionRelevancePolicy, assess_reaction, select_relevant_zones
+from .stabil_authority import StabilDecisionAssessment, assess_stabil_authority
 from .structural import (
     DecisionHorizon,
     HorizonRelation,
@@ -56,6 +57,7 @@ class STLongTransitionAssessment:
     timing: TimingAssessment
     opportunity: OpportunityAssessment
     conflict: ConflictAssessment
+    stabil: StabilDecisionAssessment
     reasons: tuple[str, ...]
     blockers: tuple[str, ...]
     source_refs: tuple[FactRef, ...]
@@ -157,10 +159,12 @@ def assess_st_long_transition(
 ) -> STLongTransitionAssessment:
     """Assess a conservative 1H-owned early LONG thesis without mutating Structure.
 
-    The overlay can become STRONG only while native 1H Structure is canonically
-    transitioning toward LONG. A plain bearish state may be watched when bullish
-    evidence appears, but it can never own a trade thesis merely because a reaction
-    or pattern fires. This keeps CHoCH/transition quality ahead of setup frequency.
+    Native 1H Structure remains the price-structure authority, while daily Stabil can
+    now prove that a bearish support regime has causally recovered before Structure
+    finishes its own transition.  Stabil never creates a LONG thesis alone: a strong
+    overlay still requires a current external bullish CHoCH, confirmed bullish
+    reaction, READY 1H timing, usable directional room, low conflict, and no hard
+    volatility/permission blocker.
     """
 
     reaction_ob, reaction_fvg = normalize_decision_reaction_projections(
@@ -219,6 +223,7 @@ def assess_st_long_transition(
         participation=participation,
         environment=environment,
     )
+    stabil = assess_stabil_authority(getattr(snapshot, "stabil_support", None))
 
     choch = _current_bullish_choch(snapshot)
     canonical_transition_up = bool(
@@ -227,6 +232,8 @@ def assess_st_long_transition(
         and native_structural.transition_target is StructuralDirection.LONG
     )
     current_bullish_choch = choch is not None
+    stabil_recovery_authority = stabil.recovery_confirmed
+    transition_authority = canonical_transition_up or stabil_recovery_authority
 
     blockers: list[str] = []
     reasons: list[str] = []
@@ -241,9 +248,17 @@ def assess_st_long_transition(
             blockers.append("OPPORTUNITY_NONE")
         else:
             reasons.append("SOFT_TECHNICAL_ROOM_CONSTRAINT")
+    if stabil.opposes_early_long:
+        blockers.append("STABIL_BEARISH_AUTHORITY_OPPOSES_EARLY_LONG")
 
     if canonical_transition_up:
         reasons.append("CANONICAL_1H_TRANSITION_UP")
+    if stabil.recovery_confirmed:
+        reasons.append("STABIL_RECOVERY_CONFIRMED_EARLY_LONG_AUTHORITY")
+    elif stabil.recovery_developing:
+        reasons.append("STABIL_RECOVERY_DEVELOPING")
+    elif stabil.opposes_early_long:
+        reasons.append(f"STABIL_OPPOSES_EARLY_LONG:{stabil.state.value}")
     if current_bullish_choch:
         reasons.append("CURRENT_EXTERNAL_BULLISH_CHOCH")
     if reaction.confirmation_present:
@@ -261,7 +276,7 @@ def assess_st_long_transition(
 
     strong = bool(
         not blockers
-        and canonical_transition_up
+        and transition_authority
         and current_bullish_choch
         and reaction.confirmation_present
         and timing.state is TimingState.READY
@@ -269,7 +284,7 @@ def assess_st_long_transition(
         and conflict.state in {ConflictState.NONE, ConflictState.LOW}
     )
     developing = bool(
-        canonical_transition_up
+        (transition_authority or stabil.recovery_developing)
         and current_bullish_choch
         and (
             reaction.confirmation_present
@@ -284,6 +299,8 @@ def assess_st_long_transition(
             or reaction.confirmation_present
             or reaction.developing_present
             or timing.state in {TimingState.DEVELOPING, TimingState.READY}
+            or stabil.recovery_developing
+            or stabil.recovery_confirmed
         )
     )
 
@@ -301,7 +318,7 @@ def assess_st_long_transition(
         reasons.append("NO_QUALIFIED_ST_LONG_TRANSITION_EVIDENCE")
 
     structural_refs = () if choch is None else (choch.ref,)
-    refs = _unique_refs(structural_refs, reaction.source_refs, timing.source_refs)
+    refs = _unique_refs(structural_refs, stabil.source_refs, reaction.source_refs, timing.source_refs)
     return STLongTransitionAssessment(
         state=state,
         target_side=StructuralDirection.LONG,
@@ -312,6 +329,7 @@ def assess_st_long_transition(
         timing=timing,
         opportunity=opportunity,
         conflict=conflict,
+        stabil=stabil,
         reasons=tuple(dict.fromkeys(reasons)),
         blockers=tuple(dict.fromkeys(blockers)),
         source_refs=refs,
@@ -333,6 +351,11 @@ def apply_strong_st_long_transition(
         and ref.timeframe.strip().lower() == native_structural.authority_timeframe.strip().lower()
     )
     refs = _unique_refs(native_structural.source_refs, transition_structural_refs)
+    native_reason = (
+        "NATIVE_1H_STRUCTURE_REMAINS_TRANSITIONING"
+        if native_structural.thesis_state is ThesisState.TRANSITIONING
+        else "NATIVE_1H_STRUCTURE_REMAINS_BEARISH_INTACT"
+    )
     return replace(
         native_structural,
         direction=StructuralDirection.LONG,
@@ -344,7 +367,7 @@ def apply_strong_st_long_transition(
                 (
                     *native_structural.reasons,
                     "DECISION_ST_TRANSITION_LONG_OVERLAY",
-                    "NATIVE_1H_STRUCTURE_REMAINS_TRANSITIONING",
+                    native_reason,
                     *transition.reasons,
                 )
             )
