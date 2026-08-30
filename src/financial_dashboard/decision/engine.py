@@ -24,7 +24,7 @@ from .execution import (
     ExecutionTriggerEvent,
     assess_execution_trigger,
 )
-from .opportunity import OpportunityAssessment, OpportunityCalibration, assess_opportunity
+from .opportunity import OpportunityAssessment, OpportunityCalibration, OpportunityState, assess_opportunity
 from .participation import ParticipationAssessment, assess_participation
 from .reaction import (
     ReactionAssessment,
@@ -297,16 +297,16 @@ def _apply_counter_lt_st_risk(
     structural: StructuralAssessment,
     eligibility: EligibilityAssessment,
     *,
-    timing: TimingAssessment,
     opportunity: OpportunityAssessment,
     conflict: ConflictAssessment,
 ) -> EligibilityAssessment:
-    """Keep counter-LT context as independent conflict risk, not duplicate entry gates.
+    """Keep counter-LT as a risk context without duplicating setup maturity.
 
-    Timing and directional room are already owned by the normal ST eligibility path.
-    Requiring them again only because the LT thesis is bearish double-counts the same
-    evidence. Counter-LT therefore adds no second timing/opportunity hurdle; only an
-    independently material conflict can keep an otherwise valid ST long waiting.
+    The normal ST eligibility path already owns timing/setup confirmation. Counter-LT
+    must not ask for that same setup a second time. It does, however, require usable
+    directional room because a short-term long taken against an intact bearish LT
+    thesis should not open directly into a cramped path. Independent conflict remains
+    a separate safety condition.
     """
 
     if horizon is not DecisionHorizon.SHORT_TERM:
@@ -325,19 +325,26 @@ def _apply_counter_lt_st_risk(
 
     waiting = list(eligibility.waiting_for)
     reasons = list(eligibility.reasons)
+    if opportunity.state not in {OpportunityState.MODERATE, OpportunityState.AMPLE}:
+        waiting.append("COUNTER_LT_ST_REQUIRES_USABLE_DIRECTIONAL_ROOM")
     if conflict.state not in {ConflictState.NONE, ConflictState.LOW}:
         waiting.append("COUNTER_LT_ST_REQUIRES_LOW_CONFLICT")
 
     if waiting:
+        risk_reasons = [*reasons]
+        if "COUNTER_LT_ST_REQUIRES_USABLE_DIRECTIONAL_ROOM" in waiting:
+            risk_reasons.append("COUNTER_LT_ST_RISK_REQUIRES_USABLE_ROOM")
+        if "COUNTER_LT_ST_REQUIRES_LOW_CONFLICT" in waiting:
+            risk_reasons.append("COUNTER_LT_ST_RISK_REQUIRES_LOW_CONFLICT")
         return EligibilityAssessment(
             EligibilityState.WAITING,
-            tuple(dict.fromkeys((*reasons, "COUNTER_LT_ST_RISK_REQUIRES_LOW_CONFLICT"))),
+            tuple(dict.fromkeys(risk_reasons)),
             (),
             tuple(dict.fromkeys(waiting)),
         )
     return EligibilityAssessment(
         EligibilityState.ELIGIBLE,
-        tuple(dict.fromkeys((*reasons, "COUNTER_LT_ST_RISK_ACCEPTED_AS_CONTEXT"))),
+        tuple(dict.fromkeys((*reasons, "COUNTER_LT_ST_RISK_ACCEPTED_WITH_USABLE_ROOM"))),
         (),
         (),
     )
@@ -464,7 +471,6 @@ def assess_horizon_decision(
         structural_snapshot,
         structural,
         eligibility,
-        timing=timing,
         opportunity=opportunity,
         conflict=conflict,
     )
