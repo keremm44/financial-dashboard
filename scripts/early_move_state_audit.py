@@ -15,6 +15,10 @@ from financial_dashboard.decision.execution_detect import detect_1h_execution_ev
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
 from financial_dashboard.decision.lifecycle_replay import replay_canonical_trade_lifecycle
 from financial_dashboard.decision.timeline_cache import DecisionTimelineCacheMiss, load_frozen_decision_timeline
+from financial_dashboard.decision_audit.domain_lock_research import (
+    audit_domain_locks,
+    render_domain_lock_text,
+)
 from financial_dashboard.decision_audit.early_move_research import (
     EarlyMoveAuditConfig,
     audit_early_move_states,
@@ -153,10 +157,17 @@ def main() -> None:
             atr_multiples=tuple(args.atr_multiples),
         ),
     )
+    domain_report = audit_domain_locks(
+        early_report=report,
+        snapshots=frozen.replay.snapshots,
+        decision_config=decision_config,
+    )
 
     print(f"FROZEN_CACHE_STATUS\t{frozen.cache_status}")
     print("DOMAIN_REPLAY_AND_SNAPSHOT_SECONDS\t0.00")
     print(render_early_move_text(report))
+    print()
+    print(render_domain_lock_text(domain_report))
     print("EARLY_MOVE_STATE_AUDIT_OK")
 
 
