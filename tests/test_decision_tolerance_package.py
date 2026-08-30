@@ -2,8 +2,8 @@
 
 Market rationale (docs/karar_esnekligi_analiz_ve_plan.md):
 - T1: a blocked/developing LT scenario may yield to a QUALIFIED ST scenario. A
-  QUALIFIED ST scenario also stands on its own 1H/30m authority when LT context is
-  UNKNOWN; only a non-qualified ST keeps waiting for unresolved LT context.
+  QUALIFIED ST scenario also owns the trade horizon when LT is qualified, while LT
+  remains context/risk authority. Only a non-qualified ST keeps waiting for unresolved LT context.
 - T2: a lifecycle-completed zone (fully filled / invalidated FVG) is normal
   gap-fill price discovery, not a directional failure; a live failure on a
   secondary lineage while the current path holds a confirmation is LOW, not
@@ -189,16 +189,18 @@ def test_compressed_room_without_reaction_input_still_waits():
 
 
 # --------------------------------------------------------------------------- #
-# T1: qualified ST is independent; developing ST still cannot bypass LT         #
+# T1: qualified ST owns trade horizon; developing ST still cannot bypass LT     #
 # --------------------------------------------------------------------------- #
 
-def test_qualified_lt_keeps_absolute_priority_over_qualified_st():
+def test_qualified_st_owns_trade_horizon_over_qualified_lt_context():
     result = arbitrate_entry_scenarios(
         _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT),
         _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT),
     )
-    assert result.selection is ArbiterSelection.LONG_TERM
-    assert DecisionHorizon.SHORT_TERM in result.suppressed_horizons
+    assert result.selection is ArbiterSelection.SHORT_TERM
+    assert result.selected_horizon is DecisionHorizon.SHORT_TERM
+    assert result.suppressed_horizons == ()
+    assert "LONG_TERM_QUALIFIED_CONTEXT_RETAINED" in result.reasons
 
 
 def test_blocked_lt_yields_to_qualified_st():
