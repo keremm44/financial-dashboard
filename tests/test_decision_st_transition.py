@@ -109,9 +109,13 @@ def _native(*, transitioning: bool) -> StructuralAssessment:
     )
 
 
-def _stabil(interaction: str):
+def _stabil(
+    interaction: str,
+    *,
+    quality: ContextDataQuality = ContextDataQuality.VALID,
+):
     return SimpleNamespace(
-        data_quality=ContextDataQuality.VALID,
+        data_quality=quality,
         support_ref=None,
         events=(),
         validity="HELD",
@@ -124,7 +128,11 @@ def _stabil(interaction: str):
     )
 
 
-def _snapshot(*events, stabil_interaction: str | None = None):
+def _snapshot(
+    *events,
+    stabil_interaction: str | None = None,
+    stabil_quality: ContextDataQuality = ContextDataQuality.VALID,
+):
     structure = SimpleNamespace(
         for_timeframe=lambda timeframe: SimpleNamespace(events=tuple(events))
     )
@@ -154,7 +162,11 @@ def _snapshot(*events, stabil_interaction: str | None = None):
         participation_behavior=None,
         volatility_environment=None,
         targeting=targeting,
-        stabil_support=None if stabil_interaction is None else _stabil(stabil_interaction),
+        stabil_support=(
+            None
+            if stabil_interaction is None
+            else _stabil(stabil_interaction, quality=stabil_quality)
+        ),
     )
 
 
@@ -214,6 +226,21 @@ def test_stabil_recovery_can_own_transition_before_native_structure_transitions(
     assert overlay.native_state == "STATE_BEARISH"
     assert "NATIVE_1H_STRUCTURE_REMAINS_BEARISH_INTACT" in overlay.reasons
     assert "STABIL_RECOVERY_CONFIRMED_EARLY_LONG_AUTHORITY" in overlay.reasons
+
+
+def test_data_limited_stabil_recovery_can_own_transition_when_other_evidence_confirms() -> None:
+    snapshot = _snapshot(
+        _event("EVENT_CHOCH", 1, at="2026-01-02 11:00:00"),
+        stabil_interaction="RECOVERY_CONFIRMED",
+        stabil_quality=ContextDataQuality.DATA_LIMITED,
+    )
+
+    result = _assess(snapshot, _native(transitioning=False))
+
+    assert result.stabil.data_quality is ContextDataQuality.DATA_LIMITED
+    assert result.stabil.recovery_confirmed
+    assert result.state is STTransitionState.STRONG
+    assert result.can_own_trade_thesis
 
 
 def test_bearish_stabil_blocks_even_canonical_bullish_transition_overlay() -> None:
