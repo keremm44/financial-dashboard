@@ -75,8 +75,8 @@ def assess_stabil_authority(
 ) -> StabilDecisionAssessment:
     """Translate native daily Stabil facts into Decision market-state authority.
 
-    This is deliberately not a BUY/SELL signal.  It consumes only the already-causal
-    Stabil projection and keeps the source domain immutable.  The mapping is also
+    This is deliberately not a BUY/SELL signal. It consumes only the already-causal
+    Stabil projection and keeps the source domain immutable. The mapping is also
     compatible with older frozen DecisionInput caches because it relies on behavior
     fields that pre-date the newer domain-level primary-state summary.
     """
@@ -111,9 +111,9 @@ def assess_stabil_authority(
         state = StabilDecisionState.RECOVERY_DEVELOPING
     elif interaction == "DOWNSIDE_CONTINUATION":
         state = StabilDecisionState.BEARISH_CONTINUATION
-    elif interaction in {"BREAKDOWN_ACCEPTED", "RECOVERY_FAILED"}:
+    elif interaction == "BREAKDOWN_ACCEPTED":
         state = StabilDecisionState.BREAKDOWN_CONFIRMED
-    elif interaction == "BREAKDOWN_ATTEMPT":
+    elif interaction in {"BREAKDOWN_ATTEMPT", "RECOVERY_FAILED"}:
         state = StabilDecisionState.BREAKDOWN_DEVELOPING
     elif interaction == "RANGE_AROUND_SUPPORT":
         state = StabilDecisionState.BALANCE
