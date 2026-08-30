@@ -9,6 +9,7 @@ import pandas as pd
 
 from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
+from financial_dashboard.decision.calibration import load_opportunity_calibration
 from financial_dashboard.decision.canonical_events import canonical_decision_events_from_replay
 from financial_dashboard.decision.engine import DecisionEngineConfig, assess_horizon_decision
 from financial_dashboard.decision.execution_detect import detect_1h_execution_events
@@ -23,7 +24,7 @@ from financial_dashboard.decision_audit.research import detect_large_market_move
 from buy_sell_backtest import _causal_warmup_start
 
 
-AUDIT_CACHE_SCHEMA = "early-rise-pct-v2"
+AUDIT_CACHE_SCHEMA = "early-rise-pct-v3-calibrated"
 
 
 def _enum(value) -> str:
@@ -65,7 +66,28 @@ def _decision_code_fingerprint() -> str:
     return digest.hexdigest()
 
 
-def _cache_identity(*, symbol: str, snapshots, args, code_fingerprint: str) -> dict[str, object]:
+def _load_calibration(cache_root: Path, symbol: str):
+    path = cache_root / "calibration" / "opportunity" / f"{normalize_symbol(symbol)}.json"
+    if not path.exists():
+        raise SystemExit(
+            "MISSING_OPPORTUNITY_CALIBRATION\n"
+            f"Expected the same production/backtest calibration at: {path}\n"
+            "Build opportunity calibration first; this audit must not silently fall back to UNKNOWN."
+        )
+    loaded = load_opportunity_calibration(path)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return loaded.calibration, path, digest
+
+
+def _cache_identity(
+    *,
+    symbol: str,
+    snapshots,
+    args,
+    code_fingerprint: str,
+    calibration_path: Path,
+    calibration_fingerprint: str,
+) -> dict[str, object]:
     first = None if not snapshots else str(snapshots[0].as_of)
     last = None if not snapshots else str(snapshots[-1].as_of)
     return {
@@ -75,6 +97,8 @@ def _cache_identity(*, symbol: str, snapshots, args, code_fingerprint: str) -> d
         "snapshot_first": first,
         "snapshot_last": last,
         "decision_code": code_fingerprint,
+        "opportunity_calibration_path": str(calibration_path),
+        "opportunity_calibration_sha256": calibration_fingerprint,
         "start": args.start,
         "end": args.end,
         "min_move_pct": float(args.min_move_pct),
@@ -131,6 +155,9 @@ def _checkpoint_payload(snapshot, event, *, threshold_pct, threshold_price, conf
         "st_scenario": f"{_enum(st_scenario.presence)}/{_enum(st_scenario.stage)}/{_enum(st_scenario.kind)}",
         "st_timing": _enum(st.timing.state),
         "st_opportunity": _enum(st.opportunity.state),
+        "st_opportunity_room_atr": st.opportunity.room_atr,
+        "st_opportunity_target": st.opportunity.target_identity,
+        "st_opportunity_semantics": st.opportunity.target_semantics,
         "st_eligibility": _enum(st.eligibility.state),
         "st_conflict": _enum(st.conflict.state),
         "stabil_state": _enum(stabil.state),
@@ -222,11 +249,18 @@ def _render_checkpoint(row: dict[str, object]) -> None:
         f"price={float(row['price']):.2f} threshold={float(row['threshold_price']):.2f} "
         f"action={row['action']}"
     )
+    room = row.get("st_opportunity_room_atr")
+    room_text = "-" if room is None else f"{float(room):.3f}ATR"
     print(
         "    ST "
         f"structure={row['st_structure']} scenario={row['st_scenario']} "
         f"timing={row['st_timing']} opportunity={row['st_opportunity']} "
-        f"eligibility={row['st_eligibility']} conflict={row['st_conflict']}"
+        f"room={room_text} eligibility={row['st_eligibility']} conflict={row['st_conflict']}"
+    )
+    print(
+        "    TARGET "
+        f"id={row.get('st_opportunity_target') or '-'} "
+        f"semantics={row.get('st_opportunity_semantics') or '-'}"
     )
     print(f"    STABIL state={row['stabil_state']} quality={row['stabil_quality']}")
     print(f"    LT structure={row['lt_structure']} scenario={row['lt_scenario']}")
@@ -282,12 +316,17 @@ def main() -> None:
     if not snapshots:
         raise SystemExit("Frozen historical DecisionInput timeline contains no causal snapshots")
 
+    calibration, calibration_path, calibration_fingerprint = _load_calibration(args.cache_root, symbol)
+    decision_config = DecisionEngineConfig(opportunity_calibration=calibration)
+
     code_fingerprint = _decision_code_fingerprint()
     identity = _cache_identity(
         symbol=symbol,
         snapshots=snapshots,
         args=args,
         code_fingerprint=code_fingerprint,
+        calibration_path=calibration_path,
+        calibration_fingerprint=calibration_fingerprint,
     )
     cache_path = _audit_cache_path(args.cache_root, symbol, identity)
 
@@ -304,7 +343,6 @@ def main() -> None:
 
     if report is None:
         entry_events, exit_events = detect_1h_execution_events(snapshots)
-        decision_config = DecisionEngineConfig()
         lifecycle = replay_canonical_trade_lifecycle(
             snapshots,
             config=decision_config,
@@ -338,6 +376,14 @@ def main() -> None:
     print(f"AUDIT_CACHE\t{cache_status}")
     print("DOMAIN_REPLAY\tNOT_RUN")
     print(f"SYMBOL\t{symbol}")
+    print(f"OPPORTUNITY_CALIBRATION\t{calibration_path}")
+    print(f"OPPORTUNITY_CALIBRATION_SHA256\t{calibration_fingerprint[:16]}")
+    print(
+        "OPPORTUNITY_BOUNDS_ATR\t"
+        f"none<={calibration.none_max_atr:.6g}; "
+        f"compressed<={calibration.compressed_max_atr:.6g}; "
+        f"moderate<={calibration.moderate_max_atr:.6g}; ample>moderate"
+    )
     print(f"MOVE_RULE\tprice-only 4H, min=+{args.min_move_pct:g}%, reversal={args.reversal_pct:g}%")
     print("MOVE_ORDER\tlargest rise to smallest rise")
     print(f"CHECKPOINTS\tfirst causal snapshot at every +{args.checkpoint_step_pct:g}% from move start")
