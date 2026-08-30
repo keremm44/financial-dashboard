@@ -58,6 +58,13 @@ class StabilDecisionAssessment:
             StabilDecisionState.BEARISH_CONTINUATION,
         }
 
+    @property
+    def usable(self) -> bool:
+        return self.data_quality in {
+            ContextDataQuality.VALID,
+            ContextDataQuality.DATA_LIMITED,
+        } and self.state is not StabilDecisionState.UNKNOWN
+
 
 def _refs(stabil: StabilSupportProjection | None) -> tuple[FactRef, ...]:
     if stabil is None:
@@ -76,9 +83,10 @@ def assess_stabil_authority(
     """Translate native daily Stabil facts into Decision market-state authority.
 
     This is deliberately not a BUY/SELL signal. It consumes only the already-causal
-    Stabil projection and keeps the source domain immutable. The mapping is also
-    compatible with older frozen DecisionInput caches because it relies on behavior
-    fields that pre-date the newer domain-level primary-state summary.
+    Stabil projection and keeps the source domain immutable. DATA_LIMITED is usable
+    when native lifecycle/behavior state is actually observed; the lower quality is
+    preserved on the assessment and never promoted to VALID. WARMING_UP/UNAVAILABLE
+    remain non-authoritative.
     """
 
     if stabil is None:
@@ -91,7 +99,7 @@ def assess_stabil_authority(
 
     refs = _refs(stabil)
     quality = normalize_context_data_quality(stabil.data_quality)
-    if quality is not ContextDataQuality.VALID:
+    if quality not in {ContextDataQuality.VALID, ContextDataQuality.DATA_LIMITED}:
         return StabilDecisionAssessment(
             StabilDecisionState.UNKNOWN,
             quality,
@@ -135,10 +143,16 @@ def assess_stabil_authority(
     else:
         state = StabilDecisionState.UNKNOWN
 
+    quality_reason = (
+        "STABIL_AUTHORITY_DATA_LIMITED_BUT_OBSERVED"
+        if quality is ContextDataQuality.DATA_LIMITED
+        else "STABIL_AUTHORITY_DATA_VALID"
+    )
     return StabilDecisionAssessment(
         state,
         quality,
         (
+            quality_reason,
             f"STABIL_PRIMARY_STATE:{state.value}",
             f"STABIL_INTERACTION:{interaction}",
             f"STABIL_MOTION:{motion}",
