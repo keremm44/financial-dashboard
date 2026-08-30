@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from financial_dashboard.context.envelope import ContextDataQuality
+from financial_dashboard.decision.durability import DurabilityState
 from financial_dashboard.decision.eligibility import EligibilityState
 from financial_dashboard.decision.market_state import StructuralRegime
 from financial_dashboard.decision.opportunity import OpportunityState
@@ -33,7 +34,15 @@ def _market_state(regime: StructuralRegime):
     )
 
 
-def _assessment(*, thesis_state, opportunity_state, eligibility_state, waiting_for=(), blockers=()):
+def _assessment(
+    *,
+    thesis_state,
+    opportunity_state,
+    eligibility_state,
+    waiting_for=(),
+    blockers=(),
+    durability=None,
+):
     return SimpleNamespace(
         horizon=DecisionHorizon.SHORT_TERM,
         structural=SimpleNamespace(
@@ -58,7 +67,7 @@ def _assessment(*, thesis_state, opportunity_state, eligibility_state, waiting_f
             blockers=tuple(blockers),
             waiting_for=tuple(waiting_for),
         ),
-        durability=None,
+        durability=durability,
         st_transition=None,
     )
 
@@ -101,3 +110,69 @@ def test_scenario_does_not_duplicate_hard_opportunity_gate():
     assert "OPPORTUNITY_NONE" in scenario.blockers
     assert "OBSERVED_DIRECTIONAL_ROOM_INSUFFICIENT" in scenario.reasons
     assert "MORE_DIRECTIONAL_ROOM" not in scenario.waiting_for
+
+
+def test_stabil_fractured_support_is_hard_block_not_recovery_wait():
+    assessment = _assessment(
+        thesis_state=ThesisState.INTACT,
+        opportunity_state=OpportunityState.MODERATE,
+        eligibility_state=EligibilityState.ELIGIBLE,
+        durability=SimpleNamespace(
+            state=DurabilityState.FRACTURED,
+            reasons=("VALIDITY:BREACHED", "INTERACTION:BREAKDOWN_ACCEPTED"),
+        ),
+    )
+
+    scenario = build_entry_scenario(
+        assessment,
+        target_path=_target_path(),
+        market_state=_market_state(StructuralRegime.DIRECTIONAL),
+    )
+
+    assert scenario.stage is ScenarioStage.BLOCKED
+    assert "STABIL_SUPPORT_NOT_HOLDING_FOR_NEW_ST_LONG" in scenario.blockers
+    assert "STABIL_FOUNDATION_TO_RECOVER" not in scenario.waiting_for
+
+
+def test_stabil_flat_or_ranging_softening_does_not_require_bullish_recovery():
+    assessment = _assessment(
+        thesis_state=ThesisState.INTACT,
+        opportunity_state=OpportunityState.MODERATE,
+        eligibility_state=EligibilityState.ELIGIBLE,
+        durability=SimpleNamespace(
+            state=DurabilityState.SOFTENING,
+            reasons=("MOTION:FLAT_AFTER_FALL", "INTERACTION:RANGE_AROUND_SUPPORT"),
+        ),
+    )
+
+    scenario = build_entry_scenario(
+        assessment,
+        target_path=_target_path(),
+        market_state=_market_state(StructuralRegime.DIRECTIONAL),
+    )
+
+    assert scenario.stage is ScenarioStage.QUALIFIED
+    assert "STABIL_SUPPORT_APPROACH_TO_SETTLE" not in scenario.waiting_for
+    assert "STABIL_FOUNDATION_TO_RECOVER" not in scenario.waiting_for
+
+
+def test_stabil_direct_falling_support_approach_waits_for_acceptance():
+    assessment = _assessment(
+        thesis_state=ThesisState.INTACT,
+        opportunity_state=OpportunityState.MODERATE,
+        eligibility_state=EligibilityState.ELIGIBLE,
+        durability=SimpleNamespace(
+            state=DurabilityState.SOFTENING,
+            reasons=("MOTION:FALLING", "INTERACTION:APPROACHING_SUPPORT"),
+        ),
+    )
+
+    scenario = build_entry_scenario(
+        assessment,
+        target_path=_target_path(),
+        market_state=_market_state(StructuralRegime.DIRECTIONAL),
+    )
+
+    assert scenario.stage is ScenarioStage.DEVELOPING
+    assert "STABIL_SUPPORT_APPROACH_TO_SETTLE" in scenario.waiting_for
+    assert "STABIL_SUPPORT_UNDER_DIRECT_FALLING_PRESSURE" in scenario.reasons
