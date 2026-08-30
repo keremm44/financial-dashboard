@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from financial_dashboard.targeting.models import TargetCluster, TargetingSnapshot
+from financial_dashboard.targeting.models import (
+    TargetCluster,
+    TargetClusterKind,
+    TargetEvidenceType,
+    TargetingSnapshot,
+)
 
 from .structural import StructuralDirection
 
@@ -42,6 +47,8 @@ class OpportunityAssessment:
     target_quality: str | None
     reasons: tuple[str, ...]
     source_lineage: tuple[str, ...]
+    hard_room_constraint: bool = True
+    target_semantics: str | None = None
 
 
 def _target_for_side(
@@ -66,6 +73,49 @@ def _lineage(cluster: TargetCluster | None) -> tuple[str, ...]:
     return tuple(sorted(keys))
 
 
+def _token(value: object | None) -> str:
+    if value is None:
+        return ""
+    return str(getattr(value, "value", value)).strip().upper()
+
+
+def _target_semantics(cluster: TargetCluster) -> tuple[str, bool]:
+    """Classify whether the nearest cluster is a true economic obstacle.
+
+    Liquidity and structural S/R remain hard room constraints.  A cluster made only
+    from OB/FVG/engulfing evidence is reaction/imbalance context: it may describe a
+    nearby technical zone, but it must not by itself assert that no ST profit room
+    exists.  Unknown/legacy shapes fail closed to hard=True to preserve historical
+    safety semantics.
+    """
+
+    evidence = tuple(getattr(cluster, "evidence", ()) or ())
+    evidence_types = {_token(getattr(item, "evidence_type", None)) for item in evidence}
+    evidence_types.discard("")
+    kind = _token(getattr(cluster, "kind", None))
+    liquidity_anchor = getattr(cluster, "liquidity_anchor", None)
+
+    if (
+        liquidity_anchor is not None
+        or TargetEvidenceType.LIQUIDITY.value in evidence_types
+        or kind == TargetClusterKind.LIQUIDITY_TARGET.value
+    ):
+        return "LIQUIDITY_MAGNET", True
+
+    if TargetEvidenceType.SUPPORT_RESISTANCE.value in evidence_types:
+        return "STRUCTURAL_SUPPORT_RESISTANCE", True
+
+    reaction_only = {
+        TargetEvidenceType.ORDER_BLOCK.value,
+        TargetEvidenceType.FVG.value,
+        TargetEvidenceType.ENGULFING.value,
+    }
+    if evidence_types and evidence_types.issubset(reaction_only):
+        return "REACTION_TECHNICAL_ZONE", False
+
+    return "UNCLASSIFIED_TARGET", True
+
+
 def assess_opportunity(
     side: StructuralDirection,
     targeting: TargetingSnapshot | None,
@@ -76,7 +126,9 @@ def assess_opportunity(
 
     A calibration object is mandatory for AMPLE/MODERATE/COMPRESSED/NONE. If it is
     not supplied, the system explicitly returns UNKNOWN instead of silently using a
-    magic constant.
+    magic constant.  Room state and target semantics are deliberately separate:
+    nearby reaction-only OB/FVG/engulfing clusters remain visible but are not hard
+    economic vetoes by themselves.
     """
 
     if side is StructuralDirection.UNRESOLVED:
@@ -87,6 +139,8 @@ def assess_opportunity(
             None,
             ("OPPORTUNITY_SIDE_UNRESOLVED",),
             (),
+            False,
+            None,
         )
     if targeting is None:
         return OpportunityAssessment(
@@ -96,6 +150,8 @@ def assess_opportunity(
             None,
             ("TARGETING_UNAVAILABLE",),
             (),
+            False,
+            None,
         )
 
     target = _target_for_side(side, targeting)
@@ -107,19 +163,28 @@ def assess_opportunity(
             None,
             ("NO_DIRECTIONAL_TARGET_OBSERVED_NOT_CLEAR_PATH",),
             (),
+            False,
+            None,
         )
 
     room = float(target.distance_atr)
     lineage = _lineage(target)
     quality = str(getattr(target.quality, "value", target.quality))
+    semantics, hard_room_constraint = _target_semantics(target)
+    semantic_reasons = [f"TARGET_SEMANTICS:{semantics}"]
+    if not hard_room_constraint:
+        semantic_reasons.append("REACTION_TECHNICAL_ZONE_IS_SOFT_ROOM_CONTEXT")
+
     if calibration is None:
         return OpportunityAssessment(
             OpportunityState.UNKNOWN,
             room,
             target.identity,
             quality,
-            ("OPPORTUNITY_CALIBRATION_REQUIRED",),
+            ("OPPORTUNITY_CALIBRATION_REQUIRED", *semantic_reasons),
             lineage,
+            hard_room_constraint,
+            semantics,
         )
 
     if room <= calibration.none_max_atr:
@@ -136,8 +201,14 @@ def assess_opportunity(
         room,
         target.identity,
         quality,
-        (f"DIRECTIONAL_ROOM:{room:.6g}ATR", f"TARGET_QUALITY:{quality}"),
+        (
+            f"DIRECTIONAL_ROOM:{room:.6g}ATR",
+            f"TARGET_QUALITY:{quality}",
+            *semantic_reasons,
+        ),
         lineage,
+        hard_room_constraint,
+        semantics,
     )
 
 
