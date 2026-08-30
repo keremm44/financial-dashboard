@@ -55,15 +55,20 @@ def main() -> None:
             stabil = getattr(snapshot, "stabil_support", None)
             behavior = None if stabil is None else getattr(stabil, "behavior", None)
             authority = assess_stabil_authority(stabil)
+            quality = "-" if stabil is None else _token(getattr(stabil, "data_quality", "-"))
+            reasons = ",".join(str(item) for item in authority.reasons)
             print(
                 f"{snapshot.as_of} price={snapshot.current_price:.2f} | "
                 f"stabil={'NONE' if stabil is None else 'PRESENT'} "
+                f"quality={quality} "
                 f"behavior={'NONE' if behavior is None else 'PRESENT'} "
                 f"validity={'-' if stabil is None else getattr(stabil, 'validity', '-')} "
                 f"motion={'-' if behavior is None else getattr(behavior, 'motion', '-')} "
                 f"relation={'-' if behavior is None else getattr(behavior, 'relation', '-')} "
                 f"interaction={'-' if behavior is None else getattr(behavior, 'interaction', '-')} "
-                f"decision_stabil={_token(authority.state)}"
+                f"decision_stabil={_token(authority.state)} "
+                f"authority_quality={_token(authority.data_quality)} "
+                f"reasons={reasons}"
             )
         if not found:
             print("- no snapshot in +/-1 day window")
