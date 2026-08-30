@@ -19,7 +19,7 @@ from financial_dashboard.context.permissions import (
     PermissionScope,
     PermittedSide,
 )
-from financial_dashboard.decision.opportunity import OpportunityCalibration
+from financial_dashboard.decision.opportunity import OpportunityCalibration, OpportunityState
 from financial_dashboard.decision.st_transition import (
     STTransitionState,
     apply_strong_st_long_transition,
@@ -32,6 +32,7 @@ from financial_dashboard.decision.structural import (
     StructuralDirection,
     ThesisState,
 )
+from financial_dashboard.decision.timing import TimingState
 
 
 def _ref(native_id: str, *, domain: ContextDomain = ContextDomain.MARKET_STRUCTURE, available_at="2026-01-02 10:00:00") -> FactRef:
@@ -191,7 +192,7 @@ def test_bearish_intact_with_bullish_reaction_is_watch_only() -> None:
     assert not result.can_own_trade_thesis
 
 
-def test_canonical_transition_with_current_choch_and_ready_reaction_is_strong() -> None:
+def test_canonical_transition_with_current_choch_and_confirmed_reaction_is_strong() -> None:
     snapshot = _snapshot(_event("EVENT_CHOCH", 1, at="2026-01-02 11:00:00"))
     native = _native(transitioning=True)
 
@@ -200,12 +201,11 @@ def test_canonical_transition_with_current_choch_and_ready_reaction_is_strong() 
 
     assert result.state is STTransitionState.STRONG
     assert result.current_bullish_choch
-    assert result.timing.state.value == "READY"
-    assert result.opportunity.state.value == "AMPLE"
     assert overlay.direction is StructuralDirection.LONG
     assert overlay.thesis_state is ThesisState.INTACT
     assert overlay.native_state == "STATE_TRANSITION_UP"
     assert "DECISION_ST_TRANSITION_LONG_OVERLAY" in overlay.reasons
+    assert "CANONICAL_1H_TRANSITION_UP_STRONG_CONFIRMATION" in result.reasons
 
 
 def test_stabil_recovery_can_own_transition_before_native_structure_transitions() -> None:
@@ -225,7 +225,58 @@ def test_stabil_recovery_can_own_transition_before_native_structure_transitions(
     assert overlay.thesis_state is ThesisState.INTACT
     assert overlay.native_state == "STATE_BEARISH"
     assert "NATIVE_1H_STRUCTURE_REMAINS_BEARISH_INTACT" in overlay.reasons
-    assert "STABIL_RECOVERY_CONFIRMED_EARLY_LONG_AUTHORITY" in overlay.reasons
+    assert "STABIL_RECOVERY_CONFIRMED_PRIMARY_REVERSAL_AUTHORITY" in overlay.reasons
+    assert "STABIL_LED_ST_LONG_MARKET_THESIS_STRONG" in result.reasons
+
+
+def test_structure_transition_is_strong_confirmation_of_stabil_recovery() -> None:
+    snapshot = _snapshot(
+        _event("EVENT_CHOCH", 1, at="2026-01-02 11:00:00"),
+        stabil_interaction="RECOVERY_CONFIRMED",
+    )
+
+    result = _assess(snapshot, _native(transitioning=True))
+
+    assert result.state is STTransitionState.STRONG
+    assert "STRUCTURE_CONFIRMS_STABIL_RECOVERY" in result.reasons
+    assert "CANONICAL_1H_TRANSITION_UP_STRONG_CONFIRMATION" in result.reasons
+
+
+def test_stabil_led_market_thesis_does_not_require_observed_opportunity() -> None:
+    snapshot = _snapshot(
+        _event("EVENT_CHOCH", 1, at="2026-01-02 11:00:00"),
+        stabil_interaction="RECOVERY_CONFIRMED",
+    )
+    snapshot.targeting = None
+
+    result = _assess(snapshot, _native(transitioning=False))
+
+    assert result.opportunity.state is OpportunityState.UNKNOWN
+    assert result.state is STTransitionState.STRONG
+    assert result.can_own_trade_thesis
+    assert "ENTRY_LAYER_OPPORTUNITY_UNKNOWN" in result.reasons
+
+
+def test_stabil_led_market_thesis_does_not_require_ready_timing(monkeypatch) -> None:
+    snapshot = _snapshot(
+        _event("EVENT_CHOCH", 1, at="2026-01-02 11:00:00"),
+        stabil_interaction="RECOVERY_CONFIRMED",
+    )
+    monkeypatch.setattr(
+        "financial_dashboard.decision.st_transition.assess_timing",
+        lambda *args, **kwargs: SimpleNamespace(
+            state=TimingState.DEVELOPING,
+            source_refs=(),
+            waiting_for=("SETUP_TRIGGER_CONFIRMATION",),
+        ),
+    )
+
+    result = _assess(snapshot, _native(transitioning=False))
+
+    assert result.timing.state is TimingState.DEVELOPING
+    assert result.state is STTransitionState.STRONG
+    assert result.can_own_trade_thesis
+    assert "ENTRY_LAYER_1H_TIMING_DEVELOPING" in result.reasons
 
 
 def test_data_limited_stabil_recovery_can_own_transition_when_other_evidence_confirms() -> None:
