@@ -142,6 +142,26 @@ def _observed_opportunity(assessment: "HorizonDecisionAssessment", path: TargetP
     return path.status is TargetPathStatus.READY and bool(path.nodes)
 
 
+def _stabil_support_approach_is_risky(durability) -> bool:
+    """Only a direct falling approach to support should delay a fresh ST long.
+
+    Stabil is intentionally slow-moving. A neutral/ranging/flat-after-fall support
+    state must not require a separate bullish recovery before a short-term entry.
+    """
+
+    tokens = {str(reason).strip().upper() for reason in getattr(durability, "reasons", ()) or ()}
+    falling = "MOTION:FALLING" in tokens
+    direct_support_pressure = bool(
+        tokens
+        & {
+            "INTERACTION:APPROACHING_SUPPORT",
+            "INTERACTION:TESTING_SUPPORT",
+            "INTERACTION:BREAKDOWN_ATTEMPT",
+        }
+    )
+    return falling and direct_support_pressure
+
+
 def build_entry_scenario(
     assessment: "HorizonDecisionAssessment",
     *,
@@ -226,18 +246,19 @@ def build_entry_scenario(
             reasons.append("EARLY_TRANSITION_EXISTS_BEFORE_OPPORTUNITY_OBSERVATION")
             waiting.append("OPPORTUNITY_EVIDENCE_OR_CALIBRATION")
 
-    # Stabil is part of the ST thesis, but only severe damage can prevent a new long.
-    # SOFTENING remains observable context rather than a veto so healthy pullbacks and
-    # a recently confirmed recovery are not erased by one later daily support state.
+    # Stabil is a slow daily foundation for ST entries, not a second momentum trigger.
+    # A fresh ST long does not wait for Stabil to become bullish/recovered. It only
+    # protects against an actually lost support foundation, or a direct falling test
+    # where support acceptance has not yet become clear.
     durability = getattr(assessment, "durability", None)
     if assessment.horizon is DecisionHorizon.SHORT_TERM and durability is not None:
-        if durability.state is DurabilityState.BROKEN:
+        if durability.state in {DurabilityState.BROKEN, DurabilityState.FRACTURED}:
             stabil_hard_block = True
-            blockers.append("STABIL_FOUNDATION_BROKEN_FOR_NEW_ST_LONG")
-            reasons.append("STABIL_SEVERE_BEARISH_AUTHORITY")
-        elif durability.state is DurabilityState.FRACTURED:
-            waiting.append("STABIL_FOUNDATION_TO_RECOVER")
-            reasons.append("STABIL_BREAKDOWN_NOT_YET_RECOVERED")
+            blockers.append("STABIL_SUPPORT_NOT_HOLDING_FOR_NEW_ST_LONG")
+            reasons.append("STABIL_SUPPORT_LOST_OR_BREAKDOWN_ACCEPTED")
+        elif durability.state is DurabilityState.SOFTENING and _stabil_support_approach_is_risky(durability):
+            waiting.append("STABIL_SUPPORT_APPROACH_TO_SETTLE")
+            reasons.append("STABIL_SUPPORT_UNDER_DIRECT_FALLING_PRESSURE")
 
     # Opportunity owns the hard economic-room decision. Scenario records the market
     # meaning but must not ask for the same room evidence a second time.
