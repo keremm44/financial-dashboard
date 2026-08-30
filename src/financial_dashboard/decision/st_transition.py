@@ -157,14 +157,16 @@ def assess_st_long_transition(
     reaction_relevance: ReactionRelevancePolicy | None = ReactionRelevancePolicy(),
     participation_conflict_max_age_bars: int | None = 24,
 ) -> STLongTransitionAssessment:
-    """Assess a conservative 1H-owned early LONG thesis without mutating Structure.
+    """Assess a Stabil-led early LONG market thesis without mutating native Structure.
 
-    Native 1H Structure remains the price-structure authority, while daily Stabil can
-    now prove that a bearish support regime has causally recovered before Structure
-    finishes its own transition.  Stabil never creates a LONG thesis alone: a strong
-    overlay still requires a current external bullish CHoCH, confirmed bullish
-    reaction, READY 1H timing, usable directional room, low conflict, and no hard
-    volatility/permission blocker.
+    Stabil owns the early support-regime change. Native 1H Structure is a powerful
+    confirmation when it is already transitioning toward LONG, but it is not a
+    prerequisite for a Stabil-led reversal thesis. To prevent Stabil from becoming a
+    direct BUY signal, a confirmed Stabil recovery still needs both a current external
+    bullish CHoCH and confirmed bullish reaction evidence while native Structure is
+    bearish. Timing, opportunity, conflict, volatility, permission, and execution are
+    deliberately downstream trade-entry concerns; they do not decide whether the
+    market thesis itself exists.
     """
 
     reaction_ob, reaction_fvg = normalize_decision_reaction_projections(
@@ -232,64 +234,83 @@ def assess_st_long_transition(
         and native_structural.transition_target is StructuralDirection.LONG
     )
     current_bullish_choch = choch is not None
-    stabil_recovery_authority = stabil.recovery_confirmed
-    transition_authority = canonical_transition_up or stabil_recovery_authority
 
     blockers: list[str] = []
     reasons: list[str] = []
     if native_structural.data_quality is not ContextDataQuality.VALID:
         blockers.append(f"ST_NATIVE_STRUCTURE_{native_structural.data_quality.value}")
-    if environment.risk is EnvironmentRisk.HARD_BLOCK:
-        blockers.append("VOLATILITY_SHOCK")
-    if conflict.state is ConflictState.HIGH:
-        blockers.append("INDEPENDENT_FAMILY_CONFLICT_HIGH")
-    if opportunity.state is OpportunityState.NONE:
-        if bool(getattr(opportunity, "hard_room_constraint", True)):
-            blockers.append("OPPORTUNITY_NONE")
-        else:
-            reasons.append("SOFT_TECHNICAL_ROOM_CONSTRAINT")
     if stabil.opposes_early_long:
         blockers.append("STABIL_BEARISH_AUTHORITY_OPPOSES_EARLY_LONG")
 
-    if canonical_transition_up:
-        reasons.append("CANONICAL_1H_TRANSITION_UP")
     if stabil.recovery_confirmed:
-        reasons.append("STABIL_RECOVERY_CONFIRMED_EARLY_LONG_AUTHORITY")
+        reasons.append("STABIL_RECOVERY_CONFIRMED_PRIMARY_REVERSAL_AUTHORITY")
     elif stabil.recovery_developing:
         reasons.append("STABIL_RECOVERY_DEVELOPING")
     elif stabil.opposes_early_long:
         reasons.append(f"STABIL_OPPOSES_EARLY_LONG:{stabil.state.value}")
+
+    if canonical_transition_up:
+        reasons.append("CANONICAL_1H_TRANSITION_UP_STRONG_CONFIRMATION")
+        if stabil.recovery_confirmed:
+            reasons.append("STRUCTURE_CONFIRMS_STABIL_RECOVERY")
+
     if current_bullish_choch:
         reasons.append("CURRENT_EXTERNAL_BULLISH_CHOCH")
     if reaction.confirmation_present:
         reasons.append("BULLISH_REACTION_CONFIRMED")
     elif reaction.developing_present:
         reasons.append("BULLISH_REACTION_DEVELOPING")
-    if timing.state is TimingState.READY:
-        reasons.append("CONFIRMED_1H_LONG_SETUP")
-    elif timing.state is TimingState.DEVELOPING:
-        reasons.append("DEVELOPING_1H_LONG_SETUP")
-    if opportunity.state in {OpportunityState.AMPLE, OpportunityState.MODERATE}:
-        reasons.append("CLEAR_ST_DIRECTIONAL_ROOM")
-    if conflict.state in {ConflictState.NONE, ConflictState.LOW}:
-        reasons.append("CLEAN_ST_LONG_CONFLICT_STATE")
 
-    strong = bool(
-        not blockers
-        and transition_authority
+    # These facts remain visible for audit, but they intentionally do not create or
+    # destroy the market thesis. They are consumed later by eligibility/execution.
+    if timing.state is TimingState.READY:
+        reasons.append("ENTRY_LAYER_1H_TIMING_READY")
+    elif timing.state is TimingState.DEVELOPING:
+        reasons.append("ENTRY_LAYER_1H_TIMING_DEVELOPING")
+    elif timing.state is TimingState.FAILED:
+        reasons.append("ENTRY_LAYER_1H_TIMING_FAILED")
+    if opportunity.state in {OpportunityState.AMPLE, OpportunityState.MODERATE}:
+        reasons.append("ENTRY_LAYER_DIRECTIONAL_ROOM_OBSERVED")
+    elif opportunity.state is OpportunityState.UNKNOWN:
+        reasons.append("ENTRY_LAYER_OPPORTUNITY_UNKNOWN")
+    elif opportunity.state is OpportunityState.NONE:
+        reasons.append("ENTRY_LAYER_OPPORTUNITY_NONE")
+    if conflict.state in {ConflictState.NONE, ConflictState.LOW}:
+        reasons.append("ENTRY_LAYER_CONFLICT_CLEAN")
+    elif conflict.state is ConflictState.HIGH:
+        reasons.append("ENTRY_LAYER_CONFLICT_HIGH")
+    if environment.risk is EnvironmentRisk.HARD_BLOCK:
+        reasons.append("ENTRY_LAYER_VOLATILITY_HARD_BLOCK")
+
+    stabil_led_strong = bool(
+        stabil.recovery_confirmed
         and current_bullish_choch
         and reaction.confirmation_present
-        and timing.state is TimingState.READY
-        and opportunity.state in {OpportunityState.AMPLE, OpportunityState.MODERATE}
-        and conflict.state in {ConflictState.NONE, ConflictState.LOW}
     )
-    developing = bool(
-        (transition_authority or stabil.recovery_developing)
+    structure_led_strong = bool(
+        canonical_transition_up
         and current_bullish_choch
+        and reaction.confirmation_present
+        and not stabil.opposes_early_long
+    )
+    strong = bool(not blockers and (stabil_led_strong or structure_led_strong))
+
+    developing = bool(
+        not blockers
         and (
-            reaction.confirmation_present
-            or reaction.developing_present
-            or timing.state in {TimingState.DEVELOPING, TimingState.READY}
+            (
+                stabil.recovery_confirmed
+                and (current_bullish_choch or reaction.confirmation_present or reaction.developing_present)
+            )
+            or (
+                canonical_transition_up
+                and (current_bullish_choch or reaction.confirmation_present or reaction.developing_present)
+            )
+            or (
+                stabil.recovery_developing
+                and current_bullish_choch
+                and (reaction.confirmation_present or reaction.developing_present)
+            )
         )
     )
     watch = bool(
@@ -298,7 +319,6 @@ def assess_st_long_transition(
             current_bullish_choch
             or reaction.confirmation_present
             or reaction.developing_present
-            or timing.state in {TimingState.DEVELOPING, TimingState.READY}
             or stabil.recovery_developing
             or stabil.recovery_confirmed
         )
@@ -306,10 +326,14 @@ def assess_st_long_transition(
 
     if strong:
         state = STTransitionState.STRONG
-        reasons.append("ST_LONG_TRANSITION_TRADE_THESIS_STRONG")
+        if stabil_led_strong:
+            reasons.append("STABIL_LED_ST_LONG_MARKET_THESIS_STRONG")
+        if structure_led_strong:
+            reasons.append("STRUCTURE_CONFIRMED_ST_LONG_MARKET_THESIS")
+        reasons.append("ST_LONG_MARKET_THESIS_INDEPENDENT_OF_ENTRY_TIMING_AND_ECONOMICS")
     elif developing:
         state = STTransitionState.DEVELOPING
-        reasons.append("ST_LONG_TRANSITION_REQUIRES_MORE_CONFIRMATION")
+        reasons.append("ST_LONG_MARKET_THESIS_REQUIRES_MORE_CONFIRMATION")
     elif watch:
         state = STTransitionState.WATCH
         reasons.append("BULLISH_COUNTER_EVIDENCE_WATCH_ONLY")
@@ -318,7 +342,9 @@ def assess_st_long_transition(
         reasons.append("NO_QUALIFIED_ST_LONG_TRANSITION_EVIDENCE")
 
     structural_refs = () if choch is None else (choch.ref,)
-    refs = _unique_refs(structural_refs, stabil.source_refs, reaction.source_refs, timing.source_refs)
+    # Trade-thesis lineage contains only thesis evidence. Timing/opportunity/conflict
+    # remain downstream and therefore must not masquerade as structural ownership.
+    refs = _unique_refs(structural_refs, stabil.source_refs, reaction.source_refs)
     return STLongTransitionAssessment(
         state=state,
         target_side=StructuralDirection.LONG,
@@ -340,7 +366,7 @@ def apply_strong_st_long_transition(
     native_structural: StructuralAssessment,
     transition: STLongTransitionAssessment,
 ) -> StructuralAssessment:
-    """Create an explicit Decision trade-thesis overlay; source Structure stays native."""
+    """Create an explicit Decision market-thesis overlay; source Structure stays native."""
 
     if not transition.can_own_trade_thesis:
         return native_structural
@@ -352,7 +378,7 @@ def apply_strong_st_long_transition(
     )
     refs = _unique_refs(native_structural.source_refs, transition_structural_refs)
     native_reason = (
-        "NATIVE_1H_STRUCTURE_REMAINS_TRANSITIONING"
+        "NATIVE_1H_STRUCTURE_ALREADY_CONFIRMS_TRANSITION_UP"
         if native_structural.thesis_state is ThesisState.TRANSITIONING
         else "NATIVE_1H_STRUCTURE_REMAINS_BEARISH_INTACT"
     )
@@ -379,7 +405,7 @@ def reconcile_st_transition_permission(
     permission: PermissionEnvelope,
     transition: STLongTransitionAssessment,
 ) -> PermissionEnvelope:
-    """Permit only a STRONG transition overlay; never bypass a native hard block."""
+    """Expose a strong market thesis to entry policy without bypassing hard permission."""
 
     if not transition.can_own_trade_thesis or permission.gate_state is GateState.BLOCKED:
         return permission
