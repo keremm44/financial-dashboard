@@ -41,6 +41,10 @@ from financial_dashboard.decision_audit.research_reporting import (
     render_research_json,
     render_research_text,
 )
+from financial_dashboard.decision_audit.scenario_authority_research import (
+    audit_scenario_authority,
+    render_scenario_authority_text,
+)
 from financial_dashboard.decision_audit.target_transition_research import (
     TargetTransitionAuditConfig,
     audit_target_path_transitions,
@@ -325,7 +329,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Run canonical BUY/SELL lifecycle, hindsight audits, counterfactual/4H move research, "
-            "target-path transition research, and an optional-realism fill/P&L audit from an exact "
+            "target/scenario authority research, and an optional-realism fill/P&L audit from an exact "
             "frozen DecisionInput timeline. Domains are never replayed."
         )
     )
@@ -539,6 +543,15 @@ def main() -> None:
     target_transition_seconds = perf_counter() - started
 
     started = perf_counter()
+    scenario_authority_report = audit_scenario_authority(
+        symbol=clean_symbol,
+        moves=(row.move for row in research_report.large_moves),
+        snapshots=input_replay.snapshots,
+        decision_config=decision_config,
+    )
+    scenario_authority_seconds = perf_counter() - started
+
+    started = perf_counter()
     execution_report = simulate_execution_pnl(
         decisions,
         bars,
@@ -567,6 +580,7 @@ def main() -> None:
     print(f"HORIZON_TRADE_QUALITY_SECONDS\t{quality_seconds:.3f}")
     print(f"RESEARCH_AUDIT_SECONDS\t{research_seconds:.3f}")
     print(f"TARGET_TRANSITION_AUDIT_SECONDS\t{target_transition_seconds:.3f}")
+    print(f"SCENARIO_AUTHORITY_AUDIT_SECONDS\t{scenario_authority_seconds:.3f}")
     print(f"EXECUTION_PNL_SECONDS\t{execution_seconds:.3f}")
     print(
         "REPLAY_MODE\t"
@@ -583,6 +597,8 @@ def main() -> None:
     print(render_research_text(research_report))
     print()
     print(render_target_path_transition_text(target_transition_report))
+    print()
+    print(render_scenario_authority_text(scenario_authority_report))
     print()
     print("EXECUTION P/L AUDIT")
     print(f"FILL_MODEL\t{execution_report.fill_model}")
