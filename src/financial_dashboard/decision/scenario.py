@@ -197,7 +197,13 @@ def build_entry_scenario(
             ("STRUCTURAL_LONG_THESIS_INVALIDATED",), (), (), lineage,
         )
 
-    if not _observed_opportunity(assessment, target_path):
+    kind = _scenario_kind(assessment)
+    opportunity_observed = _observed_opportunity(assessment, target_path)
+
+    # A structurally owned EARLY_TRANSITION thesis is a market-state fact, not an
+    # economics fact. Missing target/opportunity evidence may keep the trade waiting,
+    # but it must not erase an already-proven Stabil/Structure reversal scenario.
+    if not opportunity_observed and kind is not ScenarioKind.EARLY_TRANSITION:
         return EntryScenarioAssessment(
             assessment.horizon, ScenarioPresence.UNKNOWN, ScenarioStage.UNAVAILABLE,
             ScenarioKind.NONE, structural.direction, structural.thesis_state,
@@ -208,18 +214,21 @@ def build_entry_scenario(
             ScenarioUnknownReason.OPPORTUNITY_UNOBSERVED,
         )
 
-    kind = _scenario_kind(assessment)
     reasons: list[str] = ["OBSERVED_LONG_ENTRY_SCENARIO"]
-    if kind is ScenarioKind.EARLY_TRANSITION:
-        reasons.append("SHORT_TERM_EARLY_TRANSITION_TRADE_THESIS")
     blockers = list(eligibility.blockers)
     waiting = list(eligibility.waiting_for)
     active = target_path.active_node
     stabil_hard_block = False
 
-    # Stabil is now part of the ST thesis, but only severe damage can prevent a new
-    # long.  SOFTENING remains observable context rather than a veto so healthy
-    # pullbacks and the existing early-entry positive controls are preserved.
+    if kind is ScenarioKind.EARLY_TRANSITION:
+        reasons.append("SHORT_TERM_EARLY_TRANSITION_MARKET_THESIS")
+        if not opportunity_observed:
+            reasons.append("EARLY_TRANSITION_EXISTS_BEFORE_OPPORTUNITY_OBSERVATION")
+            waiting.append("OPPORTUNITY_EVIDENCE_OR_CALIBRATION")
+
+    # Stabil is part of the ST thesis, but only severe damage can prevent a new long.
+    # SOFTENING remains observable context rather than a veto so healthy pullbacks and
+    # a recently confirmed recovery are not erased by one later daily support state.
     durability = getattr(assessment, "durability", None)
     if assessment.horizon is DecisionHorizon.SHORT_TERM and durability is not None:
         if durability.state is DurabilityState.BROKEN:
@@ -231,8 +240,8 @@ def build_entry_scenario(
             reasons.append("STABIL_BREAKDOWN_NOT_YET_RECOVERED")
 
     # Opportunity describes economics/path quality; it does not decide whether the
-    # structural long scenario exists.  A true hard economic NONE prevents
-    # qualification; a reaction-only technical cluster remains visible but soft.
+    # market thesis exists. A true hard economic NONE prevents qualification; a
+    # reaction-only technical cluster remains visible but soft.
     if opportunity.state is OpportunityState.NONE:
         if bool(getattr(opportunity, "hard_room_constraint", True)):
             reasons.append("OBSERVED_DIRECTIONAL_ROOM_INSUFFICIENT")
