@@ -59,7 +59,7 @@ def _path() -> TargetPath:
 
 def _market():
     return SimpleNamespace(
-        structural_map=SimpleNamespace(structural_regime=StructuralRegime.TREND)
+        structural_map=SimpleNamespace(structural_regime=StructuralRegime.DIRECTIONAL)
     )
 
 
