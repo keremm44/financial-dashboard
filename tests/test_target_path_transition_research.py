@@ -7,7 +7,7 @@ import pandas as pd
 from financial_dashboard.decision_audit.models import DecisionAction, DecisionEvent
 from financial_dashboard.decision_audit.research import LargeMarketMove
 from financial_dashboard.decision_audit.target_transition_research import (
-    TargetPathTransitionAuditConfig,
+    TargetTransitionAuditConfig,
     audit_target_path_transitions,
     render_target_path_transition_text,
 )
@@ -112,7 +112,7 @@ def test_target_transition_tracks_cross_persistence_retest_advance_and_buy():
         snapshots=snapshots,
         decisions=decisions,
         micro_bars=micro,
-        config=TargetPathTransitionAuditConfig(persistence_snapshots=2, retest_tolerance_pct=0.5),
+        config=TargetTransitionAuditConfig(persistence_snapshots=2, retest_tolerance_pct=0.5),
     )
 
     assert len(report.moves) == 1
@@ -162,7 +162,7 @@ def test_target_transition_keeps_native_clear_separate_from_price_cross():
         snapshots=snapshots,
         decisions=(),
         micro_bars=micro,
-        config=TargetPathTransitionAuditConfig(persistence_snapshots=2),
+        config=TargetTransitionAuditConfig(persistence_snapshots=2),
     )
     episode = report.moves[0].episodes[0]
     assert episode.native_clear_at == pd.Timestamp("2026-01-01 11:00")
