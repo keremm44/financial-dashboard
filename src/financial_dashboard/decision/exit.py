@@ -14,6 +14,11 @@ from .lifecycle import (
     TradeLifecycleTransition,
     transition_trade_lifecycle,
 )
+from .stabil_authority import (
+    StabilDecisionAssessment,
+    StabilDecisionState,
+    assess_stabil_authority,
+)
 from .structural import (
     DecisionHorizon,
     HorizonStructuralSnapshot,
@@ -147,6 +152,96 @@ def _short_term_position_exit(snapshot: HorizonStructuralSnapshot) -> LongExitAs
     )
 
 
+def refine_short_term_exit_with_stabil(
+    assessment: LongExitAssessment,
+    st,
+    stabil: StabilDecisionAssessment | None,
+) -> LongExitAssessment:
+    """Make ST long exits Stabil-aware without turning Stabil into a SELL signal.
+
+    Invalidated Structure remains sufficient to arm an exit.  Otherwise, an intact
+    bearish or transition-down 1H Structure needs confirmed Stabil breakdown before
+    EXIT_READY.  Stabil deterioration without Structure deterioration can only raise
+    EXIT_WATCH, so a single daily support event can never directly sell the position.
+    """
+
+    if stabil is None or stabil.data_quality is not ContextDataQuality.VALID:
+        return assessment
+    if stabil.state is StabilDecisionState.UNKNOWN:
+        return assessment
+
+    refs = _canonical_refs((*assessment.source_refs, *stabil.source_refs))
+    if st.thesis_state is ThesisState.INVALIDATED:
+        return LongExitAssessment(
+            assessment.stage,
+            assessment.position_health,
+            _dedup((*assessment.reasons, "STABIL_OBSERVED_AFTER_STRUCTURE_INVALIDATION")),
+            assessment.waiting_for,
+            refs,
+        )
+
+    structural_deterioration = bool(
+        (st.direction is StructuralDirection.SHORT and st.thesis_state is ThesisState.INTACT)
+        or (
+            st.direction is StructuralDirection.LONG
+            and st.thesis_state is ThesisState.TRANSITIONING
+            and st.transition_target is StructuralDirection.SHORT
+        )
+    )
+
+    if structural_deterioration:
+        if stabil.breakdown_confirmed:
+            return LongExitAssessment(
+                ExitStage.EXIT_READY,
+                PositionHealth.PRESSURED,
+                _dedup((*assessment.reasons, f"STABIL_CONFIRMS_ST_EXIT:{stabil.state.value}")),
+                ("FRESH_LONG_EXIT_EXECUTION_EVENT",),
+                refs,
+            )
+        return LongExitAssessment(
+            ExitStage.EXIT_WATCH,
+            PositionHealth.PRESSURED,
+            _dedup((*assessment.reasons, f"STABIL_NOT_YET_CONFIRMING_ST_EXIT:{stabil.state.value}")),
+            ("STABIL_BREAKDOWN_CONFIRMATION",),
+            refs,
+        )
+
+    if stabil.breakdown_confirmed:
+        return LongExitAssessment(
+            ExitStage.EXIT_WATCH,
+            PositionHealth.PRESSURED,
+            _dedup((*assessment.reasons, f"STABIL_BREAKDOWN_AHEAD_OF_STRUCTURE:{stabil.state.value}")),
+            ("ST_STRUCTURE_DETERIORATION",),
+            refs,
+        )
+
+    if stabil.breakdown_developing:
+        return LongExitAssessment(
+            ExitStage.EXIT_WATCH,
+            PositionHealth.PRESSURED,
+            _dedup((*assessment.reasons, "STABIL_BREAKDOWN_DEVELOPING")),
+            ("STABIL_BREAKDOWN_TO_RESOLVE",),
+            refs,
+        )
+
+    if stabil.state is StabilDecisionState.BULLISH_SOFTENING:
+        return LongExitAssessment(
+            ExitStage.EXIT_WATCH,
+            PositionHealth.PRESSURED,
+            _dedup((*assessment.reasons, "STABIL_BULLISH_FOUNDATION_SOFTENING")),
+            ("STABIL_FOUNDATION_TO_RESOLVE",),
+            refs,
+        )
+
+    return LongExitAssessment(
+        assessment.stage,
+        assessment.position_health,
+        _dedup((*assessment.reasons, f"STABIL_POSITION_CONTEXT:{stabil.state.value}")),
+        assessment.waiting_for,
+        refs,
+    )
+
+
 def _missing_entry_metadata_exit(snapshot: HorizonStructuralSnapshot) -> LongExitAssessment:
     refs = _canonical_refs((*snapshot.long_term.source_refs, *snapshot.short_term.source_refs))
     return LongExitAssessment(
@@ -163,6 +258,7 @@ def compose_position_exit_decision(
     as_of: Any,
     execution_event: ExecutionTriggerEvent | None = None,
     channel_available: bool = True,
+    stabil: StabilDecisionAssessment | None = None,
 ) -> PositionExitDecision:
     if state.position is not PositionState.OPEN:
         raise ValueError("position exit decision requires OPEN lifecycle ownership")
@@ -181,6 +277,11 @@ def compose_position_exit_decision(
     elif metadata.entry_horizon is DecisionHorizon.SHORT_TERM:
         entry_horizon = DecisionHorizon.SHORT_TERM
         structural = _short_term_position_exit(structural_snapshot)
+        structural = refine_short_term_exit_with_stabil(
+            structural,
+            structural_snapshot.short_term,
+            stabil,
+        )
         authority_reason = "POSITION_EXIT_AUTHORITY_SHORT_TERM_ENTRY"
     else:
         raise ValueError("unsupported position entry horizon")
@@ -233,12 +334,14 @@ def assess_position_exit_decision(
 
     structural_snapshot = build_horizon_structural_snapshot(_decision_structure_projection(snapshot.structure))
     channel_available = _execution_channel_quality(snapshot, "1h") is ContextDataQuality.VALID
+    stabil = assess_stabil_authority(getattr(snapshot, "stabil_support", None))
     return compose_position_exit_decision(
         state,
         structural_snapshot,
         as_of=snapshot.as_of,
         execution_event=execution_event,
         channel_available=channel_available,
+        stabil=stabil,
     )
 
 
@@ -266,5 +369,6 @@ __all__ = [
     "PositionExitDecision",
     "assess_position_exit_decision",
     "compose_position_exit_decision",
+    "refine_short_term_exit_with_stabil",
     "transition_position_exit_lifecycle",
 ]
