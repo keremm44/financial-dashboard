@@ -25,10 +25,14 @@ def _assessment(stage: ExitStage) -> LongExitAssessment:
     )
 
 
-def _stabil(state: StabilDecisionState) -> StabilDecisionAssessment:
+def _stabil(
+    state: StabilDecisionState,
+    *,
+    quality: ContextDataQuality = ContextDataQuality.VALID,
+) -> StabilDecisionAssessment:
     return StabilDecisionAssessment(
         state=state,
-        data_quality=ContextDataQuality.VALID,
+        data_quality=quality,
         reasons=(f"STABIL_PRIMARY_STATE:{state.value}",),
         source_refs=(),
     )
@@ -101,6 +105,26 @@ def test_structure_deterioration_plus_confirmed_stabil_arms_exit_ready() -> None
 
     assert result.stage is ExitStage.EXIT_READY
     assert result.waiting_for == ("FRESH_LONG_EXIT_EXECUTION_EVENT",)
+    assert "STABIL_CONFIRMS_ST_EXIT:BREAKDOWN_CONFIRMED" in result.reasons
+
+
+def test_data_limited_confirmed_breakdown_can_confirm_existing_structure_deterioration() -> None:
+    st = SimpleNamespace(
+        direction=StructuralDirection.LONG,
+        thesis_state=ThesisState.TRANSITIONING,
+        transition_target=StructuralDirection.SHORT,
+    )
+
+    result = refine_short_term_exit_with_stabil(
+        _assessment(ExitStage.EXIT_READY),
+        st,
+        _stabil(
+            StabilDecisionState.BREAKDOWN_CONFIRMED,
+            quality=ContextDataQuality.DATA_LIMITED,
+        ),
+    )
+
+    assert result.stage is ExitStage.EXIT_READY
     assert "STABIL_CONFIRMS_ST_EXIT:BREAKDOWN_CONFIRMED" in result.reasons
 
 
