@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -19,6 +21,9 @@ from financial_dashboard.decision.timeline_cache import DecisionTimelineCacheMis
 from financial_dashboard.decision_audit.research import detect_large_market_moves
 
 from buy_sell_backtest import _causal_warmup_start
+
+
+AUDIT_CACHE_SCHEMA = "early-rise-pct-v2"
 
 
 def _enum(value) -> str:
@@ -49,7 +54,42 @@ def _event_at(decisions_by_time, timestamp):
     return decisions_by_time.get(pd.Timestamp(timestamp))
 
 
-def _print_checkpoint(snapshot, event, *, threshold_pct, threshold_price, config):
+def _decision_code_fingerprint() -> str:
+    import financial_dashboard.decision as decision_package
+
+    root = Path(decision_package.__file__).resolve().parent
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*.py")):
+        digest.update(str(path.relative_to(root)).encode("utf-8"))
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _cache_identity(*, symbol: str, snapshots, args, code_fingerprint: str) -> dict[str, object]:
+    first = None if not snapshots else str(snapshots[0].as_of)
+    last = None if not snapshots else str(snapshots[-1].as_of)
+    return {
+        "schema": AUDIT_CACHE_SCHEMA,
+        "symbol": symbol,
+        "snapshot_count": len(snapshots),
+        "snapshot_first": first,
+        "snapshot_last": last,
+        "decision_code": code_fingerprint,
+        "start": args.start,
+        "end": args.end,
+        "min_move_pct": float(args.min_move_pct),
+        "reversal_pct": float(args.reversal_pct),
+        "checkpoint_step_pct": float(args.checkpoint_step_pct),
+    }
+
+
+def _audit_cache_path(cache_root: Path, symbol: str, identity: dict[str, object]) -> Path:
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    key = hashlib.sha256(encoded).hexdigest()[:20]
+    return cache_root / ".audit_cache" / "early_rise_pct" / f"{symbol}-{key}.json"
+
+
+def _checkpoint_payload(snapshot, event, *, threshold_pct, threshold_price, config):
     st = assess_horizon_decision(
         snapshot,
         DecisionHorizon.SHORT_TERM,
@@ -81,36 +121,125 @@ def _print_checkpoint(snapshot, event, *, threshold_pct, threshold_price, config
     blockers = () if event is None else tuple(event.blockers)
     reasons = () if event is None else tuple(event.reasons)
 
+    return {
+        "threshold_pct": float(threshold_pct),
+        "first_seen": str(snapshot.as_of),
+        "price": float(snapshot.current_price),
+        "threshold_price": float(threshold_price),
+        "action": action,
+        "st_structure": f"{_enum(st.structural.direction)}/{_enum(st.structural.thesis_state)}",
+        "st_scenario": f"{_enum(st_scenario.presence)}/{_enum(st_scenario.stage)}/{_enum(st_scenario.kind)}",
+        "st_timing": _enum(st.timing.state),
+        "st_opportunity": _enum(st.opportunity.state),
+        "st_eligibility": _enum(st.eligibility.state),
+        "st_conflict": _enum(st.conflict.state),
+        "stabil_state": _enum(stabil.state),
+        "stabil_quality": _enum(stabil.data_quality),
+        "lt_structure": f"{_enum(lt.structural.direction)}/{_enum(lt.structural.thesis_state)}",
+        "lt_scenario": f"{_enum(lt_scenario.presence)}/{_enum(lt_scenario.stage)}/{_enum(lt_scenario.kind)}",
+        "waiting": list(waiting),
+        "blockers": list(blockers),
+        "reasons": list(reasons),
+    }
+
+
+def _build_cached_report(*, snapshots, decisions, bars_4h, decision_config, args, identity):
+    decisions_by_time = {pd.Timestamp(event.timestamp): event for event in decisions}
+    detected_moves = tuple(
+        move
+        for move in detect_large_market_moves(
+            bars_4h,
+            min_move_pct=float(args.min_move_pct),
+            reversal_pct=float(args.reversal_pct),
+        )
+        if move.direction == "UP"
+    )
+    ranked_moves = tuple(
+        sorted(
+            detected_moves,
+            key=lambda move: (-float(move.move_pct), pd.Timestamp(move.start_time)),
+        )
+    )
+
+    payload_moves: list[dict[str, object]] = []
+    for rank, move in enumerate(ranked_moves, start=1):
+        checkpoints: list[dict[str, object]] = []
+        threshold = float(args.checkpoint_step_pct)
+        while threshold <= float(move.move_pct) + 1e-9:
+            threshold_price = float(move.start_price) * (1.0 + threshold / 100.0)
+            snapshot = _snapshot_at_or_after(
+                snapshots,
+                move.start_time,
+                move.end_time,
+                threshold_price,
+            )
+            if snapshot is None:
+                checkpoints.append(
+                    {
+                        "threshold_pct": float(threshold),
+                        "missing": True,
+                        "threshold_price": float(threshold_price),
+                    }
+                )
+            else:
+                event = _event_at(decisions_by_time, snapshot.as_of)
+                checkpoints.append(
+                    _checkpoint_payload(
+                        snapshot,
+                        event,
+                        threshold_pct=threshold,
+                        threshold_price=threshold_price,
+                        config=decision_config,
+                    )
+                )
+            threshold += float(args.checkpoint_step_pct)
+
+        payload_moves.append(
+            {
+                "rank": rank,
+                "start_time": str(move.start_time),
+                "end_time": str(move.end_time),
+                "start_price": float(move.start_price),
+                "end_price": float(move.end_price),
+                "move_pct": float(move.move_pct),
+                "checkpoints": checkpoints,
+            }
+        )
+
+    return {"identity": identity, "moves": payload_moves}
+
+
+def _render_checkpoint(row: dict[str, object]) -> None:
+    threshold = float(row["threshold_pct"])
+    if row.get("missing"):
+        print(
+            f"  +{threshold:.0f}% NOT_SEEN_IN_CAUSAL_SNAPSHOTS "
+            f"threshold={float(row['threshold_price']):.2f}"
+        )
+        return
     print(
-        f"  +{threshold_pct:.0f}% first_seen={snapshot.as_of} "
-        f"price={float(snapshot.current_price):.2f} threshold={threshold_price:.2f} action={action}"
+        f"  +{threshold:.0f}% first_seen={row['first_seen']} "
+        f"price={float(row['price']):.2f} threshold={float(row['threshold_price']):.2f} "
+        f"action={row['action']}"
     )
     print(
         "    ST "
-        f"structure={_enum(st.structural.direction)}/{_enum(st.structural.thesis_state)} "
-        f"scenario={_enum(st_scenario.presence)}/{_enum(st_scenario.stage)}/{_enum(st_scenario.kind)} "
-        f"timing={_enum(st.timing.state)} opportunity={_enum(st.opportunity.state)} "
-        f"eligibility={_enum(st.eligibility.state)} conflict={_enum(st.conflict.state)}"
+        f"structure={row['st_structure']} scenario={row['st_scenario']} "
+        f"timing={row['st_timing']} opportunity={row['st_opportunity']} "
+        f"eligibility={row['st_eligibility']} conflict={row['st_conflict']}"
     )
-    print(
-        "    STABIL "
-        f"state={_enum(stabil.state)} quality={_enum(stabil.data_quality)}"
-    )
-    print(
-        "    LT "
-        f"structure={_enum(lt.structural.direction)}/{_enum(lt.structural.thesis_state)} "
-        f"scenario={_enum(lt_scenario.presence)}/{_enum(lt_scenario.stage)}/{_enum(lt_scenario.kind)}"
-    )
-    print(f"    waiting={_compact(waiting)}")
-    print(f"    blockers={_compact(blockers)}")
-    print(f"    reasons={_compact(reasons)}")
+    print(f"    STABIL state={row['stabil_state']} quality={row['stabil_quality']}")
+    print(f"    LT structure={row['lt_structure']} scenario={row['lt_scenario']}")
+    print(f"    waiting={_compact(row.get('waiting', ())) }")
+    print(f"    blockers={_compact(row.get('blockers', ())) }")
+    print(f"    reasons={_compact(row.get('reasons', ())) }")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Find price-only 4H rises, rank them from largest to smallest, then report what "
-            "the frozen causal decision system said at each first +1%, +2%, +3%... checkpoint."
+            "Find price-only 4H rises, rank them from largest to smallest, cache the full "
+            "causal audit once, then render selected move ranges without replaying decisions."
         )
     )
     parser.add_argument("cache_root", type=Path)
@@ -122,6 +251,7 @@ def main() -> None:
     parser.add_argument("--checkpoint-step-pct", type=float, default=1.0)
     parser.add_argument("--from-move", type=int, default=1)
     parser.add_argument("--to-move", type=int, default=None)
+    parser.add_argument("--rebuild-audit-cache", action="store_true")
     args = parser.parse_args()
 
     if args.min_move_pct <= 0.0:
@@ -152,88 +282,86 @@ def main() -> None:
     if not snapshots:
         raise SystemExit("Frozen historical DecisionInput timeline contains no causal snapshots")
 
-    entry_events, exit_events = detect_1h_execution_events(snapshots)
-    decision_config = DecisionEngineConfig()
-    lifecycle = replay_canonical_trade_lifecycle(
-        snapshots,
-        config=decision_config,
-        entry_execution_events=entry_events,
-        exit_execution_events=exit_events,
+    code_fingerprint = _decision_code_fingerprint()
+    identity = _cache_identity(
+        symbol=symbol,
+        snapshots=snapshots,
+        args=args,
+        code_fingerprint=code_fingerprint,
     )
-    decisions = canonical_decision_events_from_replay(lifecycle)
-    decisions_by_time = {pd.Timestamp(event.timestamp): event for event in decisions}
+    cache_path = _audit_cache_path(args.cache_root, symbol, identity)
 
-    bars_4h = store.load(symbol, "4h")
-    if bars_4h.empty:
-        raise SystemExit("4H bars are required")
+    report = None
+    cache_status = "MISS"
+    if cache_path.exists() and not args.rebuild_audit_cache:
+        try:
+            candidate = json.loads(cache_path.read_text(encoding="utf-8"))
+            if candidate.get("identity") == identity:
+                report = candidate
+                cache_status = "HIT"
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            report = None
 
-    detected_moves = tuple(
-        move
-        for move in detect_large_market_moves(
-            bars_4h,
-            min_move_pct=float(args.min_move_pct),
-            reversal_pct=float(args.reversal_pct),
+    if report is None:
+        entry_events, exit_events = detect_1h_execution_events(snapshots)
+        decision_config = DecisionEngineConfig()
+        lifecycle = replay_canonical_trade_lifecycle(
+            snapshots,
+            config=decision_config,
+            entry_execution_events=entry_events,
+            exit_execution_events=exit_events,
         )
-        if move.direction == "UP"
-    )
-    ranked_moves = tuple(
-        sorted(
-            detected_moves,
-            key=lambda move: (-float(move.move_pct), pd.Timestamp(move.start_time)),
+        decisions = canonical_decision_events_from_replay(lifecycle)
+        bars_4h = store.load(symbol, "4h")
+        if bars_4h.empty:
+            raise SystemExit("4H bars are required")
+        report = _build_cached_report(
+            snapshots=snapshots,
+            decisions=decisions,
+            bars_4h=bars_4h,
+            decision_config=decision_config,
+            args=args,
+            identity=identity,
         )
-    )
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(report, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        cache_status = "REBUILT" if args.rebuild_audit_cache else "BUILT"
 
+    moves = tuple(report.get("moves", ()))
     first_index = args.from_move - 1
-    last_index = len(ranked_moves) if args.to_move is None else min(args.to_move, len(ranked_moves))
-    selected = tuple(enumerate(ranked_moves[first_index:last_index], start=args.from_move))
+    last_index = len(moves) if args.to_move is None else min(args.to_move, len(moves))
+    selected = moves[first_index:last_index]
 
     print("EARLY RISE PERCENT AUDIT")
     print("========================")
-    print(f"CACHE\t{frozen.cache_status}")
+    print(f"FROZEN_CACHE\t{frozen.cache_status}")
+    print(f"AUDIT_CACHE\t{cache_status}")
     print("DOMAIN_REPLAY\tNOT_RUN")
     print(f"SYMBOL\t{symbol}")
     print(f"MOVE_RULE\tprice-only 4H, min=+{args.min_move_pct:g}%, reversal={args.reversal_pct:g}%")
     print("MOVE_ORDER\tlargest rise to smallest rise")
     print(f"CHECKPOINTS\tfirst causal snapshot at every +{args.checkpoint_step_pct:g}% from move start")
-    print(f"UP_MOVES_TOTAL\t{len(ranked_moves)}")
+    print(f"UP_MOVES_TOTAL\t{len(moves)}")
     if selected:
-        print(f"SHOWING\tMOVE #{selected[0][0]} .. MOVE #{selected[-1][0]}")
+        print(f"SHOWING\tMOVE #{selected[0]['rank']} .. MOVE #{selected[-1]['rank']}")
     else:
         print("SHOWING\tNONE")
     print()
 
-    for rank, move in selected:
+    for move in selected:
         print(
-            f"MOVE #{rank}  {move.start_time} -> {move.end_time} | "
-            f"{move.start_price:.2f} -> {move.end_price:.2f} | {move.move_pct:+.2f}%"
+            f"MOVE #{move['rank']}  {move['start_time']} -> {move['end_time']} | "
+            f"{float(move['start_price']):.2f} -> {float(move['end_price']):.2f} | "
+            f"{float(move['move_pct']):+.2f}%"
         )
-        threshold = float(args.checkpoint_step_pct)
-        rendered = 0
-        while threshold <= float(move.move_pct) + 1e-9:
-            threshold_price = float(move.start_price) * (1.0 + threshold / 100.0)
-            snapshot = _snapshot_at_or_after(
-                snapshots,
-                move.start_time,
-                move.end_time,
-                threshold_price,
-            )
-            if snapshot is None:
-                print(f"  +{threshold:.0f}% NOT_SEEN_IN_CAUSAL_SNAPSHOTS threshold={threshold_price:.2f}")
-            else:
-                event = _event_at(decisions_by_time, snapshot.as_of)
-                _print_checkpoint(
-                    snapshot,
-                    event,
-                    threshold_pct=threshold,
-                    threshold_price=threshold_price,
-                    config=decision_config,
-                )
-            rendered += 1
-            threshold += float(args.checkpoint_step_pct)
-        if rendered == 0:
+        checkpoints = tuple(move.get("checkpoints", ()))
+        if not checkpoints:
             print("  no percentage checkpoint rendered")
+        for row in checkpoints:
+            _render_checkpoint(row)
         print()
 
+    print(f"AUDIT_CACHE_FILE\t{cache_path}")
     print("EARLY_RISE_PERCENT_AUDIT_OK")
 
 
