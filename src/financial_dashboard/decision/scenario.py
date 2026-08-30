@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from financial_dashboard.context.envelope import ContextDataQuality
 
+from .durability import DurabilityState
 from .eligibility import EligibilityState
 from .market_state import HorizonMarketState, StructuralRegime
 from .opportunity import OpportunityState
@@ -214,6 +215,20 @@ def build_entry_scenario(
     blockers = list(eligibility.blockers)
     waiting = list(eligibility.waiting_for)
     active = target_path.active_node
+    stabil_hard_block = False
+
+    # Stabil is now part of the ST thesis, but only severe damage can prevent a new
+    # long.  SOFTENING remains observable context rather than a veto so healthy
+    # pullbacks and the existing early-entry positive controls are preserved.
+    durability = getattr(assessment, "durability", None)
+    if assessment.horizon is DecisionHorizon.SHORT_TERM and durability is not None:
+        if durability.state is DurabilityState.BROKEN:
+            stabil_hard_block = True
+            blockers.append("STABIL_FOUNDATION_BROKEN_FOR_NEW_ST_LONG")
+            reasons.append("STABIL_SEVERE_BEARISH_AUTHORITY")
+        elif durability.state is DurabilityState.FRACTURED:
+            waiting.append("STABIL_FOUNDATION_TO_RECOVER")
+            reasons.append("STABIL_BREAKDOWN_NOT_YET_RECOVERED")
 
     # Opportunity describes economics/path quality; it does not decide whether the
     # structural long scenario exists.  A true hard economic NONE prevents
@@ -235,7 +250,7 @@ def build_entry_scenario(
         waiting.append("STRUCTURAL_TRANSITION_TO_RESOLVE")
         reasons.append("EXISTING_LONG_SCENARIO_IN_TRANSITION")
 
-    if eligibility.state is EligibilityState.BLOCKED:
+    if eligibility.state is EligibilityState.BLOCKED or stabil_hard_block:
         stage = ScenarioStage.BLOCKED
     elif eligibility.state is EligibilityState.WAITING or waiting:
         stage = ScenarioStage.DEVELOPING
