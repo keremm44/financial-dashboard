@@ -216,11 +216,14 @@ def build_entry_scenario(
     active = target_path.active_node
 
     # Opportunity describes economics/path quality; it does not decide whether the
-    # structural long scenario exists. NONE therefore keeps the scenario PRESENT
-    # but explicitly prevents qualification until directional room improves.
+    # structural long scenario exists.  A true hard economic NONE prevents
+    # qualification; a reaction-only technical cluster remains visible but soft.
     if opportunity.state is OpportunityState.NONE:
-        reasons.append("OBSERVED_DIRECTIONAL_ROOM_INSUFFICIENT")
-        waiting.append("MORE_DIRECTIONAL_ROOM")
+        if bool(getattr(opportunity, "hard_room_constraint", True)):
+            reasons.append("OBSERVED_DIRECTIONAL_ROOM_INSUFFICIENT")
+            waiting.append("MORE_DIRECTIONAL_ROOM")
+        else:
+            reasons.append("SOFT_TECHNICAL_ROOM_CONSTRAINT")
 
     if target_path.status is not TargetPathStatus.READY:
         waiting.append("TARGET_PATH_TO_RESOLVE")
