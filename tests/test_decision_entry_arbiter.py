@@ -66,14 +66,16 @@ def _scenario(
     )
 
 
-def test_lt_present_and_st_present_selects_lt_only():
+def test_qualified_st_owns_trade_horizon_when_lt_is_also_qualified():
     lt = _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT)
     st = _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT)
     result = arbitrate_entry_scenarios(lt, st)
     assert result.state is ArbiterState.SELECTED
-    assert result.selection is ArbiterSelection.LONG_TERM
-    assert result.selected_scenario is lt
-    assert result.suppressed_horizons == (DecisionHorizon.SHORT_TERM,)
+    assert result.selection is ArbiterSelection.SHORT_TERM
+    assert result.selected_scenario is st
+    assert result.selected_horizon is DecisionHorizon.SHORT_TERM
+    assert result.suppressed_horizons == ()
+    assert "LONG_TERM_QUALIFIED_CONTEXT_RETAINED" in result.reasons
     assert result.is_actionable_signal is False
 
 
@@ -195,8 +197,8 @@ def test_repeat_is_deterministic_and_never_selects_two_horizons():
     first = arbitrate_entry_scenarios(lt, st)
     second = arbitrate_entry_scenarios(lt, st)
     assert first == second
-    assert first.selected_horizon is DecisionHorizon.LONG_TERM
-    assert len(first.suppressed_horizons) == 1
+    assert first.selected_horizon is DecisionHorizon.SHORT_TERM
+    assert first.suppressed_horizons == ()
 
 
 def test_qualified_lt_pullback_defers_to_qualified_st():
