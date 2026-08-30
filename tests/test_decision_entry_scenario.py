@@ -135,7 +135,7 @@ def test_blocked_lt_scenario_remains_present_instead_of_disappearing():
     assert result.blockers == ("VOLATILITY_SHOCK",)
 
 
-def test_opportunity_none_means_scenario_absent():
+def test_opportunity_none_keeps_scenario_present_but_not_qualified():
     result = build_entry_scenario(
         _assessment(
             opportunity=OpportunityState.NONE,
@@ -147,8 +147,10 @@ def test_opportunity_none_means_scenario_absent():
         market_state=_market(),
     )
 
-    assert result.presence is ScenarioPresence.ABSENT
-    assert result.stage is ScenarioStage.NOT_APPLICABLE
+    assert result.presence is ScenarioPresence.PRESENT
+    assert result.stage is ScenarioStage.BLOCKED
+    assert "OBSERVED_DIRECTIONAL_ROOM_INSUFFICIENT" in result.reasons
+    assert "MORE_DIRECTIONAL_ROOM" in result.waiting_for
 
 
 def test_canonical_short_structure_is_not_converted_to_long_entry_scenario():
