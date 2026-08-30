@@ -35,6 +35,7 @@ class ScenarioKind(StrEnum):
     CONTINUATION = "CONTINUATION"
     PULLBACK_CONTINUATION = "PULLBACK_CONTINUATION"
     TRANSITION_CONTEXT = "TRANSITION_CONTEXT"
+    EARLY_TRANSITION = "EARLY_TRANSITION"
     SHORT_TERM_STANDALONE = "SHORT_TERM_STANDALONE"
     NONE = "NONE"
 
@@ -105,6 +106,13 @@ def _lineage_from_path(path: TargetPath) -> set[str]:
 def _scenario_kind(assessment: "HorizonDecisionAssessment") -> ScenarioKind:
     relation = assessment.structural_snapshot.relation
     horizon = assessment.horizon
+    transition = getattr(assessment, "st_transition", None)
+    if (
+        horizon is DecisionHorizon.SHORT_TERM
+        and transition is not None
+        and bool(getattr(transition, "can_own_trade_thesis", False))
+    ):
+        return ScenarioKind.EARLY_TRANSITION
     if assessment.structural.thesis_state is ThesisState.TRANSITIONING:
         return ScenarioKind.TRANSITION_CONTEXT
     if horizon is DecisionHorizon.LONG_TERM:
@@ -199,10 +207,12 @@ def build_entry_scenario(
             ScenarioUnknownReason.OPPORTUNITY_UNOBSERVED,
         )
 
+    kind = _scenario_kind(assessment)
     reasons: list[str] = ["OBSERVED_LONG_ENTRY_SCENARIO"]
+    if kind is ScenarioKind.EARLY_TRANSITION:
+        reasons.append("SHORT_TERM_EARLY_TRANSITION_TRADE_THESIS")
     blockers = list(eligibility.blockers)
     waiting = list(eligibility.waiting_for)
-    kind = _scenario_kind(assessment)
     active = target_path.active_node
 
     # Opportunity describes economics/path quality; it does not decide whether the
