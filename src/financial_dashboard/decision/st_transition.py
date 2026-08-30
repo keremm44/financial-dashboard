@@ -6,7 +6,12 @@ from typing import TYPE_CHECKING, Iterable
 
 import pandas as pd
 
-from financial_dashboard.context.envelope import ContextDataQuality, FactRef, normalize_context_data_quality
+from financial_dashboard.context.envelope import (
+    ContextDataQuality,
+    ContextDomain,
+    FactRef,
+    normalize_context_data_quality,
+)
 from financial_dashboard.context.permissions import (
     GateState,
     PermissionEnvelope,
@@ -153,9 +158,9 @@ def assess_st_long_transition(
     """Assess a conservative 1H-owned early LONG thesis without mutating Structure.
 
     The overlay can become STRONG only while native 1H Structure is canonically
-    transitioning toward LONG.  A plain bearish state may be watched when bullish
+    transitioning toward LONG. A plain bearish state may be watched when bullish
     evidence appears, but it can never own a trade thesis merely because a reaction
-    or pattern fires.  This keeps CHoCH/transition quality ahead of setup frequency.
+    or pattern fires. This keeps CHoCH/transition quality ahead of setup frequency.
     """
 
     reaction_ob, reaction_fvg = normalize_decision_reaction_projections(
@@ -232,7 +237,10 @@ def assess_st_long_transition(
     if conflict.state is ConflictState.HIGH:
         blockers.append("INDEPENDENT_FAMILY_CONFLICT_HIGH")
     if opportunity.state is OpportunityState.NONE:
-        blockers.append("OPPORTUNITY_NONE")
+        if bool(getattr(opportunity, "hard_room_constraint", True)):
+            blockers.append("OPPORTUNITY_NONE")
+        else:
+            reasons.append("SOFT_TECHNICAL_ROOM_CONSTRAINT")
 
     if canonical_transition_up:
         reasons.append("CANONICAL_1H_TRANSITION_UP")
@@ -318,7 +326,13 @@ def apply_strong_st_long_transition(
 
     if not transition.can_own_trade_thesis:
         return native_structural
-    refs = _unique_refs(native_structural.source_refs, transition.source_refs)
+    transition_structural_refs = tuple(
+        ref
+        for ref in transition.source_refs
+        if ref.domain is ContextDomain.MARKET_STRUCTURE
+        and ref.timeframe.strip().lower() == native_structural.authority_timeframe.strip().lower()
+    )
+    refs = _unique_refs(native_structural.source_refs, transition_structural_refs)
     return replace(
         native_structural,
         direction=StructuralDirection.LONG,
