@@ -60,13 +60,13 @@ def arbitrate_entry_scenarios(
     long_term: EntryScenarioAssessment,
     short_term: EntryScenarioAssessment,
 ) -> EntryScenarioArbitration:
-    """Resolve horizon ownership without making LT a blanket veto over qualified ST.
+    """Resolve trade-horizon ownership while preserving LT as context/risk authority.
 
-    A QUALIFIED short-term long scenario owns enough 1H/30m evidence to stand on its
-    own even when long-term context is currently UNKNOWN. LT context still owns its
-    own trade when it is present and qualified, and a merely DEVELOPING ST scenario
-    never bypasses unresolved LT authority. This changes horizon ownership only; no
-    eligibility, targeting, conflict, timing, or execution gate is softened here.
+    A QUALIFIED short-term scenario represents the intended 1H-owned 3-9 trading-day
+    trade and therefore owns the trade horizon even when LT is also PRESENT/QUALIFIED.
+    LT still contributes context, risk and thesis evidence; it is not erased. A merely
+    DEVELOPING ST scenario does not bypass present or unresolved LT authority. No
+    eligibility, targeting, conflict, timing or execution gate is softened here.
     """
 
     _validate_horizons(long_term, short_term)
@@ -77,23 +77,32 @@ def arbitrate_entry_scenarios(
 
     if long_term.presence is ScenarioPresence.PRESENT:
         lt_pullback = long_term.kind is ScenarioKind.PULLBACK_CONTINUATION
-        if st_qualified and (long_term.stage is not ScenarioStage.QUALIFIED or lt_pullback):
-            reasons = (
-                (
+
+        # Trade horizon follows a fully-qualified ST setup. This prevents a valid
+        # 1H/ST trade from being re-labelled LONG_TERM merely because LT context is
+        # also present. LT remains visible in the arbitration result as context.
+        if st_qualified:
+            if lt_pullback and long_term.stage is ScenarioStage.QUALIFIED:
+                reasons = (
                     "LONG_TERM_PULLBACK_IS_SHORT_TERM_TRADE",
                     "SHORT_TERM_OWNS_PULLBACK_CONTINUATION",
                 )
-                if lt_pullback and long_term.stage is ScenarioStage.QUALIFIED
-                else (
+            elif long_term.stage is ScenarioStage.QUALIFIED:
+                reasons = (
+                    "SHORT_TERM_QUALIFIED_TRADE_HORIZON",
+                    "LONG_TERM_QUALIFIED_CONTEXT_RETAINED",
+                )
+            else:
+                reasons = (
                     f"LONG_TERM_SCENARIO_{long_term.stage.value}_NOT_QUALIFIED",
                     "SHORT_TERM_FALLBACK_WHILE_LONG_TERM_BLOCKED",
                 )
-            )
             return EntryScenarioArbitration(
                 ArbiterState.SELECTED, ArbiterSelection.SHORT_TERM,
                 DecisionHorizon.SHORT_TERM, short_term, long_term, short_term,
                 (), reasons, (),
             )
+
         suppressed = (
             (DecisionHorizon.SHORT_TERM,)
             if short_term.presence is ScenarioPresence.PRESENT
