@@ -198,9 +198,10 @@ def test_qualified_selected_scenario_without_fresh_event_stops_at_ready():
     )
     result = compose_entry_decision(
         arbitration,
-        selected_assessment=_assessment(DecisionHorizon.LONG_TERM, DecisionAction.READY),
+        selected_assessment=_assessment(DecisionHorizon.SHORT_TERM, DecisionAction.READY),
     )
     assert result.action is DecisionAction.READY
+    assert result.selected_horizon is DecisionHorizon.SHORT_TERM
     assert result.execution_state is ExecutionTriggerState.ABSENT
 
 
@@ -212,14 +213,14 @@ def test_qualified_selected_scenario_and_confirmed_execution_can_emit_buy():
     result = compose_entry_decision(
         arbitration,
         selected_assessment=_assessment(
-            DecisionHorizon.LONG_TERM,
+            DecisionHorizon.SHORT_TERM,
             DecisionAction.BUY,
             execution=ExecutionTriggerState.CONFIRMED,
         ),
         execution_event_consumed=True,
     )
     assert result.action is DecisionAction.BUY
-    assert result.selected_horizon is DecisionHorizon.LONG_TERM
+    assert result.selected_horizon is DecisionHorizon.SHORT_TERM
     assert result.execution_event_consumed is True
 
 
@@ -261,7 +262,7 @@ def test_selected_assessment_must_match_arbiter_horizon():
     with pytest.raises(ValueError):
         compose_entry_decision(
             arbitration,
-            selected_assessment=_assessment(DecisionHorizon.SHORT_TERM, DecisionAction.READY),
+            selected_assessment=_assessment(DecisionHorizon.LONG_TERM, DecisionAction.READY),
         )
 
 
