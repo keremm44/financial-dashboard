@@ -48,6 +48,21 @@ class SupportInteractionState(StrEnum):
     RANGE_AROUND_SUPPORT = "RANGE_AROUND_SUPPORT"
 
 
+class StabilPrimaryState(StrEnum):
+    """Compact domain-owned summary for downstream reasoning, never BUY/SELL authority."""
+
+    UNKNOWN = "UNKNOWN"
+    BULLISH_PROGRESS = "BULLISH_PROGRESS"
+    BULLISH_SUPPORTED = "BULLISH_SUPPORTED"
+    BULLISH_SOFTENING = "BULLISH_SOFTENING"
+    BALANCE = "BALANCE"
+    RECOVERY_DEVELOPING = "RECOVERY_DEVELOPING"
+    RECOVERY_CONFIRMED = "RECOVERY_CONFIRMED"
+    BREAKDOWN_DEVELOPING = "BREAKDOWN_DEVELOPING"
+    BREAKDOWN_CONFIRMED = "BREAKDOWN_CONFIRMED"
+    BEARISH_CONTINUATION = "BEARISH_CONTINUATION"
+
+
 @dataclass(frozen=True, slots=True)
 class StabilSupportBehaviorConfig:
     near_atr: float = 0.75
@@ -75,11 +90,14 @@ class StabilSupportBehaviorSnapshot:
     relation: PriceSupportRelation = PriceSupportRelation.UNAVAILABLE
     interaction: SupportInteractionState = SupportInteractionState.UNAVAILABLE
     approach_origin: SupportApproachOrigin = SupportApproachOrigin.UNAVAILABLE
+    primary_state: StabilPrimaryState = StabilPrimaryState.UNKNOWN
     bars_since_rebase: int | None = None
     cross_count: int = 0
     last_rebase_step_atr: float | None = None
     distance_delta_atr: float | None = None
     reclaim_active: bool = False
+    reclaim_rejected: bool = False
+    reclaim_rejection_count: int = 0
 
 
 def _progression(previous: float | None, current: float | None, min_tick: float) -> SupportProgression:
@@ -152,6 +170,39 @@ def _is_near(relation: PriceSupportRelation) -> bool:
     }
 
 
+def _primary_state(
+    *,
+    motion: SupportMotion,
+    relation: PriceSupportRelation,
+    interaction: SupportInteractionState,
+    reclaim_rejected: bool,
+) -> StabilPrimaryState:
+    if interaction is SupportInteractionState.DOWNSIDE_CONTINUATION:
+        return StabilPrimaryState.BEARISH_CONTINUATION
+    if interaction is SupportInteractionState.BREAKDOWN_ACCEPTED:
+        return StabilPrimaryState.BREAKDOWN_CONFIRMED
+    if interaction in {SupportInteractionState.BREAKDOWN_ATTEMPT, SupportInteractionState.RECOVERY_FAILED}:
+        return StabilPrimaryState.BREAKDOWN_DEVELOPING
+    if interaction is SupportInteractionState.RECOVERY_CONFIRMED:
+        return StabilPrimaryState.RECOVERY_CONFIRMED
+    if interaction is SupportInteractionState.RECLAIM_ATTEMPT:
+        return StabilPrimaryState.RECOVERY_DEVELOPING
+    if interaction is SupportInteractionState.RANGE_AROUND_SUPPORT:
+        return StabilPrimaryState.BALANCE
+    if interaction is SupportInteractionState.SUPPORTED_ADVANCE:
+        return StabilPrimaryState.BULLISH_PROGRESS
+    if interaction is SupportInteractionState.HOLDING_ABOVE:
+        if motion in {SupportMotion.RISING, SupportMotion.FLAT_AFTER_RISE}:
+            return StabilPrimaryState.BULLISH_SUPPORTED
+        if motion in {SupportMotion.FALLING, SupportMotion.FLAT_AFTER_FALL}:
+            return StabilPrimaryState.BULLISH_SOFTENING
+    if interaction in {SupportInteractionState.APPROACHING_SUPPORT, SupportInteractionState.TESTING_SUPPORT}:
+        return StabilPrimaryState.BULLISH_SOFTENING
+    if reclaim_rejected and relation in {PriceSupportRelation.BELOW_NEAR, PriceSupportRelation.BELOW_FAR}:
+        return StabilPrimaryState.BREAKDOWN_DEVELOPING
+    return StabilPrimaryState.UNKNOWN
+
+
 def build_support_behavior(
     observations: Iterable[DailySupportObservation],
     lifecycle: StabilSupportLifecycleSnapshot,
@@ -185,6 +236,7 @@ def build_support_behavior(
     cross_count = 0
     reclaim_active = False
     reclaim_failed = False
+    reclaim_rejection_count = 0
     relation = PriceSupportRelation.UNAVAILABLE
     approach_origin = SupportApproachOrigin.UNAVAILABLE
     distance_delta_atr: float | None = None
@@ -204,6 +256,7 @@ def build_support_behavior(
             cross_count = 0
             reclaim_active = False
             reclaim_failed = False
+            reclaim_rejection_count = 0
             relation = PriceSupportRelation.UNAVAILABLE
             approach_origin = SupportApproachOrigin.UNAVAILABLE
             distance_delta_atr = None
@@ -228,6 +281,7 @@ def build_support_behavior(
             cross_count = 0
             reclaim_active = False
             reclaim_failed = False
+            reclaim_rejection_count = 0
             approach_origin = SupportApproachOrigin.UNAVAILABLE
 
         assert current_support is not None
@@ -255,6 +309,7 @@ def build_support_behavior(
             bars_above = 0
             if previous_below is False and reclaim_active:
                 reclaim_failed = True
+                reclaim_rejection_count += 1
             reclaim_active = False
         else:
             bars_above += 1
@@ -334,21 +389,35 @@ def build_support_behavior(
     else:
         interaction = SupportInteractionState.UNAVAILABLE
 
+    reclaim_rejected = reclaim_failed and relation in {
+        PriceSupportRelation.BELOW_NEAR,
+        PriceSupportRelation.BELOW_FAR,
+    }
+    primary_state = _primary_state(
+        motion=motion,
+        relation=relation,
+        interaction=interaction,
+        reclaim_rejected=reclaim_rejected,
+    )
     return StabilSupportBehaviorSnapshot(
         motion=motion,
         relation=relation,
         interaction=interaction,
         approach_origin=approach_origin,
+        primary_state=primary_state,
         bars_since_rebase=bars_since_rebase,
         cross_count=cross_count,
         last_rebase_step_atr=last_rebase_step_atr,
         distance_delta_atr=distance_delta_atr,
         reclaim_active=reclaim_active,
+        reclaim_rejected=reclaim_rejected,
+        reclaim_rejection_count=reclaim_rejection_count,
     )
 
 
 __all__ = [
     "PriceSupportRelation",
+    "StabilPrimaryState",
     "StabilSupportBehaviorConfig",
     "StabilSupportBehaviorSnapshot",
     "SupportApproachOrigin",
