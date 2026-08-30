@@ -119,10 +119,13 @@ def _scenario_kind(assessment: "HorizonDecisionAssessment") -> ScenarioKind:
 
 def _observed_opportunity(assessment: "HorizonDecisionAssessment", path: TargetPath) -> bool:
     opportunity = assessment.opportunity
+    # NONE is an observed economic assessment: the engine found directional room
+    # and judged it insufficient. It must not be confused with UNKNOWN/unobserved.
     if opportunity.state in {
         OpportunityState.AMPLE,
         OpportunityState.MODERATE,
         OpportunityState.COMPRESSED,
+        OpportunityState.NONE,
     }:
         return True
     if opportunity.room_atr is not None or opportunity.target_identity is not None:
@@ -185,15 +188,6 @@ def build_entry_scenario(
             ("STRUCTURAL_LONG_THESIS_INVALIDATED",), (), (), lineage,
         )
 
-    if opportunity.state is OpportunityState.NONE:
-        return EntryScenarioAssessment(
-            assessment.horizon, ScenarioPresence.ABSENT, ScenarioStage.NOT_APPLICABLE,
-            ScenarioKind.NONE, structural.direction, structural.thesis_state,
-            market_state.structural_map.structural_regime, opportunity.state,
-            target_path.status, None if target_path.active_node is None else target_path.active_node.identity,
-            eligibility.state, ("OBSERVED_DIRECTIONAL_ROOM_INSUFFICIENT",), (), (), lineage,
-        )
-
     if not _observed_opportunity(assessment, target_path):
         return EntryScenarioAssessment(
             assessment.horizon, ScenarioPresence.UNKNOWN, ScenarioStage.UNAVAILABLE,
@@ -210,6 +204,14 @@ def build_entry_scenario(
     waiting = list(eligibility.waiting_for)
     kind = _scenario_kind(assessment)
     active = target_path.active_node
+
+    # Opportunity describes economics/path quality; it does not decide whether the
+    # structural long scenario exists. NONE therefore keeps the scenario PRESENT
+    # but explicitly prevents qualification until directional room improves.
+    if opportunity.state is OpportunityState.NONE:
+        reasons.append("OBSERVED_DIRECTIONAL_ROOM_INSUFFICIENT")
+        waiting.append("MORE_DIRECTIONAL_ROOM")
+
     if target_path.status is not TargetPathStatus.READY:
         waiting.append("TARGET_PATH_TO_RESOLVE")
     elif active is not None and active.state is TargetPathNodeState.DEFENDED:
