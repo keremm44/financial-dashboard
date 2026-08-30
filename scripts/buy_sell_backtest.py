@@ -36,6 +36,11 @@ from financial_dashboard.decision_audit import (
     render_trade_quality_json,
     render_trade_quality_text,
 )
+from financial_dashboard.decision_audit.research import ResearchAuditConfig, audit_buy_sell_research
+from financial_dashboard.decision_audit.research_reporting import (
+    render_research_json,
+    render_research_text,
+)
 from financial_dashboard.structure_location_replay import CausalBarClock
 
 
@@ -314,8 +319,9 @@ def _execution_report_json(report: ExecutionPnlReport) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Run canonical BUY/SELL lifecycle, hindsight audits and an optional-realism "
-            "fill/P&L audit from an exact frozen DecisionInput timeline. Domains are never replayed."
+            "Run canonical BUY/SELL lifecycle, hindsight audits, counterfactual/4H move research, "
+            "and an optional-realism fill/P&L audit from an exact frozen DecisionInput timeline. "
+            "Domains are never replayed."
         )
     )
     parser.add_argument("cache_root", type=Path)
@@ -354,12 +360,32 @@ def main() -> None:
     parser.add_argument("--swing-radius-bars", type=int, default=3)
     parser.add_argument("--capture-entry-window-bars", type=int, default=5)
     parser.add_argument("--worst-trades", type=int, default=5)
+    parser.add_argument(
+        "--research-thresholds-pct",
+        nargs="+",
+        type=float,
+        default=(1.0, 2.5, 5.0),
+        help="Hindsight-only pre-entry/pre-exit distance checkpoints (default: 1 2.5 5).",
+    )
+    parser.add_argument(
+        "--large-move-min-pct",
+        type=float,
+        default=10.0,
+        help="Minimum absolute 4H leg size included in the market opportunity audit.",
+    )
+    parser.add_argument(
+        "--large-move-reversal-pct",
+        type=float,
+        default=5.0,
+        help="4H reversal used to terminate one maximal large-move leg without nested duplicates.",
+    )
     parser.add_argument("--execution-fill-model", choices=("next-open", "decision-close"), default="next-open")
     parser.add_argument("--spread-bps", type=float, default=0.0)
     parser.add_argument("--slippage-bps", type=float, default=0.0)
     parser.add_argument("--commission-bps", type=float, default=0.0)
     parser.add_argument("--json-out", type=Path, default=None)
     parser.add_argument("--quality-json-out", type=Path, default=None)
+    parser.add_argument("--research-json-out", type=Path, default=None)
     parser.add_argument("--timeline-json-out", type=Path, default=None)
     parser.add_argument("--execution-json-out", type=Path, default=None)
     args = parser.parse_args()
@@ -395,6 +421,7 @@ def main() -> None:
         cache_root=args.cache_root,
         symbol=clean_symbol,
     )
+    decision_config = DecisionEngineConfig(opportunity_calibration=calibration)
     micro_entry_events, micro_exit_events = detect_30m_execution_events(input_replay.snapshots)
     if args.no_primary_execution:
         entry_events: dict = {}
@@ -405,7 +432,7 @@ def main() -> None:
     started = perf_counter()
     lifecycle = replay_canonical_trade_lifecycle(
         input_replay.snapshots,
-        config=DecisionEngineConfig(opportunity_calibration=calibration),
+        config=decision_config,
         entry_execution_events=entry_events,
         exit_execution_events=exit_events,
         readiness_execution_proxy=bool(args.canonical_readiness_proxy),
@@ -416,6 +443,9 @@ def main() -> None:
     bars = store.load(clean_symbol, args.audit_timeframe)
     if bars.empty:
         raise SystemExit(f"No audit bars found for {clean_symbol} {args.audit_timeframe}")
+    market_bars_4h = store.load(clean_symbol, "4h")
+    if market_bars_4h.empty:
+        raise SystemExit(f"No 4H market bars found for {clean_symbol}; research audit cannot run")
 
     started = perf_counter()
     audit_report = audit_decisions(
@@ -452,6 +482,30 @@ def main() -> None:
     quality_seconds = perf_counter() - started
 
     started = perf_counter()
+    research_report = audit_buy_sell_research(
+        symbol=clean_symbol,
+        audit_timeframe=args.audit_timeframe,
+        audit_bars=bars,
+        market_bars_4h=market_bars_4h,
+        decisions=decisions,
+        snapshots=input_replay.snapshots,
+        decision_config=decision_config,
+        config=ResearchAuditConfig(
+            counterfactual_thresholds_pct=tuple(args.research_thresholds_pct),
+            short_lookback_bars=args.short_lookback_bars,
+            short_lookahead_bars=args.short_lookahead_bars,
+            long_lookback_bars=args.long_lookback_bars,
+            long_lookahead_bars=args.long_lookahead_bars,
+            fallback_lookback_bars=args.lookback_bars,
+            fallback_lookahead_bars=args.lookahead_bars,
+            large_move_min_pct=args.large_move_min_pct,
+            large_move_reversal_pct=args.large_move_reversal_pct,
+            attribution_top_n=max(1, args.worst_trades),
+        ),
+    )
+    research_seconds = perf_counter() - started
+
+    started = perf_counter()
     execution_report = simulate_execution_pnl(
         decisions,
         bars,
@@ -478,6 +532,7 @@ def main() -> None:
     print(f"DECISION_LAYER_SECONDS\t{decision_seconds:.3f}")
     print(f"HINDSIGHT_AUDIT_SECONDS\t{audit_seconds:.3f}")
     print(f"HORIZON_TRADE_QUALITY_SECONDS\t{quality_seconds:.3f}")
+    print(f"RESEARCH_AUDIT_SECONDS\t{research_seconds:.3f}")
     print(f"EXECUTION_PNL_SECONDS\t{execution_seconds:.3f}")
     print(
         "REPLAY_MODE\t"
@@ -490,6 +545,8 @@ def main() -> None:
     print(render_text(audit_report, worst_trade_limit=max(1, args.worst_trades)))
     print()
     print(render_trade_quality_text(quality_report, worst_trade_limit=max(1, args.worst_trades)))
+    print()
+    print(render_research_text(research_report))
     print()
     print("EXECUTION P/L AUDIT")
     print(f"FILL_MODEL\t{execution_report.fill_model}")
@@ -511,6 +568,10 @@ def main() -> None:
         args.quality_json_out.parent.mkdir(parents=True, exist_ok=True)
         args.quality_json_out.write_text(render_trade_quality_json(quality_report), encoding="utf-8")
         print(f"QUALITY_JSON_REPORT\t{args.quality_json_out}")
+    if args.research_json_out is not None:
+        args.research_json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.research_json_out.write_text(render_research_json(research_report), encoding="utf-8")
+        print(f"RESEARCH_JSON_REPORT\t{args.research_json_out}")
     if args.timeline_json_out is not None:
         args.timeline_json_out.parent.mkdir(parents=True, exist_ok=True)
         args.timeline_json_out.write_text(_timeline_json(decisions), encoding="utf-8")
