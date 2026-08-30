@@ -4,7 +4,6 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from financial_dashboard.decision.structural import DecisionHorizon
 from financial_dashboard.decision_audit.early_move_research import (
     EarlyMoveAuditConfig,
     _pre_move_atr,
@@ -35,7 +34,6 @@ def _bars() -> pd.DataFrame:
 def _event(timestamp: pd.Timestamp, price: float) -> DecisionEvent:
     return DecisionEvent(
         timestamp=timestamp,
-        symbol="TEST",
         action=DecisionAction.WAIT,
         price=price,
         reasons=("WAIT_REASON",),
