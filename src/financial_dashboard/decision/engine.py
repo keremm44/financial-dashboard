@@ -18,6 +18,7 @@ from .coverage import CoverageAssessment, CoverageFamily, assess_coverage
 from .durability import DurabilityAssessment, assess_durability
 from .eligibility import EligibilityAssessment, EligibilityState, assess_eligibility
 from .environment import EnvironmentAssessment, assess_environment
+from .evidence_quality import normalize_decision_reaction_projections
 from .execution import (
     ExecutionTriggerAssessment,
     ExecutionTriggerEvent,
@@ -358,8 +359,10 @@ def assess_horizon_decision(
     permission = _horizon_permission(snapshot, horizon)
 
     durability = assess_durability(snapshot.stabil_support)
-    reaction_ob = snapshot.order_block_behavior
-    reaction_fvg = snapshot.fvg_engulfing_lifecycle
+    reaction_ob, reaction_fvg = normalize_decision_reaction_projections(
+        snapshot.order_block_behavior,
+        snapshot.fvg_engulfing_lifecycle,
+    )
     if cfg.reaction_relevance is not None:
         reaction_ob, reaction_fvg = select_relevant_zones(
             reaction_ob,
