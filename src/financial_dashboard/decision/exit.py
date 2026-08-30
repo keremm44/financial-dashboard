@@ -157,59 +157,52 @@ def refine_short_term_exit_with_stabil(
     st,
     stabil: StabilDecisionAssessment | None,
 ) -> LongExitAssessment:
-    """Make ST long exits Stabil-aware without turning Stabil into a SELL signal.
+    """Use Stabil as exit context/confirmation, never as an exit permission gate.
 
-    Invalidated Structure remains sufficient to arm an exit. Otherwise, an intact
-    bearish or transition-down 1H Structure needs confirmed Stabil breakdown before
-    EXIT_READY. Stabil deterioration without Structure deterioration can only raise
-    EXIT_WATCH, so a single daily support event can never directly sell the position.
+    1H Structure owns the ST exit stage. If Structure reaches EXIT_READY, Stabil may
+    confirm or disagree with that deterioration but can never downgrade the stage or
+    add a requirement for daily breakdown confirmation. When Structure is still
+    intact, Stabil deterioration may raise an early EXIT_WATCH, but Stabil alone can
+    never arm a SELL.
     """
 
     if stabil is None or not stabil.usable:
         return assessment
 
     refs = _canonical_refs((*assessment.source_refs, *stabil.source_refs))
-    if st.thesis_state is ThesisState.INVALIDATED:
+
+    # Structure is the exit authority. Preserve every structural EXIT_READY state.
+    if assessment.stage is ExitStage.EXIT_READY:
+        if stabil.breakdown_confirmed:
+            reason = f"STABIL_CONFIRMS_ST_EXIT:{stabil.state.value}"
+        elif stabil.breakdown_developing:
+            reason = f"STABIL_SUPPORTS_ST_EXIT_DEVELOPING:{stabil.state.value}"
+        elif stabil.state is StabilDecisionState.BULLISH_SOFTENING:
+            reason = "STABIL_FOUNDATION_NOT_ADVANCING_WITH_ST_EXIT"
+        elif stabil.state in {
+            StabilDecisionState.BULLISH_PROGRESS,
+            StabilDecisionState.BULLISH_SUPPORTED,
+            StabilDecisionState.RECOVERY_CONFIRMED,
+        }:
+            reason = f"STABIL_STILL_SUPPORTIVE_BUT_NO_EXIT_VETO:{stabil.state.value}"
+        else:
+            reason = f"STABIL_NEUTRAL_CONTEXT_NO_EXIT_VETO:{stabil.state.value}"
         return LongExitAssessment(
-            assessment.stage,
+            ExitStage.EXIT_READY,
             assessment.position_health,
-            _dedup((*assessment.reasons, "STABIL_OBSERVED_AFTER_STRUCTURE_INVALIDATION")),
+            _dedup((*assessment.reasons, reason)),
             assessment.waiting_for,
             refs,
         )
 
-    structural_deterioration = bool(
-        (st.direction is StructuralDirection.SHORT and st.thesis_state is ThesisState.INTACT)
-        or (
-            st.direction is StructuralDirection.LONG
-            and st.thesis_state is ThesisState.TRANSITIONING
-            and st.transition_target is StructuralDirection.SHORT
-        )
-    )
-
-    if structural_deterioration:
-        if stabil.breakdown_confirmed:
-            return LongExitAssessment(
-                ExitStage.EXIT_READY,
-                PositionHealth.PRESSURED,
-                _dedup((*assessment.reasons, f"STABIL_CONFIRMS_ST_EXIT:{stabil.state.value}")),
-                ("FRESH_LONG_EXIT_EXECUTION_EVENT",),
-                refs,
-            )
-        return LongExitAssessment(
-            ExitStage.EXIT_WATCH,
-            PositionHealth.PRESSURED,
-            _dedup((*assessment.reasons, f"STABIL_NOT_YET_CONFIRMING_ST_EXIT:{stabil.state.value}")),
-            ("STABIL_BREAKDOWN_CONFIRMATION",),
-            refs,
-        )
-
+    # Stabil can warn before Structure has completed its own deterioration, but cannot
+    # create EXIT_READY or SELL on its own.
     if stabil.breakdown_confirmed:
         return LongExitAssessment(
             ExitStage.EXIT_WATCH,
             PositionHealth.PRESSURED,
             _dedup((*assessment.reasons, f"STABIL_BREAKDOWN_AHEAD_OF_STRUCTURE:{stabil.state.value}")),
-            ("ST_STRUCTURE_DETERIORATION",),
+            _dedup((*assessment.waiting_for, "ST_STRUCTURE_DETERIORATION")),
             refs,
         )
 
@@ -218,7 +211,7 @@ def refine_short_term_exit_with_stabil(
             ExitStage.EXIT_WATCH,
             PositionHealth.PRESSURED,
             _dedup((*assessment.reasons, "STABIL_BREAKDOWN_DEVELOPING")),
-            ("STABIL_BREAKDOWN_TO_RESOLVE",),
+            _dedup((*assessment.waiting_for, "ST_STRUCTURE_DETERIORATION")),
             refs,
         )
 
@@ -227,7 +220,7 @@ def refine_short_term_exit_with_stabil(
             ExitStage.EXIT_WATCH,
             PositionHealth.PRESSURED,
             _dedup((*assessment.reasons, "STABIL_BULLISH_FOUNDATION_SOFTENING")),
-            ("STABIL_FOUNDATION_TO_RESOLVE",),
+            _dedup((*assessment.waiting_for, "ST_STRUCTURE_DETERIORATION")),
             refs,
         )
 
