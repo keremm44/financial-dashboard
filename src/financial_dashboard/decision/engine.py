@@ -24,7 +24,7 @@ from .execution import (
     ExecutionTriggerEvent,
     assess_execution_trigger,
 )
-from .opportunity import OpportunityAssessment, OpportunityCalibration, OpportunityState, assess_opportunity
+from .opportunity import OpportunityAssessment, OpportunityCalibration, assess_opportunity
 from .participation import ParticipationAssessment, assess_participation
 from .reaction import (
     ReactionAssessment,
@@ -46,7 +46,7 @@ from .structural import (
     ThesisState,
     build_horizon_structural_snapshot,
 )
-from .timing import TimingAssessment, TimingState, assess_timing
+from .timing import TimingAssessment, assess_timing
 
 
 _LT_REACTION_TIMEFRAMES = ("1d", "4h", "2h", "1h")
@@ -97,17 +97,26 @@ class HorizonDecisionAssessment:
 
 def _timeframe_policy(horizon: DecisionHorizon) -> tuple[tuple[str, ...], str, str, str]:
     if horizon is DecisionHorizon.LONG_TERM:
+        # LT remains 1D-owned; 1H is its immediate setup/execution context.
         return _LT_REACTION_TIMEFRAMES, "4h", "4h", "1h"
+    # ST is a 3-9 trading-day thesis. 1H owns setup maturity and primary execution;
+    # 30m stays inside the broad reaction sphere only as micro context.
     return _ST_REACTION_TIMEFRAMES, "1h", "1h", "1h"
 
 
 def _permission_policy(horizon: DecisionHorizon) -> tuple[str, tuple[str, ...]]:
+    """Return structural anchor and context TFs without giving 30m veto authority."""
+
     if horizon is DecisionHorizon.LONG_TERM:
         return "1d", ("4h", "2h", "1h")
+    # 4H is context for an independently owned 1H ST thesis. 30m is intentionally
+    # absent here so a noisy micro move cannot flip or suppress ST permission.
     return "1h", ("4h",)
 
 
 def _decision_structure_projection(structural):
+    """Normalize price-only Structure quality for Decision without mutating source diagnostics."""
+
     if not isinstance(structural, StructuralFactsProjection):
         return structural
 
@@ -173,6 +182,8 @@ def _execution_channel_quality(
     snapshot: DecisionInputSnapshot,
     timeframe: str,
 ) -> ContextDataQuality:
+    """Return quality for the native price-pattern execution channel."""
+
     normalized = timeframe.strip().lower()
     projection = getattr(snapshot, "pattern_behavior", None)
     if projection is not None:
@@ -339,6 +350,15 @@ def assess_horizon_decision(
     config: DecisionEngineConfig | None = None,
     execution_event: ExecutionTriggerEvent | None = None,
 ) -> HorizonDecisionAssessment:
+    """Build one fully typed LT or ST decision assessment.
+
+    Native Structure remains immutable.  A SHORT_TERM assessment may use an explicit
+    Decision-only LONG trade-thesis overlay while native 1H Structure is in a
+    quality-gated canonical transition toward LONG.  The overlay cannot exist from
+    an intact bearish state and cannot bypass permission, setup, opportunity,
+    conflict, volatility, or execution gates.
+    """
+
     cfg = config or DecisionEngineConfig()
     decision_structure = _decision_structure_projection(snapshot.structure)
     structural_snapshot = build_horizon_structural_snapshot(decision_structure)
