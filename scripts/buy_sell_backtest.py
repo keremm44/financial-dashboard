@@ -41,6 +41,11 @@ from financial_dashboard.decision_audit.research_reporting import (
     render_research_json,
     render_research_text,
 )
+from financial_dashboard.decision_audit.target_transition_research import (
+    TargetTransitionAuditConfig,
+    audit_target_path_transitions,
+    render_target_path_transition_text,
+)
 from financial_dashboard.structure_location_replay import CausalBarClock
 
 
@@ -320,8 +325,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Run canonical BUY/SELL lifecycle, hindsight audits, counterfactual/4H move research, "
-            "and an optional-realism fill/P&L audit from an exact frozen DecisionInput timeline. "
-            "Domains are never replayed."
+            "target-path transition research, and an optional-realism fill/P&L audit from an exact "
+            "frozen DecisionInput timeline. Domains are never replayed."
         )
     )
     parser.add_argument("cache_root", type=Path)
@@ -378,6 +383,18 @@ def main() -> None:
         type=float,
         default=5.0,
         help="4H reversal used to terminate one maximal large-move leg without nested duplicates.",
+    )
+    parser.add_argument(
+        "--target-persistence-snapshots",
+        type=int,
+        default=2,
+        help="Research-only consecutive 1h decision closes above a prior target node (default: 2).",
+    )
+    parser.add_argument(
+        "--target-retest-tolerance-pct",
+        type=float,
+        default=0.50,
+        help="Research-only 30m held-retest tolerance around the prior target node (default: 0.50).",
     )
     parser.add_argument("--execution-fill-model", choices=("next-open", "decision-close"), default="next-open")
     parser.add_argument("--spread-bps", type=float, default=0.0)
@@ -506,6 +523,22 @@ def main() -> None:
     research_seconds = perf_counter() - started
 
     started = perf_counter()
+    target_transition_report = audit_target_path_transitions(
+        symbol=clean_symbol,
+        moves=(row.move for row in research_report.large_moves),
+        snapshots=input_replay.snapshots,
+        decisions=decisions,
+        micro_bars=bars,
+        decision_config=decision_config,
+        config=TargetTransitionAuditConfig(
+            persistence_snapshots=args.target_persistence_snapshots,
+            retest_tolerance_pct=args.target_retest_tolerance_pct,
+            top_n=max(1, args.worst_trades),
+        ),
+    )
+    target_transition_seconds = perf_counter() - started
+
+    started = perf_counter()
     execution_report = simulate_execution_pnl(
         decisions,
         bars,
@@ -533,6 +566,7 @@ def main() -> None:
     print(f"HINDSIGHT_AUDIT_SECONDS\t{audit_seconds:.3f}")
     print(f"HORIZON_TRADE_QUALITY_SECONDS\t{quality_seconds:.3f}")
     print(f"RESEARCH_AUDIT_SECONDS\t{research_seconds:.3f}")
+    print(f"TARGET_TRANSITION_AUDIT_SECONDS\t{target_transition_seconds:.3f}")
     print(f"EXECUTION_PNL_SECONDS\t{execution_seconds:.3f}")
     print(
         "REPLAY_MODE\t"
@@ -547,6 +581,8 @@ def main() -> None:
     print(render_trade_quality_text(quality_report, worst_trade_limit=max(1, args.worst_trades)))
     print()
     print(render_research_text(research_report))
+    print()
+    print(render_target_path_transition_text(target_transition_report))
     print()
     print("EXECUTION P/L AUDIT")
     print(f"FILL_MODEL\t{execution_report.fill_model}")
