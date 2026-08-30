@@ -97,26 +97,17 @@ class HorizonDecisionAssessment:
 
 def _timeframe_policy(horizon: DecisionHorizon) -> tuple[tuple[str, ...], str, str, str]:
     if horizon is DecisionHorizon.LONG_TERM:
-        # LT remains 1D-owned; 1H is its immediate setup/execution context.
         return _LT_REACTION_TIMEFRAMES, "4h", "4h", "1h"
-    # ST is a 3-9 trading-day thesis. 1H owns setup maturity and primary execution;
-    # 30m stays inside the broad reaction sphere only as micro context.
     return _ST_REACTION_TIMEFRAMES, "1h", "1h", "1h"
 
 
 def _permission_policy(horizon: DecisionHorizon) -> tuple[str, tuple[str, ...]]:
-    """Return structural anchor and context TFs without giving 30m veto authority."""
-
     if horizon is DecisionHorizon.LONG_TERM:
         return "1d", ("4h", "2h", "1h")
-    # 4H is context for an independently owned 1H ST thesis. 30m is intentionally
-    # absent here so a noisy micro move cannot flip or suppress ST permission.
     return "1h", ("4h",)
 
 
 def _decision_structure_projection(structural):
-    """Normalize price-only Structure quality for Decision without mutating source diagnostics."""
-
     if not isinstance(structural, StructuralFactsProjection):
         return structural
 
@@ -182,8 +173,6 @@ def _execution_channel_quality(
     snapshot: DecisionInputSnapshot,
     timeframe: str,
 ) -> ContextDataQuality:
-    """Return quality for the native price-pattern execution channel."""
-
     normalized = timeframe.strip().lower()
     projection = getattr(snapshot, "pattern_behavior", None)
     if projection is not None:
@@ -301,7 +290,13 @@ def _apply_counter_lt_st_risk(
     opportunity: OpportunityAssessment,
     conflict: ConflictAssessment,
 ) -> EligibilityAssessment:
-    """Allow counter-LT ST trades, but require cleaner economics and conflict state."""
+    """Keep counter-LT context as independent conflict risk, not duplicate entry gates.
+
+    Timing and directional room are already owned by the normal ST eligibility path.
+    Requiring them again only because the LT thesis is bearish double-counts the same
+    evidence. Counter-LT therefore adds no second timing/opportunity hurdle; only an
+    independently material conflict can keep an otherwise valid ST long waiting.
+    """
 
     if horizon is not DecisionHorizon.SHORT_TERM:
         return eligibility
@@ -319,23 +314,19 @@ def _apply_counter_lt_st_risk(
 
     waiting = list(eligibility.waiting_for)
     reasons = list(eligibility.reasons)
-    if timing.state is not TimingState.READY:
-        waiting.append("COUNTER_LT_ST_REQUIRES_CONFIRMED_1H_SETUP")
-    if opportunity.state not in {OpportunityState.MODERATE, OpportunityState.AMPLE}:
-        waiting.append("COUNTER_LT_ST_REQUIRES_CLEAR_DIRECTIONAL_ROOM")
     if conflict.state not in {ConflictState.NONE, ConflictState.LOW}:
         waiting.append("COUNTER_LT_ST_REQUIRES_LOW_CONFLICT")
 
     if waiting:
         return EligibilityAssessment(
             EligibilityState.WAITING,
-            tuple(dict.fromkeys((*reasons, "COUNTER_LT_ST_RISK_REQUIRES_STRONGER_EVIDENCE"))),
+            tuple(dict.fromkeys((*reasons, "COUNTER_LT_ST_RISK_REQUIRES_LOW_CONFLICT"))),
             (),
             tuple(dict.fromkeys(waiting)),
         )
     return EligibilityAssessment(
         EligibilityState.ELIGIBLE,
-        tuple(dict.fromkeys((*reasons, "COUNTER_LT_ST_RISK_ACCEPTED"))),
+        tuple(dict.fromkeys((*reasons, "COUNTER_LT_ST_RISK_ACCEPTED_AS_CONTEXT"))),
         (),
         (),
     )
@@ -348,15 +339,6 @@ def assess_horizon_decision(
     config: DecisionEngineConfig | None = None,
     execution_event: ExecutionTriggerEvent | None = None,
 ) -> HorizonDecisionAssessment:
-    """Build one fully typed LT or ST decision assessment.
-
-    Native Structure remains immutable.  A SHORT_TERM assessment may use an explicit
-    Decision-only LONG trade-thesis overlay while native 1H Structure is in a
-    quality-gated canonical transition toward LONG.  The overlay cannot exist from
-    an intact bearish state and cannot bypass permission, setup, opportunity,
-    conflict, volatility, or execution gates.
-    """
-
     cfg = config or DecisionEngineConfig()
     decision_structure = _decision_structure_projection(snapshot.structure)
     structural_snapshot = build_horizon_structural_snapshot(decision_structure)
