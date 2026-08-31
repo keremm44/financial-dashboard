@@ -20,3 +20,5 @@ jobs:
         run: python -m pytest
       - name: Architecture audit
         run: python tools/architecture_audit.py --check
+      - name: Shell ownership audit
+        run: python tools/shell_ownership_audit.py --check
