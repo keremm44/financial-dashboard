@@ -5,7 +5,12 @@ from enum import StrEnum
 
 from financial_dashboard.context.envelope import ContextDataQuality, FactRef
 from financial_dashboard.context.participation_behavior_projection import ParticipationBehaviorProjection
-from financial_dashboard.context.projections import StructuralFactsProjection, StructuralTimeframeProjection
+from financial_dashboard.context.projections import (
+    StabilSupportEventProjection,
+    StabilSupportProjection,
+    StructuralFactsProjection,
+    StructuralTimeframeProjection,
+)
 from financial_dashboard.context.volatility_environment_projection import VolatilityEnvironmentProjection
 
 from .environment import EnvironmentAssessment, EnvironmentRisk, assess_environment
@@ -115,10 +120,42 @@ class HorizonMarketState:
 
 
 @dataclass(frozen=True, slots=True)
+class StabilMarketState:
+    """Read-only native Stabil facts; never BUY/SELL or horizon policy."""
+
+    data_quality: ContextDataQuality
+    timeframe: str | None
+    as_of: object | None
+    support_ref: FactRef | None
+    support_level: float | None
+    support_floor: float | None
+    validity: str | None
+    dynamics: str | None
+    progression: str | None
+    distance_pct: float | None
+    distance_atr: float | None
+    bars_above_support: int | None
+    bars_below_support: int | None
+    reclaim_count: int | None
+    events: tuple[StabilSupportEventProjection, ...]
+    motion: str | None
+    relation: str | None
+    interaction: str | None
+    approach_origin: str | None
+    bars_since_rebase: int | None
+    cross_count: int | None
+    last_rebase_step_atr: float | None
+    distance_delta_atr: float | None
+    reclaim_active: bool | None
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class MarketStateSnapshot:
     long_term: HorizonMarketState
     short_term: HorizonMarketState
     horizon_relation: HorizonRelation
+    stabil: StabilMarketState
     reasons: tuple[str, ...]
 
 
@@ -373,6 +410,83 @@ def _participation_state(
     return state, rows, reasons
 
 
+def _stabil_state(stabil: StabilSupportProjection | None) -> StabilMarketState:
+    if stabil is None:
+        return StabilMarketState(
+            data_quality=ContextDataQuality.UNAVAILABLE,
+            timeframe=None,
+            as_of=None,
+            support_ref=None,
+            support_level=None,
+            support_floor=None,
+            validity=None,
+            dynamics=None,
+            progression=None,
+            distance_pct=None,
+            distance_atr=None,
+            bars_above_support=None,
+            bars_below_support=None,
+            reclaim_count=None,
+            events=(),
+            motion=None,
+            relation=None,
+            interaction=None,
+            approach_origin=None,
+            bars_since_rebase=None,
+            cross_count=None,
+            last_rebase_step_atr=None,
+            distance_delta_atr=None,
+            reclaim_active=None,
+            reasons=("STABIL:UNAVAILABLE",),
+        )
+
+    behavior = stabil.behavior
+    reasons = [
+        f"STABIL_VALIDITY:{stabil.validity}",
+        f"STABIL_DYNAMICS:{stabil.dynamics}",
+        f"STABIL_PROGRESSION:{stabil.progression}",
+    ]
+    if behavior is None:
+        reasons.append("STABIL_BEHAVIOR:UNAVAILABLE")
+    else:
+        reasons.extend(
+            (
+                f"STABIL_MOTION:{behavior.motion}",
+                f"STABIL_RELATION:{behavior.relation}",
+                f"STABIL_INTERACTION:{behavior.interaction}",
+                f"STABIL_APPROACH_ORIGIN:{behavior.approach_origin}",
+            )
+        )
+
+    return StabilMarketState(
+        data_quality=stabil.data_quality,
+        timeframe=stabil.timeframe,
+        as_of=stabil.as_of,
+        support_ref=stabil.support_ref,
+        support_level=stabil.support_level,
+        support_floor=stabil.support_floor,
+        validity=stabil.validity,
+        dynamics=stabil.dynamics,
+        progression=stabil.progression,
+        distance_pct=stabil.distance_pct,
+        distance_atr=stabil.distance_atr,
+        bars_above_support=stabil.bars_above_support,
+        bars_below_support=stabil.bars_below_support,
+        reclaim_count=stabil.reclaim_count,
+        events=stabil.events,
+        motion=None if behavior is None else behavior.motion,
+        relation=None if behavior is None else behavior.relation,
+        interaction=None if behavior is None else behavior.interaction,
+        approach_origin=None if behavior is None else behavior.approach_origin,
+        bars_since_rebase=None if behavior is None else behavior.bars_since_rebase,
+        cross_count=None if behavior is None else behavior.cross_count,
+        last_rebase_step_atr=None if behavior is None else behavior.last_rebase_step_atr,
+        distance_delta_atr=None if behavior is None else behavior.distance_delta_atr,
+        reclaim_active=None if behavior is None else behavior.reclaim_active,
+        reasons=tuple(reasons),
+    )
+
+
 def _build_horizon_market_state(
     structure: StructuralFactsProjection,
     assessment: StructuralAssessment,
@@ -409,15 +523,15 @@ def _build_horizon_market_state(
 def build_market_state(
     structure: StructuralFactsProjection,
     *,
+    stabil: StabilSupportProjection | None = None,
     volatility: VolatilityEnvironmentProjection | None = None,
     participation: ParticipationBehaviorProjection | None = None,
 ) -> MarketStateSnapshot:
-    """Build horizon-separated market state without voting across timeframes/domains.
+    """Build one factual, horizon-separated market-state read model.
 
-    Structure owns direction. 1D owns LT direction and 1H owns ST direction. 4H and
-    2H may describe transition/risk context but can never outvote those authorities.
-    Volatility and participation are retained as separate environment/propagation
-    axes and cannot manufacture or flip a structural thesis.
+    Existing Structure authority, volatility and participation behavior is preserved
+    unchanged in this read-only migration. Stabil native support/lifecycle behavior is
+    carried alongside those facts without creating a vote, gate or BUY/SELL action.
     """
 
     structural = build_horizon_structural_snapshot(structure)
@@ -437,6 +551,7 @@ def build_market_state(
         long_term=long_term,
         short_term=short_term,
         horizon_relation=structural.relation,
+        stabil=_stabil_state(stabil),
         reasons=structural.reasons,
     )
 
@@ -448,6 +563,7 @@ __all__ = [
     "MarketRiskRegime",
     "MarketStateSnapshot",
     "ParticipationPropagationState",
+    "StabilMarketState",
     "StructuralRegime",
     "TimeframeAuthorityRole",
     "TimeframeStructuralNode",
