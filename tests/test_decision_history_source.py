@@ -4,8 +4,10 @@ import pandas as pd
 
 from financial_dashboard.data.analysis_inputs import AnalysisInputSnapshot, TimeframeInputSnapshot
 from financial_dashboard.data.engine_input import prepare_engine_input
+from financial_dashboard.decision import history_source
 from financial_dashboard.decision.history_source import (
     _capture_indices,
+    _stabil_points,
     _wilder_atr_history,
 )
 from financial_dashboard.structure_location_replay import CausalBarClock
@@ -80,6 +82,42 @@ def test_wilder_atr_history_is_prefix_only_and_length_preserving():
     assert len(extended) == 4
     assert first == extended[:3]
     assert all(value > 0 for value in extended)
+
+
+def test_stabil_points_build_lifecycle_and_behavior_from_each_causal_prefix(monkeypatch):
+    inputs = _snapshot()
+    observations = ("day-0", "day-1")
+    lifecycle_prefixes = []
+    behavior_prefixes = []
+
+    monkeypatch.setattr(
+        history_source,
+        "build_daily_support_observations",
+        lambda frame, *, config: observations,
+    )
+
+    def fake_lifecycle(prefix, *, min_tick):
+        lifecycle_prefixes.append(tuple(prefix))
+        return f"lifecycle-{len(prefix)}"
+
+    def fake_behavior(prefix, snapshot, *, config, min_tick):
+        behavior_prefixes.append((tuple(prefix), snapshot))
+        return f"behavior-{len(prefix)}"
+
+    monkeypatch.setattr(history_source, "build_support_lifecycle", fake_lifecycle)
+    monkeypatch.setattr(history_source, "build_support_behavior", fake_behavior)
+
+    points = _stabil_points(inputs, indices_1d=(0, 1))
+
+    assert lifecycle_prefixes == [("day-0",), ("day-0", "day-1")]
+    assert behavior_prefixes == [
+        (("day-0",), "lifecycle-1"),
+        (("day-0", "day-1"), "lifecycle-2"),
+    ]
+    assert len(points[0].input_batch.frame) == 1
+    assert len(points[1].input_batch.frame) == 2
+    assert points[0].behavior == "behavior-1"
+    assert points[1].behavior == "behavior-2"
 
 
 def test_history_source_does_not_import_full_workspace_runner():

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from financial_dashboard.context.break_relations import (
@@ -79,6 +79,7 @@ class DecisionInputSnapshot:
     knowledge_boundary: KnowledgeBoundary
     data_quality_by_timeframe: tuple[tuple[str, ContextDataQuality], ...]
     derived_summaries: tuple[str, ...] = ("CONTEXT", "PERMISSION")
+    _market_state: Any | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not self.symbol.strip():
@@ -123,15 +124,22 @@ class DecisionInputSnapshot:
 
     @property
     def market_state(self):
-        """Derived horizon-aware MTF state; never a fresh vote or action signal."""
+        """Derived factual MTF state, built once for this frozen decision snapshot."""
+
+        cached = self._market_state
+        if cached is not None:
+            return cached
 
         from financial_dashboard.decision.market_state import build_market_state
 
-        return build_market_state(
+        state = build_market_state(
             self.structure,
+            stabil=self.stabil_support,
             volatility=self.volatility_environment,
             participation=self.participation_behavior,
         )
+        object.__setattr__(self, "_market_state", state)
+        return state
 
     def target_path(self, direction):
         """Build the causal target path for one already-resolved structural side."""
