@@ -131,7 +131,7 @@ def test_multi_family_bearish_reversal_arms_short_term_exit(monkeypatch) -> None
     assert refined.waiting_for == ("FRESH_LONG_EXIT_EXECUTION_EVENT",)
 
 
-def test_bearish_choch_and_reaction_without_independent_confirmation_is_watch_only(monkeypatch) -> None:
+def test_incomplete_bearish_reversal_does_not_change_position_stage(monkeypatch) -> None:
     as_of = pd.Timestamp("2026-07-24 13:00:00+03:00")
     _patch_evidence(
         monkeypatch,
@@ -149,8 +149,8 @@ def test_bearish_choch_and_reaction_without_independent_confirmation_is_watch_on
     assert reversal.state is STBearishReversalState.DEVELOPING
     base = LongExitAssessment(ExitStage.MONITOR, PositionHealth.HEALTHY, (), (), ())
     refined = refine_short_term_exit_with_bearish_reversal(base, reversal)
-    assert refined.stage is ExitStage.EXIT_WATCH
-    assert "ST_BEARISH_REVERSAL_TO_CONFIRM" in refined.waiting_for
+    assert refined.stage is ExitStage.MONITOR
+    assert refined.waiting_for == ()
 
 
 def test_stabil_breakdown_can_confirm_but_is_not_required_when_participation_supports(monkeypatch) -> None:
