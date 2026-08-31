@@ -144,11 +144,9 @@ def assess_st_bearish_reversal(
 ) -> STBearishReversalAssessment:
     """Detect an early bearish reversal against an open short-term long.
 
-    This layer is deliberately narrower than the canonical Structure state machine.
-    It may arm a short-term exit before 1H Structure finishes a transition, but only
-    while the native 1H long thesis is still intact and multiple independent bearish
-    evidence families agree. It never executes SELL by itself; normal 1H exit
-    execution remains mandatory.
+    The evidence assessment may describe WATCH/DEVELOPING states for diagnostics, but
+    those states are deliberately non-actionable. Only a multi-family STRONG reversal
+    may alter short-term position management.
     """
 
     if (
@@ -270,9 +268,14 @@ def refine_short_term_exit_with_bearish_reversal(
     assessment: LongExitAssessment,
     reversal: STBearishReversalAssessment | None,
 ) -> LongExitAssessment:
-    """Raise short-term exit maturity from evidence, never execute SELL directly."""
+    """Only a STRONG bearish reversal may change short-term exit maturity.
 
-    if reversal is None or reversal.state is STBearishReversalState.NONE:
+    WATCH and DEVELOPING remain diagnostics. They must not turn a healthy short-term
+    position into EXIT_WATCH or add a waiting requirement. This preserves trend carry
+    until the bearish reversal is actually multi-family confirmed.
+    """
+
+    if reversal is None or not reversal.can_arm_exit:
         return assessment
 
     refs = _unique_refs(assessment.source_refs, reversal.source_refs)
@@ -287,20 +290,11 @@ def refine_short_term_exit_with_bearish_reversal(
             refs,
         )
 
-    if reversal.can_arm_exit:
-        return LongExitAssessment(
-            ExitStage.EXIT_READY,
-            PositionHealth.PRESSURED,
-            tuple(dict.fromkeys((*reasons, "ST_STRONG_BEARISH_REVERSAL_ARMS_EXIT"))),
-            ("FRESH_LONG_EXIT_EXECUTION_EVENT",),
-            refs,
-        )
-
     return LongExitAssessment(
-        ExitStage.EXIT_WATCH,
+        ExitStage.EXIT_READY,
         PositionHealth.PRESSURED,
-        reasons,
-        tuple(dict.fromkeys((*assessment.waiting_for, "ST_BEARISH_REVERSAL_TO_CONFIRM"))),
+        tuple(dict.fromkeys((*reasons, "ST_STRONG_BEARISH_REVERSAL_ARMS_EXIT"))),
+        ("FRESH_LONG_EXIT_EXECUTION_EVENT",),
         refs,
     )
 
