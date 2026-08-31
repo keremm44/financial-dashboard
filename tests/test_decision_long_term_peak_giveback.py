@@ -53,11 +53,16 @@ def _side(direction: StructuralDirection, thesis_state: ThesisState = ThesisStat
     )
 
 
-def _snapshot():
+def _snapshot(*, short_direction: StructuralDirection = StructuralDirection.LONG):
+    relation = (
+        HorizonRelation.ALIGNED
+        if short_direction is StructuralDirection.LONG
+        else HorizonRelation.COUNTER_REACTION
+    )
     return SimpleNamespace(
         long_term=_side(StructuralDirection.LONG),
-        short_term=_side(StructuralDirection.LONG),
-        relation=HorizonRelation.ALIGNED,
+        short_term=_side(short_direction),
+        relation=relation,
     )
 
 
@@ -80,6 +85,23 @@ def test_open_position_peak_is_monotonic() -> None:
 
     assert first.current.peak_price == 112.0
     assert second.current.peak_price == 112.0
+
+
+def test_long_term_short_term_counter_move_waits_while_giveback_is_small() -> None:
+    state = _state(horizon=DecisionHorizon.LONG_TERM, peak_price=110.0)
+
+    decision = compose_position_exit_decision(
+        state,
+        _snapshot(short_direction=StructuralDirection.SHORT),
+        as_of=pd.Timestamp("2026-01-03 10:00:00+03:00"),
+        current_price=107.0,
+    )
+
+    assert decision.action is DecisionAction.HOLD
+    assert decision.stage is ExitStage.EXIT_WATCH
+    assert decision.peak_giveback_pct == pytest.approx((110.0 - 107.0) / 110.0 * 100.0)
+    assert "LT_PRIMARY_LONG_THESIS_STILL_INTACT" in decision.reasons
+    assert "LT_PRIMARY_STRUCTURE_DETERIORATION_OR_PEAK_PROTECTION" in decision.waiting_for
 
 
 def test_long_term_four_pct_giveback_arms_confirmation_zone() -> None:
