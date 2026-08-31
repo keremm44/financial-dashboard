@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 from typing import TYPE_CHECKING, Any, Iterable
 
 from financial_dashboard.context.envelope import ContextDataQuality, FactRef
@@ -46,6 +47,10 @@ if TYPE_CHECKING:
     from financial_dashboard.decision_input import DecisionInputSnapshot
 
 
+_LT_PEAK_GIVEBACK_ARM_PCT = 4.0
+_LT_PEAK_GIVEBACK_HARD_EXIT_PCT = 5.0
+
+
 @dataclass(frozen=True, slots=True)
 class PositionExitDecision:
     action: DecisionAction
@@ -60,6 +65,9 @@ class PositionExitDecision:
     waiting_for: tuple[str, ...]
     source_refs: tuple[FactRef, ...]
     source_lineage: tuple[str, ...]
+    position_peak_price: float | None = None
+    peak_giveback_pct: float | None = None
+    risk_cap_exit: bool = False
 
     def __post_init__(self) -> None:
         if self.action not in {DecisionAction.HOLD, DecisionAction.SELL}:
@@ -71,12 +79,19 @@ class PositionExitDecision:
                 raise ValueError("SELL requires EXIT_READY")
             if self.execution.state is not ExitExecutionState.CONFIRMED:
                 raise ValueError("SELL requires CONFIRMED exit execution")
-            if not self.execution_event_consumed:
+            if not self.risk_cap_exit and not self.execution_event_consumed:
                 raise ValueError("SELL requires a consumed fresh exit execution event")
         elif self.execution.state is ExitExecutionState.CONFIRMED:
             raise ValueError("CONFIRMED exit execution must resolve to SELL")
         if self.execution_event_consumed and self.stage is not ExitStage.EXIT_READY:
             raise ValueError("exit execution event may be consumed only while EXIT_READY")
+        if self.risk_cap_exit:
+            if self.entry_horizon is not DecisionHorizon.LONG_TERM:
+                raise ValueError("peak giveback hard exit belongs only to long-term positions")
+            if self.action is not DecisionAction.SELL:
+                raise ValueError("peak giveback hard exit must resolve to SELL")
+            if self.peak_giveback_pct is None or self.peak_giveback_pct < _LT_PEAK_GIVEBACK_HARD_EXIT_PCT:
+                raise ValueError("peak giveback hard exit requires the hard threshold")
 
 
 def _dedup(values: Iterable[str]) -> tuple[str, ...]:
@@ -101,6 +116,65 @@ def _lineage_from_refs(refs: Iterable[FactRef]) -> tuple[str, ...]:
         if domain and timeframe and native_id:
             values.append(f"{domain}:{timeframe}:{native_id}")
     return tuple(sorted(set(values)))
+
+
+def _position_peak_and_giveback(
+    state: TradeLifecycleState,
+    current_price: float | None,
+) -> tuple[float | None, float | None]:
+    values: list[float] = []
+    if state.peak_price is not None:
+        values.append(float(state.peak_price))
+    if state.entry_metadata is not None:
+        values.append(float(state.entry_metadata.entry_price))
+
+    price: float | None = None
+    if current_price is not None:
+        price = float(current_price)
+        if not isfinite(price) or price <= 0.0:
+            raise ValueError("position exit current price must be finite and positive")
+        values.append(price)
+
+    peak = max(values) if values else None
+    if peak is None or price is None:
+        return peak, None
+    giveback = max(0.0, (peak - price) / peak * 100.0)
+    return peak, giveback
+
+
+def _apply_long_term_peak_giveback_protection(
+    assessment: LongExitAssessment,
+    giveback_pct: float | None,
+) -> LongExitAssessment:
+    if giveback_pct is None or giveback_pct < _LT_PEAK_GIVEBACK_ARM_PCT:
+        return assessment
+
+    refs = assessment.source_refs
+    if giveback_pct >= _LT_PEAK_GIVEBACK_HARD_EXIT_PCT:
+        return LongExitAssessment(
+            ExitStage.EXIT_READY,
+            PositionHealth.PRESSURED,
+            _dedup((*assessment.reasons, "LT_PEAK_GIVEBACK_HARD_CAP_REACHED")),
+            (),
+            refs,
+        )
+
+    if assessment.stage is ExitStage.EXIT_READY:
+        return LongExitAssessment(
+            ExitStage.EXIT_READY,
+            assessment.position_health,
+            _dedup((*assessment.reasons, "LT_PEAK_GIVEBACK_CONFIRMATION_ZONE")),
+            assessment.waiting_for,
+            refs,
+        )
+
+    return LongExitAssessment(
+        ExitStage.EXIT_READY,
+        PositionHealth.PRESSURED,
+        _dedup((*assessment.reasons, "LT_PEAK_GIVEBACK_CONFIRMATION_ZONE")),
+        ("FRESH_LONG_EXIT_EXECUTION_EVENT",),
+        refs,
+    )
 
 
 def _short_term_position_exit(snapshot: HorizonStructuralSnapshot) -> LongExitAssessment:
@@ -162,14 +236,7 @@ def refine_short_term_exit_with_stabil(
     st,
     stabil: StabilDecisionAssessment | None,
 ) -> LongExitAssessment:
-    """Use Stabil as exit context/confirmation, never as an exit permission gate.
-
-    1H Structure owns the ST exit stage. If Structure reaches EXIT_READY, Stabil may
-    confirm or disagree with that deterioration but can never downgrade the stage or
-    add a requirement for daily breakdown confirmation. When Structure is still
-    intact, Stabil deterioration may raise an early EXIT_WATCH, but Stabil alone can
-    never arm a SELL.
-    """
+    """Use Stabil as exit context/confirmation, never as an exit permission gate."""
 
     if stabil is None or not stabil.usable:
         return assessment
@@ -253,13 +320,17 @@ def compose_position_exit_decision(
     channel_available: bool = True,
     stabil: StabilDecisionAssessment | None = None,
     short_term_reversal: STBearishReversalAssessment | None = None,
+    current_price: float | None = None,
 ) -> PositionExitDecision:
     if state.position is not PositionState.OPEN:
         raise ValueError("position exit decision requires OPEN lifecycle ownership")
     if as_of is None:
         raise ValueError("position exit decision as_of must be known")
 
+    position_peak_price, peak_giveback_pct = _position_peak_and_giveback(state, current_price)
     metadata = state.entry_metadata
+    risk_cap_exit = False
+
     if metadata is None:
         entry_horizon = None
         structural = _missing_entry_metadata_exit(structural_snapshot)
@@ -267,6 +338,11 @@ def compose_position_exit_decision(
     elif metadata.entry_horizon is DecisionHorizon.LONG_TERM:
         entry_horizon = DecisionHorizon.LONG_TERM
         structural = assess_long_position_exit(structural_snapshot)
+        structural = _apply_long_term_peak_giveback_protection(structural, peak_giveback_pct)
+        risk_cap_exit = bool(
+            peak_giveback_pct is not None
+            and peak_giveback_pct >= _LT_PEAK_GIVEBACK_HARD_EXIT_PCT
+        )
         authority_reason = "POSITION_EXIT_AUTHORITY_LONG_TERM_ENTRY"
     elif metadata.entry_horizon is DecisionHorizon.SHORT_TERM:
         entry_horizon = DecisionHorizon.SHORT_TERM
@@ -289,16 +365,27 @@ def compose_position_exit_decision(
         structural, as_of=as_of, event=click, allow=metadata is not None,
     )
     armed = structural.stage is ExitStage.EXIT_READY
-    event_for_execution = click if armed else None
-    execution = assess_long_exit_execution(
-        structural,
-        as_of=as_of,
-        event=event_for_execution,
-        execution_timeframe="1h",
-        channel_available=channel_available,
-    )
-    consumed = armed and click is not None
-    action = DecisionAction.SELL if execution.state is ExitExecutionState.CONFIRMED else DecisionAction.HOLD
+
+    if risk_cap_exit:
+        execution = LongExitExecutionAssessment(
+            ExitExecutionState.CONFIRMED,
+            ("LT_PEAK_GIVEBACK_HARD_CAP_EXECUTION",),
+            (),
+            (),
+        )
+        consumed = False
+        action = DecisionAction.SELL
+    else:
+        event_for_execution = click if armed else None
+        execution = assess_long_exit_execution(
+            structural,
+            as_of=as_of,
+            event=event_for_execution,
+            execution_timeframe="1h",
+            channel_available=channel_available,
+        )
+        consumed = armed and click is not None
+        action = DecisionAction.SELL if execution.state is ExitExecutionState.CONFIRMED else DecisionAction.HOLD
 
     refs = _canonical_refs((*structural.source_refs, *execution.source_refs))
     return PositionExitDecision(
@@ -314,6 +401,9 @@ def compose_position_exit_decision(
         waiting_for=_dedup((*structural.waiting_for, *execution.waiting_for)),
         source_refs=refs,
         source_lineage=_lineage_from_refs(refs),
+        position_peak_price=position_peak_price,
+        peak_giveback_pct=peak_giveback_pct,
+        risk_cap_exit=risk_cap_exit,
     )
 
 
@@ -350,6 +440,7 @@ def assess_position_exit_decision(
         channel_available=channel_available,
         stabil=stabil,
         short_term_reversal=short_term_reversal,
+        current_price=float(snapshot.current_price),
     )
 
 
@@ -370,6 +461,7 @@ def transition_position_exit_lifecycle(
         as_of=decision.as_of,
         exit_stage=decision.stage,
         exit_execution_confirmed=decision.action is DecisionAction.SELL,
+        position_peak_price=decision.position_peak_price,
     )
 
 
