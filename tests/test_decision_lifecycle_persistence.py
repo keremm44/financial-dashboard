@@ -107,6 +107,7 @@ def _open_state():
         active_target_identity="target:1",
         execution_timeframe="30m",
         execution_observed_at=as_of,
+        execution_available_at=as_of,
         execution_reason="CONFIRMED",
         source_lineage=("entry:lineage",),
     )
