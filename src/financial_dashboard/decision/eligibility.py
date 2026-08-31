@@ -9,6 +9,7 @@ from financial_dashboard.context.permissions import GateState, PermissionEnvelop
 from .conflict import ConflictAssessment, ConflictState
 from .coverage import CoverageAssessment, CoverageFamily
 from .environment import EnvironmentAssessment, EnvironmentRisk
+from .gate_authority import GateAuthority, deferred_permission_blocker_owner
 from .opportunity import OpportunityAssessment, OpportunityState
 from .structural import StructuralAssessment, StructuralDirection, ThesisState
 from .timing import TimingAssessment, TimingState
@@ -64,19 +65,31 @@ def assess_eligibility(
         blockers.append("STRUCTURAL_DIRECTION_UNRESOLVED")
     if structural.thesis_state in {ThesisState.INVALIDATED, ThesisState.UNRESOLVED}:
         blockers.append(f"STRUCTURAL_THESIS_{structural.thesis_state.value}")
+    structure_hard_blocked = bool(blockers)
 
-    # G4: Permission remains scope/context only. A legacy context HIGH may describe
-    # the same structural event that is already represented by Structure, so it must
-    # not become a second hard veto here. The independent-family conflict layer below
-    # owns the hard HIGH gate. Any other Permission BLOCKED reason remains a hard gate.
+    # G4: Permission remains scope/context only. Some Permission reasons summarize
+    # facts whose canonical hard-gate owner is already present in this Decision
+    # assessment. Do not count those summaries as a second independent veto.
     expected_permission_side = _permission_side(structural.direction)
     if permission.gate_state is GateState.BLOCKED:
         permission_blockers = tuple(permission.blocking_reasons or ("PERMISSION_BLOCKED",))
         non_context_blockers = tuple(
-            item for item in permission_blockers if item != "CONTEXT_CONFLICT_HIGH"
+            item
+            for item in permission_blockers
+            if deferred_permission_blocker_owner(item) is not GateAuthority.CONFLICT
         )
-        if non_context_blockers:
-            blockers.extend(non_context_blockers)
+        authoritative_permission_blockers = tuple(
+            item
+            for item in non_context_blockers
+            if not (
+                structure_hard_blocked
+                and deferred_permission_blocker_owner(item) is GateAuthority.STRUCTURE
+            )
+        )
+        if authoritative_permission_blockers:
+            blockers.extend(authoritative_permission_blockers)
+        elif non_context_blockers:
+            reasons.append("PERMISSION_STRUCTURE_BLOCK_DEFERRED_TO_STRUCTURE")
         elif "CONTEXT_CONFLICT_HIGH" in permission_blockers:
             reasons.append("CONTEXT_CONFLICT_DEFERRED_TO_INDEPENDENT_FAMILY_GATE")
             waiting.append("CONTEXT_CONFLICT_TO_RECONCILE")
@@ -97,11 +110,15 @@ def assess_eligibility(
         blockers.append("INDEPENDENT_FAMILY_CONFLICT_HIGH")
 
     # Coverage may describe many missing families, but only Structure is a hard
-    # dependency at this layer. 30m execution availability is handled separately by
-    # the execution-trigger contract so missing trigger data remains WAIT, not a
-    # false structural NO_TRADE.
+    # dependency at this layer. When Structure already owns the hard failure, its
+    # coverage summary remains diagnostic rather than becoming a duplicate blocker.
+    # 30m execution availability is handled separately by the execution-trigger
+    # contract so missing trigger data remains WAIT, not a false structural NO_TRADE.
     if CoverageFamily.STRUCTURE in coverage.critical_path_missing:
-        blockers.append("CRITICAL_STRUCTURE_COVERAGE_MISSING")
+        if structure_hard_blocked:
+            reasons.append("CRITICAL_STRUCTURE_COVERAGE_DEFERRED_TO_STRUCTURE")
+        else:
+            blockers.append("CRITICAL_STRUCTURE_COVERAGE_MISSING")
 
     if blockers:
         return EligibilityAssessment(
