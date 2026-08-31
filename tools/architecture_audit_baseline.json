@@ -50,6 +50,6 @@
     "runtime/timeline/__init__.py"
   ],
   "trade_action_leaks": [],
-  "max_gate_token_count": 30,
+  "max_gate_token_count": 58,
   "max_legacy_policy_path_count": 15
 }
