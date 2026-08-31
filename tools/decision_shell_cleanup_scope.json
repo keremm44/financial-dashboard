@@ -7,16 +7,6 @@
     "decision/buy/engine.py",
     "decision/buy/execution.py",
     "decision/sell/exits.py",
-    "decision/shared/composer.py",
-    "decision/shared/conflict.py",
-    "decision/shared/coverage.py",
-    "decision/shared/durability.py",
-    "decision/shared/environment.py",
-    "decision/shared/opportunity.py",
-    "decision/shared/participation.py",
-    "decision/shared/reaction.py",
-    "decision/shared/structural.py",
-    "decision/shared/timing.py",
     "decision/trade_lifecycle/state.py"
   ]
 }

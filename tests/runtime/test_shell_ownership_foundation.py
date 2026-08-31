@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+INITIAL_DECISION_SHELL_COUNT = 15
 
 
 def _ownership_module():
@@ -16,7 +17,7 @@ def _ownership_module():
     return module
 
 
-def test_decision_shell_cleanup_scope_is_complete_and_resolves_to_real_owners():
+def test_decision_shell_cleanup_scope_tracks_only_live_shells_and_may_shrink():
     audit = _ownership_module()
     inventory = audit.build_inventory()
     scope = audit.load_scope()
@@ -39,7 +40,7 @@ def test_decision_shell_cleanup_scope_is_complete_and_resolves_to_real_owners():
         )
     }
     assert scoped == live_decision_shells
-    assert len(scoped) == 15
+    assert len(scoped) <= INITIAL_DECISION_SHELL_COUNT
 
     rows = {row["path"]: row for row in inventory}
     for path in scoped:
