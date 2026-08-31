@@ -3,9 +3,6 @@
   "policy": "behavior_preserving",
   "public_import_contract": "preserve",
   "shells": [
-    "decision/buy/eligibility.py",
-    "decision/buy/engine.py",
-    "decision/buy/execution.py",
     "decision/sell/exits.py",
     "decision/trade_lifecycle/state.py"
   ]
