@@ -26,7 +26,6 @@
   ],
   "empty_packages": [
     "data/__init__.py",
-    "decision/models/__init__.py",
     "domains/__init__.py",
     "replay/__init__.py",
     "runtime/__init__.py",
