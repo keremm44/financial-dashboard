@@ -3,7 +3,6 @@
   "policy": "behavior_preserving",
   "public_import_contract": "preserve",
   "shells": [
-    "decision/sell/exits.py",
     "decision/trade_lifecycle/state.py"
   ]
 }
