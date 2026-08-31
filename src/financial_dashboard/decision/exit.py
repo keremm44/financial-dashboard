@@ -14,6 +14,11 @@ from .lifecycle import (
     TradeLifecycleTransition,
     transition_trade_lifecycle,
 )
+from .st_bearish_reversal import (
+    STBearishReversalAssessment,
+    assess_st_bearish_reversal,
+    refine_short_term_exit_with_bearish_reversal,
+)
 from .stabil_authority import (
     StabilDecisionAssessment,
     StabilDecisionState,
@@ -135,15 +140,10 @@ def _short_term_position_exit(snapshot: HorizonStructuralSnapshot) -> LongExitAs
             ("FRESH_LONG_EXIT_EXECUTION_EVENT",), refs,
         )
     if st.direction is StructuralDirection.SHORT and st.thesis_state is ThesisState.TRANSITIONING:
-        # Short-term positions must react faster than long-term positions. Once the
-        # canonical 1H established side is already SHORT, requiring the transition to
-        # finish before arming an exit can miss the fresh execution click and carry a
-        # large giveback. Keep the click requirement itself: this arms SELL, it does
-        # not execute SELL by structure alone.
         return LongExitAssessment(
-            ExitStage.EXIT_READY, PositionHealth.PRESSURED,
+            ExitStage.EXIT_WATCH, PositionHealth.PRESSURED,
             ("ST_ESTABLISHED_SIDE_SHORT_BUT_TRANSITIONING",),
-            ("FRESH_LONG_EXIT_EXECUTION_EVENT",), refs,
+            ("ST_TRANSITION_TO_RESOLVE",), refs,
         )
     if st.direction is StructuralDirection.LONG and st.thesis_state is ThesisState.INTACT:
         return LongExitAssessment(
@@ -176,7 +176,6 @@ def refine_short_term_exit_with_stabil(
 
     refs = _canonical_refs((*assessment.source_refs, *stabil.source_refs))
 
-    # Structure is the exit authority. Preserve every structural EXIT_READY state.
     if assessment.stage is ExitStage.EXIT_READY:
         if stabil.breakdown_confirmed:
             reason = f"STABIL_CONFIRMS_ST_EXIT:{stabil.state.value}"
@@ -200,8 +199,6 @@ def refine_short_term_exit_with_stabil(
             refs,
         )
 
-    # Stabil can warn before Structure has completed its own deterioration, but cannot
-    # create EXIT_READY or SELL on its own.
     if stabil.breakdown_confirmed:
         return LongExitAssessment(
             ExitStage.EXIT_WATCH,
@@ -255,6 +252,7 @@ def compose_position_exit_decision(
     execution_event: ExecutionTriggerEvent | None = None,
     channel_available: bool = True,
     stabil: StabilDecisionAssessment | None = None,
+    short_term_reversal: STBearishReversalAssessment | None = None,
 ) -> PositionExitDecision:
     if state.position is not PositionState.OPEN:
         raise ValueError("position exit decision requires OPEN lifecycle ownership")
@@ -273,6 +271,10 @@ def compose_position_exit_decision(
     elif metadata.entry_horizon is DecisionHorizon.SHORT_TERM:
         entry_horizon = DecisionHorizon.SHORT_TERM
         structural = _short_term_position_exit(structural_snapshot)
+        structural = refine_short_term_exit_with_bearish_reversal(
+            structural,
+            short_term_reversal,
+        )
         structural = refine_short_term_exit_with_stabil(
             structural,
             structural_snapshot.short_term,
@@ -331,6 +333,15 @@ def assess_position_exit_decision(
     structural_snapshot = build_horizon_structural_snapshot(_decision_structure_projection(snapshot.structure))
     channel_available = _execution_channel_quality(snapshot, "1h") is ContextDataQuality.VALID
     stabil = assess_stabil_authority(getattr(snapshot, "stabil_support", None))
+    short_term_reversal = None
+    if (
+        state.entry_metadata is not None
+        and state.entry_metadata.entry_horizon is DecisionHorizon.SHORT_TERM
+    ):
+        short_term_reversal = assess_st_bearish_reversal(
+            snapshot,
+            structural_snapshot.short_term,
+        )
     return compose_position_exit_decision(
         state,
         structural_snapshot,
@@ -338,6 +349,7 @@ def assess_position_exit_decision(
         execution_event=execution_event,
         channel_available=channel_available,
         stabil=stabil,
+        short_term_reversal=short_term_reversal,
     )
 
 
