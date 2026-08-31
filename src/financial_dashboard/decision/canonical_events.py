@@ -12,7 +12,6 @@ from financial_dashboard.decision_audit import DecisionEvent, DecisionSide
 from .composer import DecisionAction
 from .lifecycle import PositionState
 from .lifecycle_replay import CanonicalLifecycleReplayResult
-from .scenario import ScenarioStage
 from .structural import StructuralDirection
 
 
@@ -69,73 +68,36 @@ def _phase(row) -> str:
     return row.entry_decision.action.value
 
 
+def _audit_marker_payload(row) -> dict[str, Any]:
+    markers = row.audit_markers
+    return {
+        "scenario_qualified_at": markers.scenario_qualified_at,
+        "scenario_qualified_price": markers.scenario_qualified_price,
+        "ready_for_execution_at": markers.ready_for_execution_at,
+        "ready_for_execution_price": markers.ready_for_execution_price,
+        "exit_watch_at": markers.exit_watch_at,
+        "exit_watch_price": markers.exit_watch_price,
+        "exit_ready_at": markers.exit_ready_at,
+        "exit_ready_price": markers.exit_ready_price,
+    }
+
+
 def canonical_decision_events_from_replay(
     replay: CanonicalLifecycleReplayResult,
 ) -> tuple[DecisionEvent, ...]:
-    """Project canonical lifecycle rows into hindsight-audit events.
+    """Project canonical lifecycle rows into restart-stable hindsight-audit events.
 
-    This is a downstream adapter only. It never changes a decision, reconstructs a
-    position, or feeds hindsight information back into the decision engine.
+    Audit progression is already carried causally by the replay row. This adapter
+    never reconstructs marker history from its local call boundary, so projecting a
+    resumed tail is identical to projecting the same rows inside a cold replay.
     """
 
     events: list[DecisionEvent] = []
-    qualified_since: Any | None = None
-    qualified_price: float | None = None
-    qualified_key: tuple[str, str] | None = None
-    ready_since: Any | None = None
-    ready_price: float | None = None
-    exit_watch_since: Any | None = None
-    exit_watch_price: float | None = None
-    exit_ready_since: Any | None = None
-    exit_ready_price: float | None = None
 
     for row in replay.rows:
         snapshot = row.snapshot
         entry = row.entry_decision
         exit_decision = row.exit_decision
-
-        if row.previous_state.position is PositionState.FLAT:
-            if (
-                entry is not None
-                and entry.selected_horizon is not None
-                and entry.scenario_stage is ScenarioStage.QUALIFIED
-                and entry.arbitration.selected_scenario is not None
-            ):
-                scenario = entry.arbitration.selected_scenario
-                key = (entry.selected_horizon.value, scenario.kind.value)
-                if qualified_key != key:
-                    qualified_key = key
-                    qualified_since = snapshot.as_of
-                    qualified_price = float(snapshot.current_price)
-                    ready_since = None
-                    ready_price = None
-                if entry.action in {DecisionAction.READY, DecisionAction.BUY} and ready_since is None:
-                    ready_since = snapshot.as_of
-                    ready_price = float(snapshot.current_price)
-            else:
-                qualified_key = None
-                qualified_since = None
-                qualified_price = None
-                ready_since = None
-                ready_price = None
-            exit_watch_since = None
-            exit_watch_price = None
-            exit_ready_since = None
-            exit_ready_price = None
-        else:
-            if exit_decision is not None:
-                if exit_decision.stage.value == "EXIT_WATCH" and exit_watch_since is None:
-                    exit_watch_since = snapshot.as_of
-                    exit_watch_price = float(snapshot.current_price)
-                elif exit_decision.stage.value == "MONITOR":
-                    exit_watch_since = None
-                    exit_watch_price = None
-                if exit_decision.stage.value == "EXIT_READY" and exit_ready_since is None:
-                    exit_ready_since = snapshot.as_of
-                    exit_ready_price = float(snapshot.current_price)
-                elif exit_decision.stage.value != "EXIT_READY":
-                    exit_ready_since = None
-                    exit_ready_price = None
 
         metadata = row.current_state.entry_metadata or row.previous_state.entry_metadata
         selected_scenario = None if entry is None else entry.arbitration.selected_scenario
@@ -216,16 +178,7 @@ def canonical_decision_events_from_replay(
                 "state": None if entry.execution_state is None else entry.execution_state.value,
                 "event_consumed": entry.execution_event_consumed,
             },
-            "audit_markers": {
-                "scenario_qualified_at": qualified_since,
-                "scenario_qualified_price": qualified_price,
-                "ready_for_execution_at": ready_since,
-                "ready_for_execution_price": ready_price,
-                "exit_watch_at": exit_watch_since,
-                "exit_watch_price": exit_watch_price,
-                "exit_ready_at": exit_ready_since,
-                "exit_ready_price": exit_ready_price,
-            },
+            "audit_markers": _audit_marker_payload(row),
             "target_path": target_path_payload,
             "decision": {
                 "action": row.action.value,
@@ -255,18 +208,6 @@ def canonical_decision_events_from_replay(
                 snapshot=snapshot_payload,
             )
         )
-
-        if row.action is DecisionAction.BUY:
-            qualified_key = None
-            qualified_since = None
-            qualified_price = None
-            ready_since = None
-            ready_price = None
-        if row.action is DecisionAction.SELL:
-            exit_watch_since = None
-            exit_watch_price = None
-            exit_ready_since = None
-            exit_ready_price = None
 
     return tuple(events)
 
