@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 from .composer import DecisionAction
@@ -14,11 +14,58 @@ from .lifecycle import (
     TradeLifecycleTransition,
     transition_entry_lifecycle,
 )
+from .scenario import ScenarioStage
 from .structural import StructuralDirection
 
 if TYPE_CHECKING:
     from financial_dashboard.decision_input import DecisionInputSnapshot
     from .engine import DecisionEngineConfig
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayAuditMarkerState:
+    """Causal progression markers needed to make audit projection restart-safe.
+
+    These values are downstream audit state, not market evidence and not trading
+    policy. They record when an already-computed scenario/readiness/exit stage first
+    became active so a resumed replay produces the same event payload as a cold run.
+    """
+
+    scenario_qualified_at: Any | None = None
+    scenario_qualified_price: float | None = None
+    scenario_key: tuple[str, str] | None = None
+    ready_for_execution_at: Any | None = None
+    ready_for_execution_price: float | None = None
+    exit_watch_at: Any | None = None
+    exit_watch_price: float | None = None
+    exit_ready_at: Any | None = None
+    exit_ready_price: float | None = None
+
+    def __post_init__(self) -> None:
+        pairs = (
+            (self.scenario_qualified_at, self.scenario_qualified_price, "scenario qualified"),
+            (self.ready_for_execution_at, self.ready_for_execution_price, "ready for execution"),
+            (self.exit_watch_at, self.exit_watch_price, "exit watch"),
+            (self.exit_ready_at, self.exit_ready_price, "exit ready"),
+        )
+        for timestamp, price, label in pairs:
+            if (timestamp is None) != (price is None):
+                raise ValueError(f"{label} audit marker timestamp/price must appear together")
+            if price is not None and float(price) <= 0.0:
+                raise ValueError(f"{label} audit marker price must be positive")
+        if self.scenario_key is not None:
+            if len(self.scenario_key) != 2 or any(not str(item).strip() for item in self.scenario_key):
+                raise ValueError("scenario audit marker key must contain horizon and scenario kind")
+            if self.scenario_qualified_at is None:
+                raise ValueError("scenario audit marker key requires qualified timestamp")
+        elif self.scenario_qualified_at is not None:
+            raise ValueError("qualified audit marker requires scenario key")
+        if self.ready_for_execution_at is not None and self.scenario_qualified_at is None:
+            raise ValueError("ready audit marker requires qualified scenario marker")
+
+    @property
+    def is_empty(self) -> bool:
+        return self == ReplayAuditMarkerState()
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +78,7 @@ class CanonicalLifecycleReplayRow:
     transition: TradeLifecycleTransition
     entry_decision: EntryDecision | None
     exit_decision: PositionExitDecision | None
+    audit_markers: ReplayAuditMarkerState
     execution_proxy_used: bool = False
 
     def __post_init__(self) -> None:
@@ -61,11 +109,13 @@ class CanonicalLifecycleReplayRow:
 
 @dataclass(frozen=True, slots=True)
 class CanonicalLifecycleReplayResult:
-    """Sequential Turn 6 -> 7 -> 8 replay result with explicit ownership state."""
+    """Sequential replay result with ownership and restart-safe audit progression."""
 
     initial_state: TradeLifecycleState
     final_state: TradeLifecycleState
     rows: tuple[CanonicalLifecycleReplayRow, ...]
+    initial_audit_markers: ReplayAuditMarkerState = ReplayAuditMarkerState()
+    final_audit_markers: ReplayAuditMarkerState = ReplayAuditMarkerState()
 
     def __post_init__(self) -> None:
         expected = self.initial_state
@@ -75,6 +125,8 @@ class CanonicalLifecycleReplayResult:
             expected = row.current_state
         if expected != self.final_state:
             raise ValueError("canonical lifecycle replay final state must match row chain")
+        if not self.rows and self.initial_audit_markers != self.final_audit_markers:
+            raise ValueError("empty replay cannot mutate audit marker state")
 
 
 def _validate_initial_state(state: TradeLifecycleState) -> None:
@@ -96,6 +148,99 @@ def _proxy_event(as_of: Any, *, side: StructuralDirection, reason: str) -> Execu
     )
 
 
+def _markers_for_row(
+    markers: ReplayAuditMarkerState,
+    *,
+    snapshot: "DecisionInputSnapshot",
+    previous_state: TradeLifecycleState,
+    entry: EntryDecision | None,
+    exit_decision: PositionExitDecision | None,
+) -> ReplayAuditMarkerState:
+    if previous_state.position is PositionState.FLAT:
+        qualified_at = None
+        qualified_price = None
+        scenario_key = None
+        ready_at = None
+        ready_price = None
+        if (
+            entry is not None
+            and entry.selected_horizon is not None
+            and entry.scenario_stage is ScenarioStage.QUALIFIED
+            and entry.arbitration.selected_scenario is not None
+        ):
+            scenario = entry.arbitration.selected_scenario
+            key = (entry.selected_horizon.value, scenario.kind.value)
+            if markers.scenario_key == key:
+                qualified_at = markers.scenario_qualified_at
+                qualified_price = markers.scenario_qualified_price
+                ready_at = markers.ready_for_execution_at
+                ready_price = markers.ready_for_execution_price
+            else:
+                qualified_at = snapshot.as_of
+                qualified_price = float(snapshot.current_price)
+            scenario_key = key
+            if entry.action in {DecisionAction.READY, DecisionAction.BUY} and ready_at is None:
+                ready_at = snapshot.as_of
+                ready_price = float(snapshot.current_price)
+        return ReplayAuditMarkerState(
+            scenario_qualified_at=qualified_at,
+            scenario_qualified_price=qualified_price,
+            scenario_key=scenario_key,
+            ready_for_execution_at=ready_at,
+            ready_for_execution_price=ready_price,
+        )
+
+    exit_watch_at = markers.exit_watch_at
+    exit_watch_price = markers.exit_watch_price
+    exit_ready_at = markers.exit_ready_at
+    exit_ready_price = markers.exit_ready_price
+    if exit_decision is not None:
+        if exit_decision.stage is ExitStage.EXIT_WATCH and exit_watch_at is None:
+            exit_watch_at = snapshot.as_of
+            exit_watch_price = float(snapshot.current_price)
+        elif exit_decision.stage is ExitStage.MONITOR:
+            exit_watch_at = None
+            exit_watch_price = None
+        if exit_decision.stage is ExitStage.EXIT_READY and exit_ready_at is None:
+            exit_ready_at = snapshot.as_of
+            exit_ready_price = float(snapshot.current_price)
+        elif exit_decision.stage is not ExitStage.EXIT_READY:
+            exit_ready_at = None
+            exit_ready_price = None
+
+    return replace(
+        markers,
+        exit_watch_at=exit_watch_at,
+        exit_watch_price=exit_watch_price,
+        exit_ready_at=exit_ready_at,
+        exit_ready_price=exit_ready_price,
+    )
+
+
+def _markers_after_action(
+    markers: ReplayAuditMarkerState,
+    action: DecisionAction,
+) -> ReplayAuditMarkerState:
+    if action is DecisionAction.BUY:
+        return replace(
+            markers,
+            scenario_qualified_at=None,
+            scenario_qualified_price=None,
+            scenario_key=None,
+            ready_for_execution_at=None,
+            ready_for_execution_price=None,
+        )
+    if action is DecisionAction.SELL:
+        return replace(
+            markers,
+            exit_watch_at=None,
+            exit_watch_price=None,
+            exit_ready_at=None,
+            exit_ready_price=None,
+        )
+    return markers
+
+
 def replay_canonical_trade_lifecycle(
     snapshots: Iterable["DecisionInputSnapshot"],
     *,
@@ -103,14 +248,15 @@ def replay_canonical_trade_lifecycle(
     entry_execution_events: Mapping[Any, ExecutionTriggerEvent] | None = None,
     exit_execution_events: Mapping[Any, ExecutionTriggerEvent] | None = None,
     initial_state: TradeLifecycleState | None = None,
+    initial_audit_markers: ReplayAuditMarkerState | None = None,
     readiness_execution_proxy: bool = False,
 ) -> CanonicalLifecycleReplayResult:
     """Replay the canonical long-only ownership path over frozen snapshots.
 
-    FLAT bars evaluate only the Turn 6 entry path and can open only through the Turn 7
-    metadata transition. OPEN bars evaluate only the Turn 8 exit path. Entry and exit
-    execution maps are intentionally separate and looked up only at the current bar;
-    no event is cached or carried into a later snapshot.
+    FLAT bars evaluate only the entry path and OPEN bars evaluate only the exit path.
+    Execution events are looked up only on their current bar and never cached.
+    Audit marker state is carried independently from trading ownership so restart does
+    not alter downstream audit payloads.
 
     ``readiness_execution_proxy`` is hindsight-audit infrastructure only. When no raw
     execution event exists, it substitutes a same-bar confirmed 30m event exactly at
@@ -122,6 +268,8 @@ def replay_canonical_trade_lifecycle(
     state = initial_state or TradeLifecycleState()
     _validate_initial_state(state)
     starting_state = state
+    markers = initial_audit_markers or ReplayAuditMarkerState()
+    starting_markers = markers
     entry_events = entry_execution_events or {}
     exit_events = exit_execution_events or {}
     rows: list[CanonicalLifecycleReplayRow] = []
@@ -201,6 +349,13 @@ def replay_canonical_trade_lifecycle(
                 proxy_used = exit_decision.action is DecisionAction.SELL
             transition = transition_position_exit_lifecycle(state, exit_decision)
 
+        row_markers = _markers_for_row(
+            markers,
+            snapshot=snapshot,
+            previous_state=previous,
+            entry=entry,
+            exit_decision=exit_decision,
+        )
         state = transition.current
         rows.append(
             CanonicalLifecycleReplayRow(
@@ -210,20 +365,25 @@ def replay_canonical_trade_lifecycle(
                 transition=transition,
                 entry_decision=entry,
                 exit_decision=exit_decision,
+                audit_markers=row_markers,
                 execution_proxy_used=proxy_used,
             )
         )
+        markers = _markers_after_action(row_markers, transition.action)
         previous_as_of = snapshot.as_of
 
     return CanonicalLifecycleReplayResult(
         initial_state=starting_state,
         final_state=state,
         rows=tuple(rows),
+        initial_audit_markers=starting_markers,
+        final_audit_markers=markers,
     )
 
 
 __all__ = [
     "CanonicalLifecycleReplayResult",
     "CanonicalLifecycleReplayRow",
+    "ReplayAuditMarkerState",
     "replay_canonical_trade_lifecycle",
 ]
