@@ -135,10 +135,15 @@ def _short_term_position_exit(snapshot: HorizonStructuralSnapshot) -> LongExitAs
             ("FRESH_LONG_EXIT_EXECUTION_EVENT",), refs,
         )
     if st.direction is StructuralDirection.SHORT and st.thesis_state is ThesisState.TRANSITIONING:
+        # Short-term positions must react faster than long-term positions. Once the
+        # canonical 1H established side is already SHORT, requiring the transition to
+        # finish before arming an exit can miss the fresh execution click and carry a
+        # large giveback. Keep the click requirement itself: this arms SELL, it does
+        # not execute SELL by structure alone.
         return LongExitAssessment(
-            ExitStage.EXIT_WATCH, PositionHealth.PRESSURED,
+            ExitStage.EXIT_READY, PositionHealth.PRESSURED,
             ("ST_ESTABLISHED_SIDE_SHORT_BUT_TRANSITIONING",),
-            ("ST_TRANSITION_TO_RESOLVE",), refs,
+            ("FRESH_LONG_EXIT_EXECUTION_EVENT",), refs,
         )
     if st.direction is StructuralDirection.LONG and st.thesis_state is ThesisState.INTACT:
         return LongExitAssessment(
