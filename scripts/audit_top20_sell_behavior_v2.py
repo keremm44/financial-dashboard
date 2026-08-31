@@ -13,7 +13,7 @@ from financial_dashboard.decision.structural import build_horizon_structural_sna
 from financial_dashboard.decision.trade_exit import assess_long_exit_execution, exit_click_event
 from financial_dashboard.decision.exit import _short_term_position_exit, refine_short_term_exit_with_stabil
 
-from scripts import audit_top20_sell_behavior as base
+import audit_top20_sell_behavior as base
 
 
 def _hypothetical_st_exit_row(snapshot, *, exit_event, real_action: str) -> base.ExitRow:
