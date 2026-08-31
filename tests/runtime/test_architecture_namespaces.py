@@ -24,11 +24,10 @@ def test_runtime_replay_workspace_and_decision_namespaces_import() -> None:
         "financial_dashboard.replay.three_domain",
         "financial_dashboard.replay.market_structure",
         "financial_dashboard.workspace.market",
+        "financial_dashboard.decision",
         "financial_dashboard.decision.buy",
         "financial_dashboard.decision.sell",
-        "financial_dashboard.decision.shared.composer",
         "financial_dashboard.decision.trade_lifecycle",
-        "financial_dashboard.decision.models",
     )
     for module in modules:
         assert importlib.import_module(module) is not None
