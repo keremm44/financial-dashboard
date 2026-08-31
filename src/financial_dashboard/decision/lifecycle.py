@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
@@ -35,6 +36,7 @@ class TradeLifecycleState:
     trade_id: str | None = None
     entry_as_of: Any | None = None
     entry_metadata: PositionEntryMetadata | None = None
+    peak_price: float | None = None
 
     def __post_init__(self) -> None:
         if self.position is PositionState.FLAT:
@@ -43,12 +45,20 @@ class TradeLifecycleState:
                 or self.trade_id is not None
                 or self.entry_as_of is not None
                 or self.entry_metadata is not None
+                or self.peak_price is not None
             ):
                 raise ValueError("FLAT lifecycle state cannot carry open-trade metadata")
         elif self.exit_stage is None or self.trade_id is None or self.entry_as_of is None:
             raise ValueError("OPEN lifecycle state requires exit stage and entry metadata")
         elif self.entry_metadata is not None and self.entry_metadata.entry_as_of != self.entry_as_of:
             raise ValueError("position entry metadata must share lifecycle entry_as_of")
+
+        if self.peak_price is not None:
+            peak = float(self.peak_price)
+            if not isfinite(peak) or peak <= 0.0:
+                raise ValueError("position peak price must be finite and positive")
+            if self.entry_metadata is not None and peak < float(self.entry_metadata.entry_price):
+                raise ValueError("position peak price cannot be below entry price")
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,13 +80,33 @@ def _trade_id(as_of: Any) -> str:
     return f"trade:{iso}"
 
 
-def _open_state_with_stage(state: TradeLifecycleState, stage: ExitStage) -> TradeLifecycleState:
+def _peak_price(state: TradeLifecycleState, observed_peak: float | None) -> float | None:
+    values = []
+    if state.peak_price is not None:
+        values.append(float(state.peak_price))
+    if state.entry_metadata is not None:
+        values.append(float(state.entry_metadata.entry_price))
+    if observed_peak is not None:
+        value = float(observed_peak)
+        if not isfinite(value) or value <= 0.0:
+            raise ValueError("observed position peak must be finite and positive")
+        values.append(value)
+    return max(values) if values else None
+
+
+def _open_state_with_stage(
+    state: TradeLifecycleState,
+    stage: ExitStage,
+    *,
+    peak_price: float | None = None,
+) -> TradeLifecycleState:
     return TradeLifecycleState(
         position=PositionState.OPEN,
         exit_stage=stage,
         trade_id=state.trade_id,
         entry_as_of=state.entry_as_of,
         entry_metadata=state.entry_metadata,
+        peak_price=_peak_price(state, peak_price),
     )
 
 
@@ -88,13 +118,13 @@ def transition_trade_lifecycle(
     exit_stage: ExitStage | None = None,
     exit_execution_confirmed: bool = False,
     entry_metadata: PositionEntryMetadata | None = None,
+    position_peak_price: float | None = None,
 ) -> TradeLifecycleTransition:
     """Fold one market decision through persistent long-only ownership.
 
-    The optional ``entry_metadata`` is a compatibility bridge for the new Turn 7
-    entry path. Legacy replay callers may omit it until Turn 9 migration. When
-    supplied on the opening BUY it is frozen into the position and is never replaced
-    by later repeated BUY decisions.
+    Position ownership freezes the entry metadata and also carries a causal high-water
+    mark. The high-water mark is updated only from prices observed on or before the
+    current decision row and is cleared when the position closes.
     """
 
     requested = final.action
@@ -107,12 +137,16 @@ def transition_trade_lifecycle(
         if requested is DecisionAction.BUY:
             if entry_metadata is not None and entry_metadata.entry_as_of != as_of:
                 raise ValueError("entry metadata must be fresh at lifecycle as_of")
+            initial_peak = position_peak_price
+            if initial_peak is None and entry_metadata is not None:
+                initial_peak = float(entry_metadata.entry_price)
             current = TradeLifecycleState(
                 position=PositionState.OPEN,
                 exit_stage=ExitStage.MONITOR,
                 trade_id=_trade_id(as_of),
                 entry_as_of=as_of,
                 entry_metadata=entry_metadata,
+                peak_price=initial_peak,
             )
             return TradeLifecycleTransition(
                 state,
@@ -122,6 +156,8 @@ def transition_trade_lifecycle(
                 "LIFECYCLE_FLAT_ENTRY_EXECUTED",
                 as_of,
             )
+        if position_peak_price is not None:
+            raise ValueError("flat lifecycle cannot observe an open-position peak")
         if requested is DecisionAction.SELL:
             return TradeLifecycleTransition(
                 state,
@@ -142,9 +178,6 @@ def transition_trade_lifecycle(
             as_of,
         )
 
-    # OPEN ownership is immutable. Any metadata supplied by a later/repeated entry
-    # decision is deliberately ignored rather than backfilling or promoting the
-    # original entry horizon from later market information.
     target_stage = exit_stage or state.exit_stage or ExitStage.MONITOR
     if exit_execution_confirmed:
         if target_stage is not ExitStage.EXIT_READY:
@@ -158,7 +191,11 @@ def transition_trade_lifecycle(
             as_of,
         )
 
-    current = _open_state_with_stage(state, target_stage)
+    current = _open_state_with_stage(
+        state,
+        target_stage,
+        peak_price=position_peak_price,
+    )
     if requested is DecisionAction.BUY:
         reason = "LIFECYCLE_REPEATED_BUY_SUPPRESSED"
     elif requested is DecisionAction.SELL:
@@ -189,11 +226,7 @@ def transition_entry_lifecycle(
     *,
     execution_event: "ExecutionTriggerEvent | None" = None,
 ) -> TradeLifecycleTransition:
-    """Apply one Turn 6 entry result without reinterpreting its market semantics.
-
-    Only a FLAT->BUY transition creates metadata. Repeated BUY while OPEN is handled
-    by the existing suppression rule and cannot overwrite the original entry record.
-    """
+    """Apply one entry result without reinterpreting its market semantics."""
 
     if snapshot.as_of is None:
         raise ValueError("entry lifecycle snapshot as_of must be known")
@@ -210,9 +243,14 @@ def transition_entry_lifecycle(
 
     return transition_trade_lifecycle(
         state,
-        entry,  # EntryDecision and FinalDecision share the action contract.
+        entry,
         as_of=snapshot.as_of,
         entry_metadata=metadata,
+        position_peak_price=(
+            float(snapshot.current_price)
+            if state.position is PositionState.FLAT and entry.action is DecisionAction.BUY
+            else None
+        ),
     )
 
 
