@@ -1,6 +1,6 @@
 """SELL/exit compatibility surface over canonical exit ownership."""
 
-from .exits import (
+from ..trade_exit import (
     ExitExecutionState,
     LongExitAssessment,
     LongExitExecutionAssessment,

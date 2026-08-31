@@ -1,0 +1,38 @@
+{
+  "reexport_shells": [
+    "replay/cross_domain.py",
+    "replay/ham.py",
+    "replay/market_structure.py",
+    "replay/stabil.py",
+    "replay/structure.py",
+    "replay/targeting.py",
+    "replay/three_domain.py",
+    "replay/volatility.py",
+    "replay/volume.py",
+    "runtime/contracts.py",
+    "runtime/native/domain_runtime.py",
+    "runtime/persistence/history_runner.py",
+    "runtime/persistence/history_store.py",
+    "runtime/persistence/state.py",
+    "runtime/supporting/replay_runtime.py",
+    "runtime/timeline/causal_reducer.py",
+    "runtime/timeline/historical_stream.py",
+    "runtime/timeline/incremental_history.py",
+    "runtime/timeline/native_timeline.py",
+    "runtime/timeline/single_pass.py",
+    "runtime/timeline/state_timeline.py",
+    "ui/view_models.py",
+    "workspace/market.py"
+  ],
+  "empty_packages": [
+    "data/__init__.py",
+    "domains/__init__.py",
+    "replay/__init__.py",
+    "runtime/__init__.py",
+    "runtime/persistence/__init__.py",
+    "runtime/timeline/__init__.py"
+  ],
+  "trade_action_leaks": [],
+  "max_gate_token_count": 58,
+  "max_legacy_policy_path_count": 0
+}

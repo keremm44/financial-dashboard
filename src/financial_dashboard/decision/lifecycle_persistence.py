@@ -12,13 +12,14 @@ from typing import Any, Iterable, Mapping
 import pandas as pd
 
 from .lifecycle import ExitStage, PositionState, TradeLifecycleState
+from .lifecycle_replay import ReplayAuditMarkerState
 from .position_metadata import PositionEntryMetadata
 from .scenario import ScenarioKind
 from .structural import DecisionHorizon
 
 
-TRADE_LIFECYCLE_STATE_SCHEMA_VERSION = 1
-CANONICAL_LIFECYCLE_CONTRACT_VERSION = 1
+TRADE_LIFECYCLE_STATE_SCHEMA_VERSION = 2
+CANONICAL_LIFECYCLE_CONTRACT_VERSION = 2
 
 
 class LifecycleCheckpointStatus(StrEnum):
@@ -38,7 +39,7 @@ def _validate_sha256(value: str, *, field: str) -> None:
 
 @dataclass(frozen=True, slots=True)
 class TradeLifecycleCheckpoint:
-    """Persistent ownership plus the exact causal prefix that produced it."""
+    """Persistent ownership, audit progression and exact causal prefix identity."""
 
     symbol: str
     state: TradeLifecycleState
@@ -46,6 +47,7 @@ class TradeLifecycleCheckpoint:
     last_as_of: Any | None
     causal_prefix_digest: str
     decision_config_digest: str
+    audit_markers: ReplayAuditMarkerState = ReplayAuditMarkerState()
 
     def __post_init__(self) -> None:
         if not self.symbol.strip():
@@ -59,6 +61,8 @@ class TradeLifecycleCheckpoint:
                 raise ValueError("empty lifecycle prefix cannot carry last_as_of")
             if self.state.position is not PositionState.FLAT:
                 raise ValueError("empty lifecycle prefix must remain FLAT")
+            if not self.audit_markers.is_empty:
+                raise ValueError("empty lifecycle prefix cannot carry audit markers")
         elif self.last_as_of is None:
             raise ValueError("non-empty lifecycle prefix requires last_as_of")
         if self.state.entry_metadata is not None and self.state.entry_metadata.symbol != self.symbol:
@@ -104,6 +108,85 @@ def _timestamp_from_payload(value: Any, *, field: str, required: bool) -> pd.Tim
         raise ValueError(f"{field} must be an ISO timestamp string") from exc
 
 
+def serialize_replay_audit_marker_state(markers: ReplayAuditMarkerState) -> dict[str, Any]:
+    return {
+        "scenario_qualified_at": _timestamp_payload(markers.scenario_qualified_at),
+        "scenario_qualified_price": markers.scenario_qualified_price,
+        "scenario_key": None if markers.scenario_key is None else list(markers.scenario_key),
+        "ready_for_execution_at": _timestamp_payload(markers.ready_for_execution_at),
+        "ready_for_execution_price": markers.ready_for_execution_price,
+        "exit_watch_at": _timestamp_payload(markers.exit_watch_at),
+        "exit_watch_price": markers.exit_watch_price,
+        "exit_ready_at": _timestamp_payload(markers.exit_ready_at),
+        "exit_ready_price": markers.exit_ready_price,
+    }
+
+
+def _optional_positive_float(value: Any, *, field: str) -> float | None:
+    if value is None:
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be numeric") from exc
+    if result <= 0.0:
+        raise ValueError(f"{field} must be positive")
+    return result
+
+
+def deserialize_replay_audit_marker_state(payload: Mapping[str, Any]) -> ReplayAuditMarkerState:
+    if not isinstance(payload, Mapping):
+        raise ValueError("replay audit marker payload must be a mapping")
+    raw_key = payload.get("scenario_key")
+    scenario_key: tuple[str, str] | None
+    if raw_key is None:
+        scenario_key = None
+    else:
+        if not isinstance(raw_key, list) or len(raw_key) != 2 or any(not isinstance(item, str) for item in raw_key):
+            raise ValueError("replay audit marker scenario_key must be a two-string list")
+        scenario_key = (raw_key[0], raw_key[1])
+
+    return ReplayAuditMarkerState(
+        scenario_qualified_at=_timestamp_from_payload(
+            payload.get("scenario_qualified_at"),
+            field="audit_markers.scenario_qualified_at",
+            required=False,
+        ),
+        scenario_qualified_price=_optional_positive_float(
+            payload.get("scenario_qualified_price"),
+            field="audit_markers.scenario_qualified_price",
+        ),
+        scenario_key=scenario_key,
+        ready_for_execution_at=_timestamp_from_payload(
+            payload.get("ready_for_execution_at"),
+            field="audit_markers.ready_for_execution_at",
+            required=False,
+        ),
+        ready_for_execution_price=_optional_positive_float(
+            payload.get("ready_for_execution_price"),
+            field="audit_markers.ready_for_execution_price",
+        ),
+        exit_watch_at=_timestamp_from_payload(
+            payload.get("exit_watch_at"),
+            field="audit_markers.exit_watch_at",
+            required=False,
+        ),
+        exit_watch_price=_optional_positive_float(
+            payload.get("exit_watch_price"),
+            field="audit_markers.exit_watch_price",
+        ),
+        exit_ready_at=_timestamp_from_payload(
+            payload.get("exit_ready_at"),
+            field="audit_markers.exit_ready_at",
+            required=False,
+        ),
+        exit_ready_price=_optional_positive_float(
+            payload.get("exit_ready_price"),
+            field="audit_markers.exit_ready_price",
+        ),
+    )
+
+
 def serialize_trade_lifecycle_state(state: TradeLifecycleState) -> dict[str, Any]:
     if state.position is PositionState.OPEN and state.entry_metadata is None:
         raise ValueError("canonical persisted OPEN lifecycle requires entry metadata")
@@ -120,6 +203,7 @@ def serialize_trade_lifecycle_state(state: TradeLifecycleState) -> dict[str, Any
             "active_target_identity": metadata.active_target_identity,
             "execution_timeframe": metadata.execution_timeframe,
             "execution_observed_at": _timestamp_payload(metadata.execution_observed_at),
+            "execution_available_at": _timestamp_payload(metadata.execution_available_at),
             "execution_reason": metadata.execution_reason,
             "source_lineage": list(metadata.source_lineage),
         }
@@ -176,6 +260,7 @@ def deserialize_trade_lifecycle_state(payload: Mapping[str, Any]) -> TradeLifecy
         active_target_identity=raw.get("active_target_identity"),
         execution_timeframe=str(raw.get("execution_timeframe", "")),
         execution_observed_at=_timestamp_from_payload(raw.get("execution_observed_at"), field="entry_metadata.execution_observed_at", required=True),
+        execution_available_at=_timestamp_from_payload(raw.get("execution_available_at"), field="entry_metadata.execution_available_at", required=True),
         execution_reason=str(raw.get("execution_reason", "")),
         source_lineage=tuple(source_lineage),
     )
@@ -226,6 +311,7 @@ def serialize_trade_lifecycle_checkpoint(checkpoint: TradeLifecycleCheckpoint) -
         "causal_prefix_digest": checkpoint.causal_prefix_digest,
         "decision_config_digest": checkpoint.decision_config_digest,
         "state": serialize_trade_lifecycle_state(checkpoint.state),
+        "audit_markers": serialize_replay_audit_marker_state(checkpoint.audit_markers),
     }
 
 
@@ -252,6 +338,9 @@ def deserialize_trade_lifecycle_checkpoint(payload: Mapping[str, Any], *, expect
     state_payload = payload.get("state")
     if not isinstance(state_payload, Mapping):
         raise ValueError("trade lifecycle checkpoint state is invalid")
+    marker_payload = payload.get("audit_markers")
+    if not isinstance(marker_payload, Mapping):
+        raise ValueError("trade lifecycle checkpoint audit_markers are invalid")
     return TradeLifecycleCheckpoint(
         symbol=expected_symbol,
         state=deserialize_trade_lifecycle_state(state_payload),
@@ -259,6 +348,7 @@ def deserialize_trade_lifecycle_checkpoint(payload: Mapping[str, Any], *, expect
         last_as_of=last_as_of,
         causal_prefix_digest=causal_digest,
         decision_config_digest=config_digest,
+        audit_markers=deserialize_replay_audit_marker_state(marker_payload),
     )
 
 
@@ -318,8 +408,10 @@ __all__ = [
     "TradeLifecycleCheckpoint",
     "causal_prefix_digest",
     "decision_config_digest",
+    "deserialize_replay_audit_marker_state",
     "deserialize_trade_lifecycle_checkpoint",
     "deserialize_trade_lifecycle_state",
+    "serialize_replay_audit_marker_state",
     "serialize_trade_lifecycle_checkpoint",
     "serialize_trade_lifecycle_state",
 ]

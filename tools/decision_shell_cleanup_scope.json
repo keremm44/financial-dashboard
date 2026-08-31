@@ -1,0 +1,6 @@
+{
+  "phase": "FAZ_1_DECISION_SHELL_CLEANUP",
+  "policy": "behavior_preserving",
+  "public_import_contract": "preserve",
+  "shells": []
+}

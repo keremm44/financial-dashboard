@@ -35,6 +35,7 @@ def _metadata(horizon: DecisionHorizon) -> PositionEntryMetadata:
         active_target_identity="target:1",
         execution_timeframe="30m",
         execution_observed_at=ENTRY_AS_OF,
+        execution_available_at=ENTRY_AS_OF,
         execution_reason="ENTRY_CONFIRMED",
         source_lineage=("entry:scenario",),
     )

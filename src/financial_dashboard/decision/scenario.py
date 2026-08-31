@@ -263,8 +263,9 @@ def build_entry_scenario(
         waiting.append("ACTIVE_TARGET_PATH_NODE_DEFENDED")
         reasons.append("TARGET_PATH_DEFENSE_REQUIRES_REASSESSMENT")
 
+    # Eligibility owns the structural-transition wait. Scenario keeps the observed
+    # transition character as a reason without emitting the same wait token again.
     if structural.thesis_state is ThesisState.TRANSITIONING:
-        waiting.append("STRUCTURAL_TRANSITION_TO_RESOLVE")
         reasons.append("EXISTING_LONG_SCENARIO_IN_TRANSITION")
 
     if eligibility.state is EligibilityState.BLOCKED:

@@ -14,7 +14,11 @@ from .lifecycle_persistence import (
     causal_prefix_digest,
     decision_config_digest,
 )
-from .lifecycle_replay import CanonicalLifecycleReplayResult, replay_canonical_trade_lifecycle
+from .lifecycle_replay import (
+    CanonicalLifecycleReplayResult,
+    ReplayAuditMarkerState,
+    replay_canonical_trade_lifecycle,
+)
 
 if TYPE_CHECKING:
     from financial_dashboard.decision_input import DecisionInputSnapshot
@@ -32,8 +36,9 @@ class PersistentCanonicalLifecycleReplayRunner:
     """Resume only the unconsumed tail of a full causal DecisionInput stream.
 
     A loaded checkpoint is trusted only if the complete previously-consumed prefix,
-    same-bar entry/exit execution inputs, and decision config still match. Mismatch or
-    corrupt state fails closed instead of resetting ownership to FLAT.
+    same-bar entry/exit execution inputs, and decision config still match. Trading
+    ownership and downstream audit progression are both restored from that verified
+    checkpoint. Mismatch or corrupt state fails closed instead of resetting to FLAT.
     """
 
     def __init__(self, root: str | Path) -> None:
@@ -85,13 +90,14 @@ class PersistentCanonicalLifecycleReplayRunner:
             )
             if current_digest != checkpoint.causal_prefix_digest:
                 raise ValueError("persisted lifecycle causal prefix changed; cold replay is required")
-            if checkpoint.prefix_count:
-                if consumed_prefix[-1].as_of != checkpoint.last_as_of:
-                    raise ValueError("persisted lifecycle last_as_of no longer matches causal prefix")
+            if checkpoint.prefix_count and consumed_prefix[-1].as_of != checkpoint.last_as_of:
+                raise ValueError("persisted lifecycle last_as_of no longer matches causal prefix")
             initial_state = checkpoint.state
+            initial_audit_markers = checkpoint.audit_markers
             tail = values[checkpoint.prefix_count :]
         else:
             initial_state = TradeLifecycleState()
+            initial_audit_markers = ReplayAuditMarkerState()
             tail = values
 
         replay = replay_canonical_trade_lifecycle(
@@ -100,6 +106,7 @@ class PersistentCanonicalLifecycleReplayRunner:
             entry_execution_events=entry_events,
             exit_execution_events=exit_events,
             initial_state=initial_state,
+            initial_audit_markers=initial_audit_markers,
         )
 
         checkpoint = TradeLifecycleCheckpoint(
@@ -113,6 +120,7 @@ class PersistentCanonicalLifecycleReplayRunner:
                 exit_execution_events=exit_events,
             ),
             decision_config_digest=cfg_digest,
+            audit_markers=replay.final_audit_markers,
         )
         if not resumed or tail:
             self.store.save(checkpoint)
