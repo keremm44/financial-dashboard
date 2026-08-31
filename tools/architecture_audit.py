@@ -16,6 +16,22 @@ FORBIDDEN_TRADE_ACTION_TOKENS = frozenset({"BUY", "SELL", "HOLD", "EXIT_WATCH"})
 SYNTHESIS_ROOTS = ("domains", "engines", "context")
 DECISION_COMPATIBILITY_NAMESPACES = ("buy", "sell", "shared", "trade_lifecycle")
 
+# Positional fields that are part of the public blocker/wait contract. This keeps the
+# audit source-based: adding a new literal blocker/wait to these dataclasses is
+# visible even when the constructor uses positional arguments instead of keywords.
+_GATE_POSITIONAL_FIELDS: dict[str, dict[str, int]] = {
+    "PermissionEnvelope": {"blocking_reasons": 4, "waiting_for": 5},
+    "EligibilityAssessment": {"blockers": 2, "waiting_for": 3},
+    "TimingAssessment": {"waiting_for": 4},
+    "EntryScenarioAssessment": {"blockers": 12, "waiting_for": 13},
+    "EntryScenarioArbitration": {"waiting_for": 8},
+    "EntryDecision": {"blockers": 7, "waiting_for": 8},
+    "FinalDecision": {"blockers": 7, "waiting_for": 8},
+    "LongExitAssessment": {"waiting_for": 3},
+    "LongExitExecutionAssessment": {"waiting_for": 2},
+    "PositionExitDecision": {"waiting_for": 9},
+}
+
 
 @dataclass(frozen=True, slots=True)
 class ArchitectureAuditReport:
@@ -35,8 +51,8 @@ class ArchitectureAuditReport:
 
     @property
     def duplicate_gate_owner_count(self) -> int:
-        # Filled by gate-registry validation later. The architecture audit itself
-        # intentionally does not import Decision policy modules.
+        # Gate-registry semantic validation is kept in a Decision-layer test so this
+        # source audit never imports market policy while scanning architecture.
         return 0
 
     @property
@@ -145,6 +161,22 @@ def _literal_tokens(node: ast.AST) -> Iterable[str]:
     if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
         for item in node.elts:
             yield from _literal_tokens(item)
+        return
+    if isinstance(node, ast.BoolOp):
+        for value in node.values:
+            yield from _literal_tokens(value)
+        return
+    if isinstance(node, ast.IfExp):
+        yield from _literal_tokens(node.body)
+        yield from _literal_tokens(node.orelse)
+
+
+def _call_name(node: ast.Call) -> str | None:
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    return None
 
 
 def scan_gate_tokens() -> tuple[str, ...]:
@@ -155,7 +187,7 @@ def scan_gate_tokens() -> tuple[str, ...]:
     context_permission = SOURCE_ROOT / "context" / "permissions.py"
     paths = [*decision_root.rglob("*.py"), context_permission]
     for path in paths:
-        if not path.exists():
+        if not path.exists() or path.name == "gate_registry.py":
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
@@ -169,7 +201,20 @@ def scan_gate_tokens() -> tuple[str, ...]:
             for keyword in node.keywords:
                 if keyword.arg in {"blockers", "blocking_reasons", "waiting_for"}:
                     values.update(_literal_tokens(keyword.value))
+            name = _call_name(node)
+            positions = _GATE_POSITIONAL_FIELDS.get(name or "", {})
+            for index in positions.values():
+                if index < len(node.args):
+                    values.update(_literal_tokens(node.args[index]))
     return tuple(sorted(values))
+
+
+def _is_decision_import(node: ast.ImportFrom) -> bool:
+    module = node.module or ""
+    if module.startswith("financial_dashboard.decision"):
+        return True
+    # AST represents ``from ..decision import`` as module="decision", level=2.
+    return bool(node.level and (module == "decision" or module.startswith("decision.")))
 
 
 def scan_trade_action_leaks() -> tuple[str, ...]:
@@ -182,10 +227,8 @@ def scan_trade_action_leaks() -> tuple[str, ...]:
                 if isinstance(node, ast.Constant) and isinstance(node.value, str):
                     if node.value.strip().upper() in FORBIDDEN_TRADE_ACTION_TOKENS:
                         leaks.add(f"{_relative(path)}:{node.lineno}:{node.value.strip().upper()}")
-                elif isinstance(node, ast.ImportFrom):
-                    module = node.module or ""
-                    if module.startswith("financial_dashboard.decision") or module.startswith("..decision"):
-                        leaks.add(f"{_relative(path)}:{node.lineno}:DECISION_IMPORT")
+                elif isinstance(node, ast.ImportFrom) and _is_decision_import(node):
+                    leaks.add(f"{_relative(path)}:{node.lineno}:DECISION_IMPORT")
     return tuple(sorted(leaks))
 
 
