@@ -98,6 +98,14 @@ def assess_long_position_exit(snapshot: HorizonStructuralSnapshot) -> LongExitAs
 
     st_pressure = st_pressures_open_long(st)
     if st_pressure is not None:
+        if lt.direction is StructuralDirection.LONG and lt.thesis_state is ThesisState.INTACT:
+            return LongExitAssessment(
+                ExitStage.EXIT_WATCH,
+                PositionHealth.PROTECTED,
+                (st_pressure, "LT_PRIMARY_LONG_THESIS_STILL_INTACT"),
+                ("LT_PRIMARY_STRUCTURE_DETERIORATION_OR_PEAK_PROTECTION",),
+                refs,
+            )
         return LongExitAssessment(
             ExitStage.EXIT_READY, PositionHealth.PRESSURED,
             (st_pressure,), ("FRESH_LONG_EXIT_EXECUTION_EVENT",), refs,
@@ -128,9 +136,9 @@ def assess_long_position_exit(snapshot: HorizonStructuralSnapshot) -> LongExitAs
             )
         if relation is HorizonRelation.COUNTER_REACTION:
             return LongExitAssessment(
-                ExitStage.EXIT_READY, PositionHealth.PRESSURED,
+                ExitStage.EXIT_WATCH, PositionHealth.PROTECTED,
                 ("LT_LONG_INTACT_ST_COUNTER_REACTION",),
-                ("FRESH_LONG_EXIT_EXECUTION_EVENT",), refs,
+                ("LT_PRIMARY_STRUCTURE_DETERIORATION_OR_PEAK_PROTECTION",), refs,
             )
         if relation is HorizonRelation.PULLBACK:
             return LongExitAssessment(
