@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from financial_dashboard.context.envelope import ContextDataQuality
 from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.decision.calibration import load_opportunity_calibration
@@ -24,7 +25,6 @@ from financial_dashboard.decision.structural import build_horizon_structural_sna
 from financial_dashboard.decision.timeline_cache import DecisionTimelineCacheMiss, load_frozen_decision_timeline
 from financial_dashboard.decision.trade_exit import assess_long_exit_execution, exit_click_event
 from financial_dashboard.decision_audit.research import detect_large_market_moves
-from financial_dashboard.context.envelope import ContextDataQuality
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +80,12 @@ def _first(rows, predicate):
     return next((row for row in rows if predicate(row)), None)
 
 
+def _format_event(row, hours) -> str:
+    if row is None:
+        return "-"
+    return f"{row.as_of}@{row.price:.2f} ({hours:+.1f}h)"
+
+
 def _hypothetical_st_exit_row(snapshot, *, exit_event, real_action: str) -> ExitRow:
     structural_snapshot = build_horizon_structural_snapshot(
         _decision_structure_projection(snapshot.structure)
@@ -92,13 +98,12 @@ def _hypothetical_st_exit_row(snapshot, *, exit_event, real_action: str) -> Exit
         stabil,
     )
     click = exit_click_event(exit_event)
-    channel_available = (
-        _execution_channel_quality(snapshot, "1h") is ContextDataQuality.VALID
-    )
+    channel_available = _execution_channel_quality(snapshot, "1h") is ContextDataQuality.VALID
+    armed = _token(structural.stage) == "EXIT_READY"
     execution = assess_long_exit_execution(
         structural,
         as_of=snapshot.as_of,
-        event=click if _token(structural.stage) == "EXIT_READY" else None,
+        event=click if armed else None,
         execution_timeframe="1h",
         channel_available=channel_available,
     )
@@ -125,9 +130,8 @@ def _hypothetical_st_exit_row(snapshot, *, exit_event, real_action: str) -> Exit
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Read-only SELL audit around the peaks of the top price-only 4H rises. "
-            "It evaluates the current short-term exit engine as if a long position existed, "
-            "so BUY coverage does not limit SELL diagnosis."
+            "Read-only SELL audit around the peaks of the largest price-only 4H rises. "
+            "It evaluates current short-term exit behavior as if a long position existed."
         )
     )
     parser.add_argument("cache_root", type=Path)
@@ -141,10 +145,8 @@ def main() -> None:
     parser.add_argument("--detail-giveback-pct", type=float, default=3.0)
     args = parser.parse_args()
 
-    if args.top < 1:
-        raise SystemExit("--top must be >= 1")
-    if args.pre_bars < 0 or args.post_bars < 1:
-        raise SystemExit("--pre-bars must be >= 0 and --post-bars must be >= 1")
+    if args.top < 1 or args.pre_bars < 0 or args.post_bars < 1:
+        raise SystemExit("Invalid --top/--pre-bars/--post-bars values")
 
     store = ParquetOHLCVStore(args.cache_root)
     symbol = normalize_symbol(args.symbol)
@@ -163,7 +165,6 @@ def main() -> None:
 
     calibration, calibration_path = _load_calibration(args.cache_root, symbol)
     config = DecisionEngineConfig(opportunity_calibration=calibration)
-
     entry_events, exit_events = detect_1h_execution_events(snapshots)
     lifecycle = replay_canonical_trade_lifecycle(
         snapshots,
@@ -199,16 +200,7 @@ def main() -> None:
     print("DOMAIN_REPLAY\tNOT_RUN")
     print(f"CALIBRATION\t{calibration_path}")
     print(f"SNAPSHOTS\t{len(snapshots)}")
-    print(
-        "WINDOW_RULE\t"
-        f"nearest causal snapshot to 4H peak, pre={args.pre_bars} hourly rows, "
-        f"post={args.post_bars} hourly rows"
-    )
-    print(
-        "DETAIL_RULE\t"
-        f"show detail when post-peak drop >= {args.detail_drop_pct:g}% or "
-        f"first hypothetical SELL gives back >= {args.detail_giveback_pct:g}%"
-    )
+    print(f"WINDOW\tpre={args.pre_bars} hourly rows; post={args.post_bars} hourly rows")
     print()
 
     summaries = []
@@ -218,9 +210,8 @@ def main() -> None:
         anchor = _nearest_snapshot_index(snapshots, move.end_time)
         start_i = max(0, anchor - args.pre_bars)
         end_i = min(len(snapshots), anchor + args.post_bars + 1)
-        window_snapshots = snapshots[start_i:end_i]
         rows: list[ExitRow] = []
-        for snapshot in window_snapshots:
+        for snapshot in snapshots[start_i:end_i]:
             as_of = pd.Timestamp(snapshot.as_of)
             event = decisions_by_time.get(as_of)
             real_action = "-" if event is None else _token(event.action)
@@ -237,68 +228,57 @@ def main() -> None:
         first_watch = _first(rows, lambda row: row.stage == "EXIT_WATCH")
         first_ready = _first(rows, lambda row: row.stage == "EXIT_READY")
         first_sell = _first(rows, lambda row: row.hypothetical_action == "SELL")
-        post_rows = [row for row in rows if row.as_of >= peak_time]
-        if not post_rows:
-            post_rows = rows[args.pre_bars:]
+        real_sell = _first(rows, lambda row: row.real_action == "SELL")
+        post_rows = [row for row in rows if row.as_of >= peak_time] or rows[args.pre_bars:]
         min_post = min((row.price for row in post_rows), default=peak_price)
         max_post = max((row.price for row in post_rows), default=peak_price)
         max_drop = max(0.0, -_pct_from_peak(peak_price, min_post))
         post_retake_pct = max(0.0, _pct_from_peak(peak_price, max_post))
-        sell_giveback = None if first_sell is None else max(
-            0.0, -_pct_from_peak(peak_price, first_sell.price)
-        )
-        sell_hours = None if first_sell is None else _hours_from_peak(peak_time, first_sell.as_of)
+        sell_giveback = None if first_sell is None else max(0.0, -_pct_from_peak(peak_price, first_sell.price))
         watch_hours = None if first_watch is None else _hours_from_peak(peak_time, first_watch.as_of)
         ready_hours = None if first_ready is None else _hours_from_peak(peak_time, first_ready.as_of)
-        real_sell = _first(rows, lambda row: row.real_action == "SELL")
+        sell_hours = None if first_sell is None else _hours_from_peak(peak_time, first_sell.as_of)
 
-        summary = {
+        item = {
             "rank": rank,
             "move_pct": float(move.move_pct),
-            "start_time": pd.Timestamp(move.start_time),
             "peak_time": peak_time,
             "peak_price": peak_price,
             "first_watch": first_watch,
             "first_ready": first_ready,
             "first_sell": first_sell,
             "real_sell": real_sell,
-            "max_drop": max_drop,
-            "post_retake_pct": post_retake_pct,
-            "sell_giveback": sell_giveback,
-            "sell_hours": sell_hours,
             "watch_hours": watch_hours,
             "ready_hours": ready_hours,
+            "sell_hours": sell_hours,
+            "sell_giveback": sell_giveback,
+            "max_drop": max_drop,
+            "post_retake_pct": post_retake_pct,
             "rows": rows,
         }
-        summaries.append(summary)
-        if max_drop >= float(args.detail_drop_pct) or (
-            sell_giveback is not None and sell_giveback >= float(args.detail_giveback_pct)
+        summaries.append(item)
+        if max_drop >= args.detail_drop_pct or (
+            sell_giveback is not None and sell_giveback >= args.detail_giveback_pct
         ):
-            detailed.append(summary)
+            detailed.append(item)
 
     print("SUMMARY")
     print("-------")
     for item in summaries:
-        first_watch = item["first_watch"]
-        first_ready = item["first_ready"]
-        first_sell = item["first_sell"]
+        watch_text = _format_event(item["first_watch"], item["watch_hours"]) if item["first_watch"] else "-"
+        ready_text = _format_event(item["first_ready"], item["ready_hours"]) if item["first_ready"] else "-"
+        sell_text = _format_event(item["first_sell"], item["sell_hours"]) if item["first_sell"] else "-"
         real_sell = item["real_sell"]
+        real_sell_text = "-" if real_sell is None else f"{real_sell.as_of}@{real_sell.price:.2f}"
+        giveback_text = "-" if item["sell_giveback"] is None else f"{item['sell_giveback']:.2f}%"
         print(
             f"#{item['rank']:02d} move=+{item['move_pct']:.2f}% "
             f"peak={item['peak_time']}@{item['peak_price']:.2f} "
             f"post_drop={item['max_drop']:.2f}% retake={item['post_retake_pct']:.2f}%"
         )
-        print(
-            "  FIRST "
-            f"watch={'-' if first_watch is None else f'{first_watch.as_of} ({item[\"watch_hours\"]:+.1f}h)'} "
-            f"ready={'-' if first_ready is None else f'{first_ready.as_of} ({item[\"ready_hours\"]:+.1f}h)'} "
-            f"sell={'-' if first_sell is None else f'{first_sell.as_of}@{first_sell.price:.2f} ({item[\"sell_hours\"]:+.1f}h)'}"
-        )
-        print(
-            "  SELL_QUALITY "
-            f"giveback={'-' if item['sell_giveback'] is None else f'{item[\"sell_giveback\"]:.2f}%'} "
-            f"real_sell={'-' if real_sell is None else f'{real_sell.as_of}@{real_sell.price:.2f}'}"
-        )
+        print(f"  first_watch={watch_text}")
+        print(f"  first_ready={ready_text}")
+        print(f"  hypothetical_sell={sell_text} giveback={giveback_text} real_sell={real_sell_text}")
     print()
 
     print("DETAILED_WINDOWS")
@@ -328,19 +308,15 @@ def main() -> None:
         print()
 
     late_sell = sum(
-        1
-        for item in summaries
-        if item["sell_giveback"] is not None
-        and item["sell_giveback"] >= float(args.detail_giveback_pct)
+        1 for item in summaries
+        if item["sell_giveback"] is not None and item["sell_giveback"] >= args.detail_giveback_pct
     )
     no_sell_after_big_drop = sum(
-        1
-        for item in summaries
-        if item["max_drop"] >= float(args.detail_drop_pct) and item["first_sell"] is None
+        1 for item in summaries
+        if item["max_drop"] >= args.detail_drop_pct and item["first_sell"] is None
     )
     early_sell_then_retake = sum(
-        1
-        for item in summaries
+        1 for item in summaries
         if item["first_sell"] is not None
         and item["sell_hours"] is not None
         and item["sell_hours"] < 0.0
@@ -350,17 +326,17 @@ def main() -> None:
     print("---------")
     print(f"moves={len(summaries)}")
     print(f"detailed={len(detailed)}")
-    print(f"sell_giveback_ge_{args.detail_giveback_pct:g}pct={late_sell}")
+    print(f"late_sell_giveback_ge_{args.detail_giveback_pct:g}pct={late_sell}")
     print(f"big_drop_without_hypothetical_sell={no_sell_after_big_drop}")
     print(f"pre_peak_sell_then_peak_retake={early_sell_then_retake}")
     print()
     print("READING GUIDE")
     print("-------------")
-    print("1. This is a read-only counterfactual SELL audit; no BUY or SELL rule is changed.")
-    print("2. 'hypo=SELL' means the current short-term exit engine would have sold if a short-term long position existed at that snapshot.")
-    print("3. The window begins before the detected 4H peak so early deterioration is visible.")
-    print("4. A pre-peak SELL followed by a peak retake is evidence of possible over-sensitivity, not automatically a good exit.")
-    print("5. A large post-peak drop with late/no SELL is the main candidate for architectural SELL delay.")
+    print("1. Read-only counterfactual SELL audit; trading rules are unchanged.")
+    print("2. hypo=SELL means the current ST exit engine would sell if an ST long existed at that hour.")
+    print("3. The window starts before the detected 4H peak, so early deterioration is visible.")
+    print("4. Pre-peak SELL followed by recovery above the peak warns about over-sensitive exits.")
+    print("5. Large post-peak drop with late/no SELL is the main architectural-delay candidate.")
     print("TOP20_SELL_BEHAVIOR_AUDIT_OK")
 
 
