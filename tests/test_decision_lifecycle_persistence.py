@@ -17,6 +17,7 @@ from financial_dashboard.decision.lifecycle_persistence import (
     deserialize_trade_lifecycle_state,
     serialize_trade_lifecycle_state,
 )
+from financial_dashboard.decision.lifecycle_replay import replay_canonical_trade_lifecycle
 from financial_dashboard.decision.persistent_lifecycle_replay import PersistentCanonicalLifecycleReplayRunner
 from financial_dashboard.decision.position_metadata import PositionEntryMetadata
 from financial_dashboard.decision.scenario import ScenarioKind, ScenarioPresence, ScenarioStage
@@ -194,6 +195,44 @@ def test_persistent_runner_processes_only_new_tail_and_preserves_ownership(tmp_p
     assert same.replay.rows == ()
     assert same.replay.final_state.position is PositionState.FLAT
     assert CALLS == []
+
+
+def test_persistent_resume_reconstructs_same_action_and_state_chain_as_cold_replay(tmp_path):
+    t1 = pd.Timestamp("2026-01-05 10:00")
+    t2 = pd.Timestamp("2026-01-05 10:30")
+    t3 = pd.Timestamp("2026-01-05 11:00")
+    snapshots = (
+        _Snapshot("TEST", t1, 100.0, entry_action=DecisionAction.BUY),
+        _Snapshot("TEST", t2, 101.0),
+        _Snapshot("TEST", t3, 99.0, exit_action=DecisionAction.SELL),
+    )
+    entry_events = {t1: _event(t1, StructuralDirection.LONG)}
+    exit_events = {t3: _event(t3, StructuralDirection.SHORT)}
+
+    cold = replay_canonical_trade_lifecycle(
+        snapshots,
+        entry_execution_events=entry_events,
+        exit_execution_events=exit_events,
+    )
+
+    runner = PersistentCanonicalLifecycleReplayRunner(tmp_path)
+    prefix = runner.run(
+        "TEST",
+        snapshots[:2],
+        entry_execution_events=entry_events,
+        exit_execution_events=exit_events,
+    )
+    resumed = runner.run(
+        "TEST",
+        snapshots,
+        entry_execution_events=entry_events,
+        exit_execution_events=exit_events,
+    )
+
+    reconstructed_rows = (*prefix.replay.rows, *resumed.replay.rows)
+    assert [row.action for row in reconstructed_rows] == [row.action for row in cold.rows]
+    assert [row.current_state for row in reconstructed_rows] == [row.current_state for row in cold.rows]
+    assert resumed.replay.final_state == cold.final_state
 
 
 def test_persistent_runner_fails_closed_when_consumed_prefix_changes(tmp_path):
