@@ -1,6 +1,6 @@
 """Trade lifecycle compatibility surface over canonical lifecycle ownership."""
 
-from .state import (
+from ..lifecycle import (
     ExitStage,
     PositionState,
     TradeLifecycleState,

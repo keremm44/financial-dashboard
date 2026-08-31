@@ -30,11 +30,13 @@ def test_repository_architecture_baseline_does_not_expand() -> None:
     assert report.trade_action_leaks == ()
 
 
-def test_shell_classifier_catches_explicit_and_star_reexports() -> None:
+def test_shell_classifier_catches_explicit_and_star_reexports(tmp_path) -> None:
     audit = _audit_module()
 
-    explicit = ROOT / "src" / "financial_dashboard" / "decision" / "buy" / "engine.py"
-    star = ROOT / "src" / "financial_dashboard" / "replay" / "ham.py"
+    explicit = tmp_path / "explicit.py"
+    explicit.write_text("from example import thing\n__all__ = ['thing']\n", encoding="utf-8")
+    star = tmp_path / "star.py"
+    star.write_text("from example import *\n", encoding="utf-8")
 
     assert audit.classify_module(explicit) == "explicit"
     assert audit.classify_module(star) == "star"
