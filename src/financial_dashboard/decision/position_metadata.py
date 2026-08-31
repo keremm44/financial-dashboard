@@ -31,16 +31,22 @@ class PositionEntryMetadata:
     active_target_identity: str | None
     execution_timeframe: str
     execution_observed_at: Any
+    execution_available_at: Any
     execution_reason: str
     source_lineage: tuple[str, ...]
 
     def __post_init__(self) -> None:
         if not self.symbol.strip():
             raise ValueError("position entry metadata symbol must be non-empty")
-        if self.entry_as_of is None or self.execution_observed_at is None:
+        if self.entry_as_of is None or self.execution_observed_at is None or self.execution_available_at is None:
             raise ValueError("position entry metadata timestamps must be known")
         if self.entry_as_of != self.execution_observed_at:
             raise ValueError("position execution must be fresh at entry_as_of")
+        try:
+            if self.execution_available_at > self.entry_as_of:
+                raise ValueError("position execution availability cannot be after entry_as_of")
+        except TypeError as exc:
+            raise TypeError("position entry metadata timestamps must be comparable") from exc
         if not isfinite(float(self.entry_price)) or float(self.entry_price) <= 0.0:
             raise ValueError("position entry price must be finite and positive")
         if self.scenario_kind is ScenarioKind.NONE:
@@ -119,6 +125,7 @@ def build_position_entry_metadata(
         active_target_identity=scenario.active_target_identity,
         execution_timeframe=execution_event.timeframe.strip().lower(),
         execution_observed_at=execution_event.observed_at,
+        execution_available_at=execution_event.available_at,
         execution_reason=execution_event.reason.strip(),
         source_lineage=tuple(sorted(set(entry.source_lineage))),
     )
