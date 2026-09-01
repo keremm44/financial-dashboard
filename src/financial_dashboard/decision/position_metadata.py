@@ -38,10 +38,14 @@ class STInitialDefendedAnchor:
     def __post_init__(self) -> None:
         if not isinstance(self.kind, STDefendedAnchorKind):
             raise ValueError("ST trade-memory defended anchor kind is invalid")
-        if not self.identity.strip():
-            raise ValueError("ST trade-memory defended anchor identity must be non-empty")
-        if not self.timeframe.strip():
-            raise ValueError("ST trade-memory defended anchor timeframe must be non-empty")
+        if not isinstance(self.identity, str) or not self.identity.strip() or self.identity != self.identity.strip():
+            raise ValueError("ST trade-memory defended anchor identity must be a canonical string")
+        if (
+            not isinstance(self.timeframe, str)
+            or not self.timeframe.strip()
+            or self.timeframe != self.timeframe.strip().lower()
+        ):
+            raise ValueError("ST trade-memory defended anchor timeframe must be canonical")
         if not isfinite(float(self.low)) or not isfinite(float(self.high)):
             raise ValueError("ST trade-memory defended anchor bounds must be finite")
         if float(self.low) > float(self.high):
@@ -75,10 +79,22 @@ class STTradeMemory:
                 raise ValueError("unresolved ST trade memory cannot invent a defended anchor")
             return
 
-        if self.economic_mission is STEconomicMission.UNRESOLVED:
-            raise ValueError("resolved ST trade memory requires a resolved economic mission")
+        expected_mission = {
+            STThesisFamily.PULLBACK_CONTINUATION: STEconomicMission.CONTINUE_AFTER_BUYER_REGAIN,
+            STThesisFamily.BREAKOUT_ACCEPTANCE: STEconomicMission.EXPAND_FROM_ACCEPTED_HIGHER_AREA,
+            STThesisFamily.FAILED_SELL_RECLAIM: STEconomicMission.CAPTURE_FAILED_SELL_RECLAIM,
+        }[self.thesis_family]
+        expected_anchor_kind = {
+            STThesisFamily.PULLBACK_CONTINUATION: STDefendedAnchorKind.REACTION_ZONE,
+            STThesisFamily.BREAKOUT_ACCEPTANCE: STDefendedAnchorKind.BREAKOUT_ROLE_SUPPORT,
+            STThesisFamily.FAILED_SELL_RECLAIM: STDefendedAnchorKind.FAILED_SELL_RECLAIM_LEVEL,
+        }[self.thesis_family]
+        if self.economic_mission is not expected_mission:
+            raise ValueError("ST trade-memory thesis family and economic mission are inconsistent")
         if self.initial_defended_anchor is None:
             raise ValueError("resolved ST trade memory requires the entry-time defended anchor")
+        if self.initial_defended_anchor.kind is not expected_anchor_kind:
+            raise ValueError("ST trade-memory thesis family and defended anchor are inconsistent")
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +140,12 @@ class PositionEntryMetadata:
             raise ValueError("position entry price must be finite and positive")
         if self.scenario_kind is ScenarioKind.NONE:
             raise ValueError("open position metadata requires a concrete entry scenario")
+        if self.active_target_identity is not None and (
+            not isinstance(self.active_target_identity, str)
+            or not self.active_target_identity.strip()
+            or self.active_target_identity != self.active_target_identity.strip()
+        ):
+            raise ValueError("position entry target identity must be a canonical string when present")
         if self.execution_timeframe.strip().lower() != "30m":
             raise ValueError("v1 position entry execution timeframe is fixed to 30m")
         if not self.execution_reason.strip():
@@ -136,7 +158,7 @@ class PositionEntryMetadata:
         if (
             self.st_trade_memory is not None
             and self.st_trade_memory.thesis_family is not STThesisFamily.UNRESOLVED
-            and (self.active_target_identity is None or not self.active_target_identity.strip())
+            and self.active_target_identity is None
         ):
             raise ValueError("resolved ST trade memory requires the frozen initial target reference")
 
