@@ -4,7 +4,7 @@ import importlib.util
 from pathlib import Path
 import sys
 
-from financial_dashboard.decision.gate_authority import GateAuthority
+from financial_dashboard.decision.gate_authority import GateAuthority, HARD_GATE_OWNERSHIP
 from financial_dashboard.decision.gate_registry import (
     GATE_REGISTRY,
     GateSemantic,
@@ -46,6 +46,8 @@ def test_registry_patterns_are_unique_and_templates_are_unambiguous():
     examples = {
         "STRUCTURE_DATA_UNAVAILABLE": GateAuthority.STRUCTURE,
         "STRUCTURAL_THESIS_INVALIDATED": GateAuthority.STRUCTURE,
+        "STABIL_LONG_ENTRY_CONTRADICTION": GateAuthority.STABIL,
+        "STABIL_RECOVERY_TO_CONFIRM": GateAuthority.STABIL,
         "30m:SETUP_TRIGGER_DATA": GateAuthority.TIMING,
         "30m:EXECUTION_TRIGGER_DATA": GateAuthority.EXECUTION,
         "ACTION_SIDE_NOT_PERMITTED:SHORT": GateAuthority.ACTION_CAPABILITY,
@@ -56,6 +58,23 @@ def test_registry_patterns_are_unique_and_templates_are_unambiguous():
         definition = gate_definition(token)
         assert definition is not None
         assert definition.owner is owner
+
+
+def test_stabil_has_exactly_one_hard_gate_and_one_wait_contract():
+    hard = gate_definition("STABIL_LONG_ENTRY_CONTRADICTION")
+    wait = gate_definition("STABIL_RECOVERY_TO_CONFIRM")
+
+    assert hard is not None
+    assert hard.owner is GateAuthority.STABIL
+    assert hard.semantic is GateSemantic.HARD_BLOCK
+    assert hard.evidence_family == "stabil"
+    assert wait is not None
+    assert wait.owner is GateAuthority.STABIL
+    assert wait.semantic is GateSemantic.WAIT
+    assert wait.evidence_family == "stabil"
+    assert [
+        item.rule for item in HARD_GATE_OWNERSHIP if item.owner is GateAuthority.STABIL
+    ] == ["STABIL_LONG_ENTRY_CONTRADICTION"]
 
 
 def test_structural_transition_wait_has_one_source_owner():

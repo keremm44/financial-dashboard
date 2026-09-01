@@ -79,6 +79,11 @@ GATE_REGISTRY: tuple[GateDefinition, ...] = (
     GateDefinition("PERMISSION_TO_OPEN", GateAuthority.PERMISSION, GateSemantic.WAIT, "permission"),
     GateDefinition("CONTEXT_CONFLICT_TO_RECONCILE", GateAuthority.CONFLICT, GateSemantic.WAIT, "context_conflict"),
 
+    # Stabil owns only fresh-LONG entry contradiction/recovery readiness. Exact native
+    # matrix rows remain on the Stabil policy assessment for attribution.
+    GateDefinition("STABIL_LONG_ENTRY_CONTRADICTION", GateAuthority.STABIL, GateSemantic.HARD_BLOCK, "stabil"),
+    GateDefinition("STABIL_RECOVERY_TO_CONFIRM", GateAuthority.STABIL, GateSemantic.WAIT, "stabil"),
+
     # Independent environment/opportunity/conflict/coverage gates.
     GateDefinition("VOLATILITY_SHOCK", GateAuthority.ENVIRONMENT, GateSemantic.HARD_BLOCK, "volatility"),
     GateDefinition("OPPORTUNITY_NONE", GateAuthority.OPPORTUNITY, GateSemantic.HARD_BLOCK, "targeting"),

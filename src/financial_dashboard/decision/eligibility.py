@@ -11,6 +11,7 @@ from .coverage import CoverageAssessment, CoverageFamily
 from .environment import EnvironmentAssessment, EnvironmentRisk
 from .gate_authority import GateAuthority, deferred_permission_blocker_owner
 from .opportunity import OpportunityAssessment, OpportunityState
+from .stabil_policy import StabilEntryPolicyAssessment, StabilPolicyEffect
 from .structural import StructuralAssessment, StructuralDirection, ThesisState
 from .timing import TimingAssessment, TimingState
 
@@ -46,12 +47,14 @@ def assess_eligibility(
     conflict: ConflictAssessment,
     environment: EnvironmentAssessment,
     coverage: CoverageAssessment,
+    stabil_policy: StabilEntryPolicyAssessment | None = None,
 ) -> EligibilityAssessment:
     """Compose accepted hard gates and soft WAIT conditions hierarchically.
 
     This function does not produce BUY/SELL. It decides only whether a fresh action
     path is blocked, still waiting, or market-eligible. Supporting weakness is not
-    promoted into a structural thesis change.
+    promoted into a structural thesis change. Stabil policy applies only to a fresh
+    LONG path; it has no Structure-direction or position-exit authority.
     """
 
     blockers: list[str] = []
@@ -100,6 +103,16 @@ def assess_eligibility(
         GateState.CONDITIONAL,
     }:
         waiting.append("PERMISSION_SIDE_TO_RESOLVE")
+
+    # Stabil is independent fresh-LONG entry evidence. A hard contradiction blocks a
+    # new LONG without mutating Structure direction/thesis and without affecting an
+    # existing position's exit lifecycle.
+    if (
+        structural.direction is StructuralDirection.LONG
+        and stabil_policy is not None
+        and stabil_policy.effect is StabilPolicyEffect.HARD_CONTRADICTION
+    ):
+        blockers.append("STABIL_LONG_ENTRY_CONTRADICTION")
 
     # G5/G6/G7.
     if environment.risk is EnvironmentRisk.HARD_BLOCK:
@@ -154,6 +167,13 @@ def assess_eligibility(
     for family in coverage.critical_path_missing:
         if family is not CoverageFamily.STRUCTURE:
             waiting.append(f"CRITICAL_COVERAGE:{family.value}")
+
+    if (
+        structural.direction is StructuralDirection.LONG
+        and stabil_policy is not None
+        and stabil_policy.effect is StabilPolicyEffect.WAIT
+    ):
+        waiting.append("STABIL_RECOVERY_TO_CONFIRM")
 
     if environment.risk is EnvironmentRisk.ELEVATED:
         reasons.append("ENVIRONMENT_RISK_ELEVATED_SOFT")
