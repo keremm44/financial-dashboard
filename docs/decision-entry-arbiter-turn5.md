@@ -1,25 +1,36 @@
 # Entry Scenario Arbiter — Turn 5
 
-Turn 5 adds a non-action horizon ownership layer above the Turn 4 Scenario Engine.
+Turn 5B keeps LT and ST technical evaluation independent, then resolves the one horizon that may reach entry finalization.
 
-## Canonical priority
+## Canonical policy
 
-```text
-LONG_TERM > SHORT_TERM
-```
+The arbiter is **qualification-first with a LONG_TERM tie-break**. It is not a score comparison and it is not blanket ST-first.
 
-The arbiter implements the hierarchy as a semantic rule, not a score comparison:
+1. If LONG_TERM is `PRESENT + QUALIFIED`, LONG_TERM is selected.
+2. Otherwise, if SHORT_TERM is `PRESENT + QUALIFIED`, SHORT_TERM is selected even when LONG_TERM is `PRESENT` but non-qualified or LONG_TERM presence is `UNKNOWN`.
+3. If neither horizon is qualified and LONG_TERM is `PRESENT`, LONG_TERM retains deterministic ownership of its blocked/developing non-action state.
+4. If LONG_TERM is `UNKNOWN` and there is no qualified SHORT_TERM setup, ownership remains unresolved.
+5. If LONG_TERM is `ABSENT`, a present SHORT_TERM scenario owns its own state as before.
+6. At most one horizon is selected.
 
-1. If the LONG_TERM scenario is `PRESENT`, LONG_TERM owns the decision.
-2. SHORT_TERM is considered only when LONG_TERM is explicitly `ABSENT`.
-3. LONG_TERM `UNKNOWN` never means absence, so SHORT_TERM cannot be selected while LT presence is unresolved.
-4. If LONG_TERM is absent and SHORT_TERM is present, SHORT_TERM owns the decision.
-5. At most one horizon can be selected.
+### Matrix
 
-A blocked or developing LONG_TERM scenario is still present and therefore retains ownership. This prevents a locally stronger/cleaner SHORT_TERM setup from bypassing the higher-priority opportunity class.
+| LONG_TERM | SHORT_TERM | Selection |
+| --- | --- | --- |
+| QUALIFIED | QUALIFIED | LONG_TERM |
+| QUALIFIED | non-qualified / unknown / absent | LONG_TERM |
+| PRESENT non-qualified | QUALIFIED | SHORT_TERM |
+| UNKNOWN | QUALIFIED | SHORT_TERM |
+| PRESENT non-qualified | PRESENT non-qualified | LONG_TERM |
+| UNKNOWN | PRESENT non-qualified / UNKNOWN / ABSENT | unresolved LT ownership |
+| ABSENT | PRESENT | SHORT_TERM |
+| ABSENT | UNKNOWN | unresolved ST ownership |
+| ABSENT | ABSENT | none |
 
-## Non-action boundary
+This removes the old rule where mere LT presence or unresolved LT presence could veto an independently qualified ST setup. It deliberately does **not** make ST win when both horizons are technically qualified.
 
-Arbitration does not emit `READY`, `BUY`, `SELL`, `HOLD`, or lifecycle transitions. It only identifies the scenario owner that Turn 6 may evaluate for entry execution.
+## Boundaries
 
-The result exposes `is_actionable_signal = False` explicitly.
+Arbitration still emits no `READY`, `BUY`, `SELL`, `HOLD`, execution lifecycle, exit policy, position sizing, or capital-allocation rule. It only selects the horizon whose already-prepared technical assessment may proceed to the existing Entry layer.
+
+Because this changes trading semantics, the Decision contract version is bumped from 2 to 3. A checkpoint created under the previous Decision semantics cannot silently resume under this policy and must cold replay.

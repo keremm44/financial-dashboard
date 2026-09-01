@@ -34,7 +34,7 @@ from .structural import (
 from .timing import TimingAssessment, assess_timing
 
 
-DECISION_CONTRACT_VERSION = 2
+DECISION_CONTRACT_VERSION = 3
 
 
 @dataclass(frozen=True, slots=True)
