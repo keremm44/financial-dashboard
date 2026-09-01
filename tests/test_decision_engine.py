@@ -5,14 +5,25 @@ import sys
 from types import SimpleNamespace
 
 import financial_dashboard.decision.engine as engine_module
-from financial_dashboard.context.envelope import ContextDataQuality
+from financial_dashboard.context.envelope import (
+    CausalFamily,
+    ContextDataQuality,
+    ContextDomain,
+    FactRef,
+    SourceFamily,
+)
 from financial_dashboard.context.permissions import GateState, PermissionEnvelope, PermissionScope, PermittedSide
 from financial_dashboard.decision.composer import DecisionAction
 from financial_dashboard.decision.conflict import ConflictAssessment, ConflictState
 from financial_dashboard.decision.coverage import CoverageAssessment, CoverageFamily
 from financial_dashboard.decision.durability import DurabilityAssessment, DurabilityState
-from financial_dashboard.decision.eligibility import EligibilityAssessment, EligibilityState
-from financial_dashboard.decision.environment import EnvironmentAlignment, EnvironmentAssessment, EnvironmentRisk
+from financial_dashboard.decision.eligibility import EligibilityAssessment, EligibilityState, assess_eligibility
+from financial_dashboard.decision.environment import (
+    EnvironmentAlignment,
+    EnvironmentAssessment,
+    EnvironmentRisk,
+    assess_environment,
+)
 from financial_dashboard.decision.execution import ExecutionTriggerEvent, ExecutionTriggerState
 from financial_dashboard.decision.opportunity import OpportunityAssessment, OpportunityState
 from financial_dashboard.decision.participation import ParticipationAssessment, ParticipationState
@@ -162,6 +173,48 @@ def _patch_pipeline(monkeypatch, *, side=StructuralDirection.LONG, calls=None):
     )
 
 
+def _environment_ref(timeframe: str, regime: VolatilityRangeRegime) -> FactRef:
+    return FactRef(
+        domain=ContextDomain.VOLATILITY,
+        fact_type="VOLATILITY_ENVIRONMENT",
+        symbol="TEST",
+        timeframe=timeframe,
+        native_id=f"ENV:{timeframe}:{regime.value}",
+        native_state=regime.value,
+        origin_time=10,
+        confirmed_at=10,
+        available_at=10,
+        lineage_id=f"ENV:{timeframe}",
+        causal_family=CausalFamily.REGIME,
+        source_family=SourceFamily.PRICE_DERIVED_INDICATOR,
+        data_quality=ContextDataQuality.VALID,
+    )
+
+
+def _volatility_environment_projection(
+    *,
+    four_hour: VolatilityRangeRegime,
+    one_hour: VolatilityRangeRegime,
+):
+    regimes = {"4h": four_hour, "1h": one_hour}
+
+    def for_timeframe(timeframe: str):
+        regime = regimes[timeframe]
+        return SimpleNamespace(
+            ref=_environment_ref(timeframe, regime),
+            range_regime=regime,
+            expansion_character=ExpansionCharacter.NEUTRAL,
+            expansion_direction=0,
+        )
+
+    return SimpleNamespace(for_timeframe=for_timeframe)
+
+
+def _use_real_environment_gate(monkeypatch) -> None:
+    monkeypatch.setattr(engine_module, "assess_environment", assess_environment)
+    monkeypatch.setattr(engine_module, "assess_eligibility", assess_eligibility)
+
+
 def _baseline_event(snapshot, result, *, event_consumed: bool):
     return {
         "timestamp": str(snapshot.as_of),
@@ -202,10 +255,46 @@ def test_lt_and_st_use_distinct_role_aware_supporting_timeframes(monkeypatch):
     engine_module.assess_horizon_decision(snapshot, DecisionHorizon.SHORT_TERM)
 
     assert calls["participation"] == ["4h", "1h"]
-    assert calls["environment"] == ["4h", "1h"]
+    assert calls["environment"] == ["4h", "4h"]
     assert calls["timing"] == ["1h", "30m"]
     assert calls["reaction"][0] == ("1d", "4h", "2h", "1h")
     assert calls["reaction"][2] == ("4h", "2h", "1h", "30m")
+
+
+def test_short_term_environment_uses_4h_shock_while_structure_stays_1h(monkeypatch):
+    _patch_pipeline(monkeypatch)
+    _use_real_environment_gate(monkeypatch)
+    snapshot = _snapshot()
+    snapshot.volatility_environment = _volatility_environment_projection(
+        four_hour=VolatilityRangeRegime.SHOCK,
+        one_hour=VolatilityRangeRegime.BALANCED,
+    )
+
+    prepared = engine_module.prepare_horizon_assessment(snapshot, DecisionHorizon.SHORT_TERM)
+
+    assert prepared.structural.authority_timeframe == "1h"
+    assert prepared.environment.source_refs[0].timeframe == "4h"
+    assert prepared.environment.risk is EnvironmentRisk.HARD_BLOCK
+    assert prepared.eligibility.state is EligibilityState.BLOCKED
+    assert "VOLATILITY_SHOCK" in prepared.eligibility.blockers
+
+
+def test_short_term_does_not_reuse_1h_structure_row_as_environment_authority(monkeypatch):
+    _patch_pipeline(monkeypatch)
+    _use_real_environment_gate(monkeypatch)
+    snapshot = _snapshot()
+    snapshot.volatility_environment = _volatility_environment_projection(
+        four_hour=VolatilityRangeRegime.BALANCED,
+        one_hour=VolatilityRangeRegime.SHOCK,
+    )
+
+    prepared = engine_module.prepare_horizon_assessment(snapshot, DecisionHorizon.SHORT_TERM)
+
+    assert prepared.structural.authority_timeframe == "1h"
+    assert prepared.environment.source_refs[0].timeframe == "4h"
+    assert prepared.environment.risk is EnvironmentRisk.NORMAL
+    assert prepared.eligibility.state is EligibilityState.ELIGIBLE
+    assert "VOLATILITY_SHOCK" not in prepared.eligibility.blockers
 
 
 def test_engine_stops_at_ready_without_fresh_execution_event(monkeypatch):
