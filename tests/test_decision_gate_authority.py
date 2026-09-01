@@ -28,6 +28,7 @@ def test_hard_gate_rules_have_one_declared_owner():
     assert {item.owner for item in HARD_GATE_OWNERSHIP} == {
         GateAuthority.STRUCTURE,
         GateAuthority.PERMISSION,
+        GateAuthority.STABIL,
         GateAuthority.ENVIRONMENT,
         GateAuthority.OPPORTUNITY,
         GateAuthority.CONFLICT,
