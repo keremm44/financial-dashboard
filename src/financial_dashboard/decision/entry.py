@@ -181,7 +181,10 @@ def assess_entry_decision(
 ) -> EntryDecision:
     """Evaluate the complete Turn 4 -> Turn 5 -> Turn 6 entry chain causally."""
 
-    arbitration = snapshot.entry_arbitration(config=config)
+    from .arbiter import prepare_entry_arbitration
+
+    prepared_arbitration = prepare_entry_arbitration(snapshot, config=config)
+    arbitration = prepared_arbitration.arbitration
     scenario = arbitration.selected_scenario
 
     if scenario is None or scenario.stage is not ScenarioStage.QUALIFIED:
@@ -190,12 +193,14 @@ def assess_entry_decision(
         # remain fresh-at-as_of by contract.
         return compose_entry_decision(arbitration)
 
-    from .engine import assess_horizon_decision
+    from .engine import finalize_horizon_assessment
 
-    assessment = assess_horizon_decision(
+    selected_prepared = prepared_arbitration.selected_prepared
+    if selected_prepared is None:
+        raise ValueError("qualified selected scenario requires prepared horizon assessment")
+    assessment = finalize_horizon_assessment(
         snapshot,
-        arbitration.selected_horizon,
-        config=config,
+        selected_prepared.assessment,
         execution_event=execution_event,
     )
     return compose_entry_decision(

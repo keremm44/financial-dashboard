@@ -49,6 +49,33 @@ class DecisionEngineConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class PreparedHorizonAssessment:
+    """Execution-independent LT/ST market and eligibility assessment.
+
+    This is the single prepared result shared by scenario arbitration and the final
+    execution step. It intentionally stops before execution/final action composition
+    so a selected horizon never has to rebuild Structure through Eligibility.
+    """
+
+    horizon: DecisionHorizon
+    as_of: object
+    config: DecisionEngineConfig
+    structural_snapshot: HorizonStructuralSnapshot
+    structural: StructuralAssessment
+    permission: PermissionEnvelope
+    durability: DurabilityAssessment
+    reaction: ReactionAssessment
+    timing_reaction: ReactionAssessment
+    participation: ParticipationAssessment
+    environment: EnvironmentAssessment
+    opportunity: OpportunityAssessment
+    coverage: CoverageAssessment
+    conflict: ConflictAssessment
+    timing: TimingAssessment
+    eligibility: EligibilityAssessment
+
+
+@dataclass(frozen=True, slots=True)
 class HorizonDecisionAssessment:
     horizon: DecisionHorizon
     as_of: object
@@ -250,20 +277,13 @@ def _additional_lineage(
     return tuple(sorted(values))
 
 
-def assess_horizon_decision(
+def prepare_horizon_assessment(
     snapshot: DecisionInputSnapshot,
     horizon: DecisionHorizon,
     *,
     config: DecisionEngineConfig | None = None,
-    execution_event: ExecutionTriggerEvent | None = None,
-) -> HorizonDecisionAssessment:
-    """Build one fully typed LT or ST v1 decision assessment.
-
-    The engine does not search history or infer fresh execution edges from sticky
-    snapshots. A BUY/SELL can occur only when ``execution_event`` is supplied as a
-    causal event for the current ``as_of``. Without it, an otherwise eligible path
-    stops at READY.
-    """
+) -> PreparedHorizonAssessment:
+    """Build Structure-through-Eligibility exactly once for one frozen horizon."""
 
     cfg = config or DecisionEngineConfig()
     decision_structure = _decision_structure_projection(snapshot.structure)
@@ -336,32 +356,11 @@ def assess_horizon_decision(
         environment=environment,
         coverage=coverage,
     )
-    execution = assess_execution_trigger(
-        structural.direction,
-        as_of=snapshot.as_of,
-        timeframe=cfg.execution_timeframe,
-        data_quality=snapshot.quality_for_timeframe(cfg.execution_timeframe),
-        event=execution_event,
-    )
-    final = compose_final_decision(
-        structural,
-        eligibility=eligibility,
-        execution=execution,
-        policy=cfg.action_policy,
-        additional_lineage=_additional_lineage(
-            durability=durability,
-            reaction=reaction,
-            participation=participation,
-            environment=environment,
-            timing=timing,
-            opportunity=opportunity,
-            conflict=conflict,
-        ),
-    )
 
-    return HorizonDecisionAssessment(
+    return PreparedHorizonAssessment(
         horizon=horizon,
         as_of=snapshot.as_of,
+        config=cfg,
         structural_snapshot=structural_snapshot,
         structural=structural,
         permission=permission,
@@ -374,14 +373,93 @@ def assess_horizon_decision(
         coverage=coverage,
         conflict=conflict,
         timing=timing,
-        execution=execution,
         eligibility=eligibility,
+    )
+
+
+def finalize_horizon_assessment(
+    snapshot: DecisionInputSnapshot,
+    prepared: PreparedHorizonAssessment,
+    *,
+    execution_event: ExecutionTriggerEvent | None = None,
+) -> HorizonDecisionAssessment:
+    """Apply only the fresh execution event and final composer to a prepared horizon."""
+
+    if prepared.as_of != snapshot.as_of:
+        raise ValueError("prepared horizon assessment must share snapshot as_of")
+
+    cfg = prepared.config
+    execution = assess_execution_trigger(
+        prepared.structural.direction,
+        as_of=snapshot.as_of,
+        timeframe=cfg.execution_timeframe,
+        data_quality=snapshot.quality_for_timeframe(cfg.execution_timeframe),
+        event=execution_event,
+    )
+    final = compose_final_decision(
+        prepared.structural,
+        eligibility=prepared.eligibility,
+        execution=execution,
+        policy=cfg.action_policy,
+        additional_lineage=_additional_lineage(
+            durability=prepared.durability,
+            reaction=prepared.reaction,
+            participation=prepared.participation,
+            environment=prepared.environment,
+            timing=prepared.timing,
+            opportunity=prepared.opportunity,
+            conflict=prepared.conflict,
+        ),
+    )
+
+    return HorizonDecisionAssessment(
+        horizon=prepared.horizon,
+        as_of=prepared.as_of,
+        structural_snapshot=prepared.structural_snapshot,
+        structural=prepared.structural,
+        permission=prepared.permission,
+        durability=prepared.durability,
+        reaction=prepared.reaction,
+        timing_reaction=prepared.timing_reaction,
+        participation=prepared.participation,
+        environment=prepared.environment,
+        opportunity=prepared.opportunity,
+        coverage=prepared.coverage,
+        conflict=prepared.conflict,
+        timing=prepared.timing,
+        execution=execution,
+        eligibility=prepared.eligibility,
         final=final,
+    )
+
+
+def assess_horizon_decision(
+    snapshot: DecisionInputSnapshot,
+    horizon: DecisionHorizon,
+    *,
+    config: DecisionEngineConfig | None = None,
+    execution_event: ExecutionTriggerEvent | None = None,
+) -> HorizonDecisionAssessment:
+    """Compatibility composition of prepare + execution/finalization.
+
+    The wrapper preserves the existing public API and all callers that need one full
+    assessment. Scenario/entry orchestration can share the prepared assessment to
+    avoid rebuilding the market/policy chain after arbitration.
+    """
+
+    prepared = prepare_horizon_assessment(snapshot, horizon, config=config)
+    return finalize_horizon_assessment(
+        snapshot,
+        prepared,
+        execution_event=execution_event,
     )
 
 
 __all__ = [
     "DecisionEngineConfig",
     "HorizonDecisionAssessment",
+    "PreparedHorizonAssessment",
     "assess_horizon_decision",
+    "finalize_horizon_assessment",
+    "prepare_horizon_assessment",
 ]
