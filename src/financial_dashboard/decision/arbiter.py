@@ -4,7 +4,13 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from .scenario import EntryScenarioAssessment, PreparedEntryScenario, ScenarioPresence, prepare_entry_scenario
+from .scenario import (
+    EntryScenarioAssessment,
+    PreparedEntryScenario,
+    ScenarioPresence,
+    ScenarioStage,
+    prepare_entry_scenario,
+)
 from .structural import DecisionHorizon
 
 if TYPE_CHECKING:
@@ -28,11 +34,12 @@ class ArbiterState(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class EntryScenarioArbitration:
-    """Non-action ownership decision between LT and ST entry scenarios.
+    """Non-action ownership decision between independently assessed LT/ST scenarios.
 
-    The arbiter never compares scores or readiness strength. LONG_TERM has semantic
-    priority. SHORT_TERM is considered only after LONG_TERM is proven ABSENT;
-    UNKNOWN is not absence and therefore cannot trigger a fallback.
+    Qualification has priority over mere scenario presence. A qualified SHORT_TERM
+    setup may therefore proceed when LONG_TERM is blocked, developing, or unresolved.
+    When both horizons are qualified, LONG_TERM remains the deterministic tie-break.
+    The arbiter never compares scores and never emits a trading action.
     """
 
     state: ArbiterState
@@ -47,7 +54,7 @@ class EntryScenarioArbitration:
 
     @property
     def is_actionable_signal(self) -> bool:
-        """Arbitration owns horizon selection only; Turn 6 owns entry actions."""
+        """Arbitration owns horizon selection only; Entry owns actions."""
 
         return False
 
@@ -79,14 +86,115 @@ def _validate_horizons(
         raise ValueError("short_term scenario must have SHORT_TERM horizon")
 
 
+def _is_qualified(scenario: EntryScenarioAssessment) -> bool:
+    return (
+        scenario.presence is ScenarioPresence.PRESENT
+        and scenario.stage is ScenarioStage.QUALIFIED
+    )
+
+
+def _selected(
+    *,
+    horizon: DecisionHorizon,
+    scenario: EntryScenarioAssessment,
+    long_term: EntryScenarioAssessment,
+    short_term: EntryScenarioAssessment,
+    suppressed_horizons: tuple[DecisionHorizon, ...],
+    reasons: tuple[str, ...],
+) -> EntryScenarioArbitration:
+    return EntryScenarioArbitration(
+        state=ArbiterState.SELECTED,
+        selection=(
+            ArbiterSelection.LONG_TERM
+            if horizon is DecisionHorizon.LONG_TERM
+            else ArbiterSelection.SHORT_TERM
+        ),
+        selected_horizon=horizon,
+        selected_scenario=scenario,
+        long_term=long_term,
+        short_term=short_term,
+        suppressed_horizons=suppressed_horizons,
+        reasons=reasons,
+        waiting_for=(),
+    )
+
+
 def arbitrate_entry_scenarios(
     long_term: EntryScenarioAssessment,
     short_term: EntryScenarioAssessment,
 ) -> EntryScenarioArbitration:
-    """Apply LONG_TERM-first, SHORT_TERM-fallback ownership deterministically."""
+    """Select one horizon by qualification first, with an LT tie-break.
+
+    The two horizon scenarios are evaluated independently before arbitration. Presence
+    alone is not allowed to veto a qualified setup on the other horizon. LONG_TERM
+    keeps deterministic priority only when it is itself qualified, or when neither
+    side is qualified and an observed LT scenario still needs to own its non-action
+    state. This preserves single-horizon entry ownership without suppressing a valid
+    ST setup behind a weaker or unresolved LT state.
+    """
 
     _validate_horizons(long_term, short_term)
 
+    # Equal technical qualification keeps the existing deterministic LT tie-break.
+    if _is_qualified(long_term):
+        suppressed = (
+            (DecisionHorizon.SHORT_TERM,)
+            if short_term.presence is ScenarioPresence.PRESENT
+            else ()
+        )
+        reasons = ["LONG_TERM_SCENARIO_HAS_PRIORITY"]
+        if suppressed:
+            reasons.append("SHORT_TERM_SCENARIO_SUPPRESSED_BY_LONG_TERM")
+        return _selected(
+            horizon=DecisionHorizon.LONG_TERM,
+            scenario=long_term,
+            long_term=long_term,
+            short_term=short_term,
+            suppressed_horizons=suppressed,
+            reasons=tuple(reasons),
+        )
+
+    # A technically qualified ST setup is not vetoed by mere LT presence or an LT
+    # UNKNOWN state. This is the intentional Turn 5B policy change.
+    if _is_qualified(short_term):
+        if long_term.presence is ScenarioPresence.PRESENT:
+            return _selected(
+                horizon=DecisionHorizon.SHORT_TERM,
+                scenario=short_term,
+                long_term=long_term,
+                short_term=short_term,
+                suppressed_horizons=(DecisionHorizon.LONG_TERM,),
+                reasons=(
+                    "SHORT_TERM_QUALIFIED_OVERRIDES_NONQUALIFIED_LONG_TERM",
+                    "LONG_TERM_SCENARIO_SUPPRESSED_BY_SHORT_TERM_QUALIFICATION",
+                ),
+            )
+        if long_term.presence is ScenarioPresence.UNKNOWN:
+            return _selected(
+                horizon=DecisionHorizon.SHORT_TERM,
+                scenario=short_term,
+                long_term=long_term,
+                short_term=short_term,
+                suppressed_horizons=(),
+                reasons=(
+                    "SHORT_TERM_QUALIFIED_WHILE_LONG_TERM_PRESENCE_UNRESOLVED",
+                    "LONG_TERM_UNKNOWN_DOES_NOT_VETO_QUALIFIED_SHORT_TERM",
+                ),
+            )
+        return _selected(
+            horizon=DecisionHorizon.SHORT_TERM,
+            scenario=short_term,
+            long_term=long_term,
+            short_term=short_term,
+            suppressed_horizons=(),
+            reasons=(
+                "LONG_TERM_SCENARIO_ABSENT",
+                "SHORT_TERM_FALLBACK_SELECTED",
+            ),
+        )
+
+    # No qualified setup exists. Preserve deterministic ownership of an observed LT
+    # non-action state rather than swapping between two blocked/developing scenarios.
     if long_term.presence is ScenarioPresence.PRESENT:
         suppressed = (
             (DecisionHorizon.SHORT_TERM,)
@@ -96,20 +204,16 @@ def arbitrate_entry_scenarios(
         reasons = ["LONG_TERM_SCENARIO_HAS_PRIORITY"]
         if suppressed:
             reasons.append("SHORT_TERM_SCENARIO_SUPPRESSED_BY_LONG_TERM")
-        return EntryScenarioArbitration(
-            state=ArbiterState.SELECTED,
-            selection=ArbiterSelection.LONG_TERM,
-            selected_horizon=DecisionHorizon.LONG_TERM,
-            selected_scenario=long_term,
+        return _selected(
+            horizon=DecisionHorizon.LONG_TERM,
+            scenario=long_term,
             long_term=long_term,
             short_term=short_term,
             suppressed_horizons=suppressed,
             reasons=tuple(reasons),
-            waiting_for=(),
         )
 
-    # UNKNOWN is not a negative vote. The ST path may be visible for diagnostics,
-    # but it cannot own the decision until LT is proven absent.
+    # UNKNOWN remains unresolved when there is no independently qualified ST setup.
     if long_term.presence is ScenarioPresence.UNKNOWN:
         return EntryScenarioArbitration(
             state=ArbiterState.WAITING_FOR_LONG_TERM_RESOLUTION,
@@ -123,17 +227,16 @@ def arbitrate_entry_scenarios(
                 if short_term.presence is ScenarioPresence.PRESENT
                 else ()
             ),
-            reasons=("LONG_TERM_PRESENCE_UNRESOLVED_NO_SHORT_TERM_FALLBACK",),
+            reasons=("LONG_TERM_PRESENCE_UNRESOLVED_NO_QUALIFIED_SHORT_TERM",),
             waiting_for=("LONG_TERM_SCENARIO_PRESENCE_TO_RESOLVE",),
         )
 
-    # Only explicit LT absence opens the ST fallback branch.
+    # LT is explicitly absent. A present ST scenario owns its own non-action state,
+    # including BLOCKED/DEVELOPING, exactly as before.
     if short_term.presence is ScenarioPresence.PRESENT:
-        return EntryScenarioArbitration(
-            state=ArbiterState.SELECTED,
-            selection=ArbiterSelection.SHORT_TERM,
-            selected_horizon=DecisionHorizon.SHORT_TERM,
-            selected_scenario=short_term,
+        return _selected(
+            horizon=DecisionHorizon.SHORT_TERM,
+            scenario=short_term,
             long_term=long_term,
             short_term=short_term,
             suppressed_horizons=(),
@@ -141,7 +244,6 @@ def arbitrate_entry_scenarios(
                 "LONG_TERM_SCENARIO_ABSENT",
                 "SHORT_TERM_FALLBACK_SELECTED",
             ),
-            waiting_for=(),
         )
 
     if short_term.presence is ScenarioPresence.UNKNOWN:
@@ -178,7 +280,7 @@ def prepare_entry_arbitration(
     *,
     config: "DecisionEngineConfig | None" = None,
 ) -> PreparedEntryArbitration:
-    """Prepare LT/ST once, then apply the unchanged strict ownership rule."""
+    """Prepare LT/ST once, then apply qualification-aware horizon ownership."""
 
     long_term = prepare_entry_scenario(snapshot, DecisionHorizon.LONG_TERM, config=config)
     short_term = prepare_entry_scenario(snapshot, DecisionHorizon.SHORT_TERM, config=config)
@@ -195,7 +297,7 @@ def assess_entry_arbitration(
     *,
     config: "DecisionEngineConfig | None" = None,
 ) -> EntryScenarioArbitration:
-    """Build both causal scenarios then apply strict horizon ownership."""
+    """Build both causal scenarios then apply qualification-aware ownership."""
 
     return prepare_entry_arbitration(snapshot, config=config).arbitration
 

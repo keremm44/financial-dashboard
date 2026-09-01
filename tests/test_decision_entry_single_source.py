@@ -5,7 +5,8 @@ import financial_dashboard.decision.engine as engine_module
 import financial_dashboard.decision.entry as entry_module
 from financial_dashboard.context.envelope import ContextDataQuality
 from financial_dashboard.decision.composer import ActionSide, DecisionAction, FinalDecision
-from financial_dashboard.decision.eligibility import EligibilityState
+from financial_dashboard.decision.eligibility import EligibilityAssessment, EligibilityState
+from financial_dashboard.decision.entry_qualification import EntryQualificationAssessment
 from financial_dashboard.decision.execution import ExecutionTriggerState
 from financial_dashboard.decision.market_state import StructuralRegime
 from financial_dashboard.decision.opportunity import OpportunityState
@@ -21,10 +22,22 @@ from financial_dashboard.decision.target_path import TargetPathStatus
 
 
 def _scenario(horizon):
+    eligibility = EligibilityAssessment(
+        EligibilityState.ELIGIBLE,
+        (),
+        (),
+        (),
+    )
+    qualification = EntryQualificationAssessment(
+        state=ScenarioStage.QUALIFIED,
+        eligibility=eligibility,
+        target_path_status=TargetPathStatus.READY,
+        target_path_waiting_for=(),
+        reasons=(),
+    )
     return EntryScenarioAssessment(
         horizon=horizon,
         presence=ScenarioPresence.PRESENT,
-        stage=ScenarioStage.QUALIFIED,
         kind=ScenarioKind.CONTINUATION,
         structural_direction=StructuralDirection.LONG,
         thesis_state=ThesisState.INTACT,
@@ -32,10 +45,10 @@ def _scenario(horizon):
         opportunity_state=OpportunityState.MODERATE,
         target_path_status=TargetPathStatus.READY,
         active_target_identity=f"{horizon.value}:target",
-        eligibility_state=EligibilityState.ELIGIBLE,
+        eligibility=eligibility,
+        qualification=qualification,
         reasons=("OBSERVED_LONG_ENTRY_SCENARIO",),
-        blockers=(),
-        waiting_for=(),
+        presence_waiting_for=(),
         source_lineage=(f"{horizon.value}:scenario",),
     )
 

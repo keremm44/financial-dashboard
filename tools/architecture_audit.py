@@ -23,7 +23,8 @@ _GATE_POSITIONAL_FIELDS: dict[str, dict[str, int]] = {
     "PermissionEnvelope": {"blocking_reasons": 4, "waiting_for": 5},
     "EligibilityAssessment": {"blockers": 2, "waiting_for": 3},
     "TimingAssessment": {"waiting_for": 4},
-    "EntryScenarioAssessment": {"blockers": 12, "waiting_for": 13},
+    "EntryQualificationAssessment": {"target_path_waiting_for": 3},
+    "EntryScenarioAssessment": {"presence_waiting_for": 12},
     "EntryScenarioArbitration": {"waiting_for": 8},
     "EntryDecision": {"blockers": 7, "waiting_for": 8},
     "FinalDecision": {"blockers": 7, "waiting_for": 8},
@@ -31,6 +32,19 @@ _GATE_POSITIONAL_FIELDS: dict[str, dict[str, int]] = {
     "LongExitExecutionAssessment": {"waiting_for": 2},
     "PositionExitDecision": {"waiting_for": 9},
 }
+_GATE_APPEND_COLLECTIONS = frozenset({
+    "blockers",
+    "waiting",
+    "waiting_for",
+    "target_waiting",
+})
+_GATE_KEYWORD_FIELDS = frozenset({
+    "blockers",
+    "blocking_reasons",
+    "waiting_for",
+    "presence_waiting_for",
+    "target_path_waiting_for",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,11 +209,11 @@ def scan_gate_tokens() -> tuple[str, ...]:
                 continue
             if isinstance(node.func, ast.Attribute) and node.func.attr in {"append", "extend"}:
                 owner = node.func.value
-                if isinstance(owner, ast.Name) and owner.id in {"blockers", "waiting", "waiting_for"}:
+                if isinstance(owner, ast.Name) and owner.id in _GATE_APPEND_COLLECTIONS:
                     for arg in node.args:
                         values.update(_literal_tokens(arg))
             for keyword in node.keywords:
-                if keyword.arg in {"blockers", "blocking_reasons", "waiting_for"}:
+                if keyword.arg in _GATE_KEYWORD_FIELDS:
                     values.update(_literal_tokens(keyword.value))
             name = _call_name(node)
             positions = _GATE_POSITIONAL_FIELDS.get(name or "", {})

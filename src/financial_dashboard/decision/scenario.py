@@ -6,11 +6,16 @@ from typing import TYPE_CHECKING
 
 from financial_dashboard.context.envelope import ContextDataQuality
 
-from .eligibility import EligibilityState
+from .eligibility import EligibilityAssessment, EligibilityState
+from .entry_qualification import (
+    EntryQualificationAssessment,
+    ScenarioStage,
+    assess_entry_qualification,
+)
 from .market_state import HorizonMarketState, StructuralRegime
 from .opportunity import OpportunityState
 from .structural import DecisionHorizon, HorizonRelation, StructuralDirection, ThesisState
-from .target_path import TargetPath, TargetPathNodeState, TargetPathStatus
+from .target_path import TargetPath, TargetPathStatus
 
 if TYPE_CHECKING:
     from financial_dashboard.decision_input import DecisionInputSnapshot
@@ -23,14 +28,6 @@ class ScenarioPresence(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
-class ScenarioStage(StrEnum):
-    QUALIFIED = "QUALIFIED"
-    DEVELOPING = "DEVELOPING"
-    BLOCKED = "BLOCKED"
-    UNAVAILABLE = "UNAVAILABLE"
-    NOT_APPLICABLE = "NOT_APPLICABLE"
-
-
 class ScenarioKind(StrEnum):
     CONTINUATION = "CONTINUATION"
     PULLBACK_CONTINUATION = "PULLBACK_CONTINUATION"
@@ -41,17 +38,17 @@ class ScenarioKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class EntryScenarioAssessment:
-    """Non-action description of one horizon's long-entry opportunity.
+    """Non-action description of one horizon's observed long-entry scenario.
 
-    Presence answers whether an observed long-entry scenario exists. Stage answers
-    whether that scenario is currently qualified, developing, or blocked. Keeping
-    those questions separate is important for later arbitration: a blocked LT
-    scenario still exists and therefore cannot be silently bypassed by an ST setup.
+    Scenario owns presence/kind and descriptive context only. Eligibility remains the
+    canonical owner of technical blockers/waits; EntryQualificationAssessment adds
+    only TargetPath maturity and derives the public stage for an observed scenario.
+    Compatibility properties expose the existing stage/gate view without storing a
+    second copy on Scenario.
     """
 
     horizon: DecisionHorizon
     presence: ScenarioPresence
-    stage: ScenarioStage
     kind: ScenarioKind
     structural_direction: StructuralDirection
     thesis_state: ThesisState
@@ -59,11 +56,49 @@ class EntryScenarioAssessment:
     opportunity_state: OpportunityState
     target_path_status: TargetPathStatus
     active_target_identity: str | None
-    eligibility_state: EligibilityState
+    eligibility: EligibilityAssessment
+    qualification: EntryQualificationAssessment | None
     reasons: tuple[str, ...]
-    blockers: tuple[str, ...]
-    waiting_for: tuple[str, ...]
+    presence_waiting_for: tuple[str, ...]
     source_lineage: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.presence is ScenarioPresence.PRESENT and self.qualification is None:
+            raise ValueError("present scenario requires entry qualification")
+        if self.presence is not ScenarioPresence.PRESENT and self.qualification is not None:
+            raise ValueError("non-present scenario cannot carry entry qualification")
+
+    @property
+    def stage(self) -> ScenarioStage:
+        """Compatibility view; qualification owns PRESENT scenario stage."""
+
+        if self.qualification is not None:
+            return self.qualification.state
+        if self.presence is ScenarioPresence.UNKNOWN:
+            return ScenarioStage.UNAVAILABLE
+        return ScenarioStage.NOT_APPLICABLE
+
+    @property
+    def eligibility_state(self) -> EligibilityState:
+        """Compatibility view over the canonical Eligibility assessment."""
+
+        return self.eligibility.state
+
+    @property
+    def blockers(self) -> tuple[str, ...]:
+        """Expose canonical Eligibility blockers only for an observed scenario."""
+
+        if self.qualification is None:
+            return ()
+        return self.qualification.blockers
+
+    @property
+    def waiting_for(self) -> tuple[str, ...]:
+        """Expose qualification waits or unresolved-presence evidence requirements."""
+
+        if self.qualification is not None:
+            return self.qualification.waiting_for
+        return self.presence_waiting_for
 
     @property
     def owns_horizon(self) -> bool:
@@ -132,6 +167,37 @@ def _observed_opportunity(
     return path.status is TargetPathStatus.READY and bool(path.nodes)
 
 
+def _scenario(
+    assessment: "HorizonDecisionAssessment | PreparedHorizonAssessment",
+    *,
+    market_state: HorizonMarketState,
+    target_path: TargetPath,
+    presence: ScenarioPresence,
+    kind: ScenarioKind,
+    active_target_identity: str | None,
+    reasons: tuple[str, ...],
+    presence_waiting_for: tuple[str, ...] = (),
+    qualification: EntryQualificationAssessment | None = None,
+    lineage: tuple[str, ...],
+) -> EntryScenarioAssessment:
+    return EntryScenarioAssessment(
+        horizon=assessment.horizon,
+        presence=presence,
+        kind=kind,
+        structural_direction=assessment.structural.direction,
+        thesis_state=assessment.structural.thesis_state,
+        structural_regime=market_state.structural_map.structural_regime,
+        opportunity_state=assessment.opportunity.state,
+        target_path_status=target_path.status,
+        active_target_identity=active_target_identity,
+        eligibility=assessment.eligibility,
+        qualification=qualification,
+        reasons=reasons,
+        presence_waiting_for=presence_waiting_for,
+        source_lineage=lineage,
+    )
+
+
 def build_entry_scenario(
     assessment: "HorizonDecisionAssessment | PreparedHorizonAssessment",
     *,
@@ -140,172 +206,130 @@ def build_entry_scenario(
 ) -> EntryScenarioAssessment:
     """Classify one horizon without emitting READY/BUY/SELL.
 
-    Direction remains Structure-owned. This layer is intentionally long-entry only:
-    a valid SHORT structural assessment is preserved analytically but means that no
-    long-entry scenario exists for that horizon. UNKNOWN never means ABSENT.
+    Direction remains Structure-owned. Scenario decides only whether a long-entry
+    scenario is observed and what kind it is. Technical gate state is referenced from
+    Eligibility, while TargetPath maturity is composed by EntryQualificationAssessment.
+    UNKNOWN never means ABSENT.
     """
 
     structural = assessment.structural
     opportunity = assessment.opportunity
-    eligibility = assessment.eligibility
-    lineage = tuple(sorted(_lineage_from_assessment(assessment) | _lineage_from_path(target_path)))
+    lineage = tuple(
+        sorted(_lineage_from_assessment(assessment) | _lineage_from_path(target_path))
+    )
 
     if structural.data_quality is not ContextDataQuality.VALID:
-        return EntryScenarioAssessment(
-            assessment.horizon,
-            ScenarioPresence.UNKNOWN,
-            ScenarioStage.UNAVAILABLE,
-            ScenarioKind.NONE,
-            structural.direction,
-            structural.thesis_state,
-            market_state.structural_map.structural_regime,
-            opportunity.state,
-            target_path.status,
-            None if target_path.active_node is None else target_path.active_node.identity,
-            eligibility.state,
-            (f"STRUCTURE_DATA_{structural.data_quality.value}",),
-            (),
-            ("VALID_STRUCTURAL_AUTHORITY",),
-            lineage,
+        return _scenario(
+            assessment,
+            market_state=market_state,
+            target_path=target_path,
+            presence=ScenarioPresence.UNKNOWN,
+            kind=ScenarioKind.NONE,
+            active_target_identity=None
+            if target_path.active_node is None
+            else target_path.active_node.identity,
+            reasons=(f"STRUCTURE_DATA_{structural.data_quality.value}",),
+            presence_waiting_for=("VALID_STRUCTURAL_AUTHORITY",),
+            lineage=lineage,
         )
 
-    if structural.direction is StructuralDirection.UNRESOLVED or structural.thesis_state is ThesisState.UNRESOLVED:
-        return EntryScenarioAssessment(
-            assessment.horizon,
-            ScenarioPresence.UNKNOWN,
-            ScenarioStage.UNAVAILABLE,
-            ScenarioKind.NONE,
-            structural.direction,
-            structural.thesis_state,
-            market_state.structural_map.structural_regime,
-            opportunity.state,
-            target_path.status,
-            None if target_path.active_node is None else target_path.active_node.identity,
-            eligibility.state,
-            ("STRUCTURAL_LONG_ENTRY_STATE_UNRESOLVED",),
-            (),
-            ("STRUCTURAL_DIRECTION_TO_RESOLVE",),
-            lineage,
+    if (
+        structural.direction is StructuralDirection.UNRESOLVED
+        or structural.thesis_state is ThesisState.UNRESOLVED
+    ):
+        return _scenario(
+            assessment,
+            market_state=market_state,
+            target_path=target_path,
+            presence=ScenarioPresence.UNKNOWN,
+            kind=ScenarioKind.NONE,
+            active_target_identity=None
+            if target_path.active_node is None
+            else target_path.active_node.identity,
+            reasons=("STRUCTURAL_LONG_ENTRY_STATE_UNRESOLVED",),
+            presence_waiting_for=("STRUCTURAL_DIRECTION_TO_RESOLVE",),
+            lineage=lineage,
         )
 
     # The current product is long-only. A canonical SHORT thesis is analytically
     # valid, but it is not a long-entry scenario and must not be converted to BUY.
     if structural.direction is StructuralDirection.SHORT:
-        return EntryScenarioAssessment(
-            assessment.horizon,
-            ScenarioPresence.ABSENT,
-            ScenarioStage.NOT_APPLICABLE,
-            ScenarioKind.NONE,
-            structural.direction,
-            structural.thesis_state,
-            market_state.structural_map.structural_regime,
-            opportunity.state,
-            target_path.status,
-            None,
-            eligibility.state,
-            ("LONG_ENTRY_REQUIRES_LONG_STRUCTURE",),
-            (),
-            (),
-            lineage,
+        return _scenario(
+            assessment,
+            market_state=market_state,
+            target_path=target_path,
+            presence=ScenarioPresence.ABSENT,
+            kind=ScenarioKind.NONE,
+            active_target_identity=None,
+            reasons=("LONG_ENTRY_REQUIRES_LONG_STRUCTURE",),
+            lineage=lineage,
         )
 
     if structural.thesis_state is ThesisState.INVALIDATED:
-        return EntryScenarioAssessment(
-            assessment.horizon,
-            ScenarioPresence.ABSENT,
-            ScenarioStage.NOT_APPLICABLE,
-            ScenarioKind.NONE,
-            structural.direction,
-            structural.thesis_state,
-            market_state.structural_map.structural_regime,
-            opportunity.state,
-            target_path.status,
-            None,
-            eligibility.state,
-            ("STRUCTURAL_LONG_THESIS_INVALIDATED",),
-            (),
-            (),
-            lineage,
+        return _scenario(
+            assessment,
+            market_state=market_state,
+            target_path=target_path,
+            presence=ScenarioPresence.ABSENT,
+            kind=ScenarioKind.NONE,
+            active_target_identity=None,
+            reasons=("STRUCTURAL_LONG_THESIS_INVALIDATED",),
+            lineage=lineage,
         )
 
     if opportunity.state is OpportunityState.NONE:
-        return EntryScenarioAssessment(
-            assessment.horizon,
-            ScenarioPresence.ABSENT,
-            ScenarioStage.NOT_APPLICABLE,
-            ScenarioKind.NONE,
-            structural.direction,
-            structural.thesis_state,
-            market_state.structural_map.structural_regime,
-            opportunity.state,
-            target_path.status,
-            None if target_path.active_node is None else target_path.active_node.identity,
-            eligibility.state,
-            ("OBSERVED_DIRECTIONAL_ROOM_INSUFFICIENT",),
-            (),
-            (),
-            lineage,
+        return _scenario(
+            assessment,
+            market_state=market_state,
+            target_path=target_path,
+            presence=ScenarioPresence.ABSENT,
+            kind=ScenarioKind.NONE,
+            active_target_identity=None
+            if target_path.active_node is None
+            else target_path.active_node.identity,
+            reasons=("OBSERVED_DIRECTIONAL_ROOM_INSUFFICIENT",),
+            lineage=lineage,
         )
 
     if not _observed_opportunity(assessment, target_path):
-        return EntryScenarioAssessment(
-            assessment.horizon,
-            ScenarioPresence.UNKNOWN,
-            ScenarioStage.UNAVAILABLE,
-            ScenarioKind.NONE,
-            structural.direction,
-            structural.thesis_state,
-            market_state.structural_map.structural_regime,
-            opportunity.state,
-            target_path.status,
-            None,
-            eligibility.state,
-            ("NO_OBSERVED_OPPORTUNITY_DOES_NOT_PROVE_ABSENCE",),
-            (),
-            ("OBSERVED_DIRECTIONAL_OPPORTUNITY",),
-            lineage,
+        return _scenario(
+            assessment,
+            market_state=market_state,
+            target_path=target_path,
+            presence=ScenarioPresence.UNKNOWN,
+            kind=ScenarioKind.NONE,
+            active_target_identity=None,
+            reasons=("NO_OBSERVED_OPPORTUNITY_DOES_NOT_PROVE_ABSENCE",),
+            presence_waiting_for=("OBSERVED_DIRECTIONAL_OPPORTUNITY",),
+            lineage=lineage,
         )
 
-    reasons: list[str] = ["OBSERVED_LONG_ENTRY_SCENARIO"]
-    blockers = list(eligibility.blockers)
-    waiting = list(eligibility.waiting_for)
+    qualification = assess_entry_qualification(
+        assessment.eligibility,
+        target_path=target_path,
+    )
+    reasons: list[str] = [
+        "OBSERVED_LONG_ENTRY_SCENARIO",
+        *qualification.reasons,
+    ]
     kind = _scenario_kind(assessment)
-
-    active = target_path.active_node
-    if target_path.status is not TargetPathStatus.READY:
-        waiting.append("TARGET_PATH_TO_RESOLVE")
-    elif active is not None and active.state is TargetPathNodeState.DEFENDED:
-        waiting.append("ACTIVE_TARGET_PATH_NODE_DEFENDED")
-        reasons.append("TARGET_PATH_DEFENSE_REQUIRES_REASSESSMENT")
 
     # Eligibility owns the structural-transition wait. Scenario keeps the observed
     # transition character as a reason without emitting the same wait token again.
     if structural.thesis_state is ThesisState.TRANSITIONING:
         reasons.append("EXISTING_LONG_SCENARIO_IN_TRANSITION")
 
-    if eligibility.state is EligibilityState.BLOCKED:
-        stage = ScenarioStage.BLOCKED
-    elif eligibility.state is EligibilityState.WAITING or waiting:
-        stage = ScenarioStage.DEVELOPING
-    else:
-        stage = ScenarioStage.QUALIFIED
-
-    return EntryScenarioAssessment(
-        assessment.horizon,
-        ScenarioPresence.PRESENT,
-        stage,
-        kind,
-        structural.direction,
-        structural.thesis_state,
-        market_state.structural_map.structural_regime,
-        opportunity.state,
-        target_path.status,
-        None if active is None else active.identity,
-        eligibility.state,
-        tuple(dict.fromkeys(reasons)),
-        tuple(dict.fromkeys(blockers)),
-        tuple(dict.fromkeys(waiting)),
-        lineage,
+    active = target_path.active_node
+    return _scenario(
+        assessment,
+        market_state=market_state,
+        target_path=target_path,
+        presence=ScenarioPresence.PRESENT,
+        kind=kind,
+        active_target_identity=None if active is None else active.identity,
+        reasons=tuple(dict.fromkeys(reasons)),
+        qualification=qualification,
+        lineage=lineage,
     )
 
 
@@ -321,9 +345,15 @@ def prepare_entry_scenario(
 
     assessment = prepare_horizon_assessment(snapshot, horizon, config=config)
     market = snapshot.market_state
-    horizon_market = market.long_term if horizon is DecisionHorizon.LONG_TERM else market.short_term
+    horizon_market = (
+        market.long_term if horizon is DecisionHorizon.LONG_TERM else market.short_term
+    )
     path = snapshot.target_path(assessment.structural.direction)
-    scenario = build_entry_scenario(assessment, target_path=path, market_state=horizon_market)
+    scenario = build_entry_scenario(
+        assessment,
+        target_path=path,
+        market_state=horizon_market,
+    )
     return PreparedEntryScenario(scenario=scenario, assessment=assessment)
 
 

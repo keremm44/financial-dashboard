@@ -5,7 +5,8 @@ from financial_dashboard.decision.arbiter import (
     ArbiterState,
     arbitrate_entry_scenarios,
 )
-from financial_dashboard.decision.eligibility import EligibilityState
+from financial_dashboard.decision.eligibility import EligibilityAssessment, EligibilityState
+from financial_dashboard.decision.entry_qualification import EntryQualificationAssessment
 from financial_dashboard.decision.market_state import StructuralRegime
 from financial_dashboard.decision.opportunity import OpportunityState
 from financial_dashboard.decision.scenario import (
@@ -29,10 +30,38 @@ def _scenario(
         stage = ScenarioStage.UNAVAILABLE
     elif presence is ScenarioPresence.ABSENT:
         stage = ScenarioStage.NOT_APPLICABLE
+
+    eligibility = EligibilityAssessment(
+        (
+            EligibilityState.ELIGIBLE
+            if stage is ScenarioStage.QUALIFIED
+            else EligibilityState.BLOCKED
+            if stage is ScenarioStage.BLOCKED
+            else EligibilityState.WAITING
+        ),
+        (),
+        ("BLOCKED",) if stage is ScenarioStage.BLOCKED else (),
+        ("WAIT",) if stage is ScenarioStage.DEVELOPING else (),
+    )
+    target_path_status = (
+        TargetPathStatus.UNKNOWN
+        if presence is ScenarioPresence.UNKNOWN
+        else TargetPathStatus.READY
+    )
+    qualification = (
+        EntryQualificationAssessment(
+            state=stage,
+            eligibility=eligibility,
+            target_path_status=target_path_status,
+            target_path_waiting_for=(),
+            reasons=(),
+        )
+        if presence is ScenarioPresence.PRESENT
+        else None
+    )
     return EntryScenarioAssessment(
         horizon=horizon,
         presence=presence,
-        stage=stage,
         kind=(
             ScenarioKind.NONE
             if presence is not ScenarioPresence.PRESENT
@@ -48,27 +77,17 @@ def _scenario(
             if presence is ScenarioPresence.ABSENT
             else OpportunityState.MODERATE
         ),
-        target_path_status=(
-            TargetPathStatus.UNKNOWN
-            if presence is ScenarioPresence.UNKNOWN
-            else TargetPathStatus.READY
-        ),
+        target_path_status=target_path_status,
         active_target_identity="T1" if presence is ScenarioPresence.PRESENT else None,
-        eligibility_state=(
-            EligibilityState.ELIGIBLE
-            if stage is ScenarioStage.QUALIFIED
-            else EligibilityState.BLOCKED
-            if stage is ScenarioStage.BLOCKED
-            else EligibilityState.WAITING
-        ),
+        eligibility=eligibility,
+        qualification=qualification,
         reasons=(),
-        blockers=("BLOCKED",) if stage is ScenarioStage.BLOCKED else (),
-        waiting_for=("WAIT",) if stage is ScenarioStage.DEVELOPING else (),
+        presence_waiting_for=(),
         source_lineage=(f"{horizon.value}-lineage",),
     )
 
 
-def test_lt_present_and_st_present_selects_lt_only():
+def test_both_qualified_keep_long_term_tie_break():
     lt = _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT)
     st = _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT)
 
@@ -81,7 +100,7 @@ def test_lt_present_and_st_present_selects_lt_only():
     assert result.is_actionable_signal is False
 
 
-def test_lt_developing_st_qualified_still_selects_lt_ownership():
+def test_qualified_st_bypasses_developing_lt():
     lt = _scenario(
         DecisionHorizon.LONG_TERM,
         ScenarioPresence.PRESENT,
@@ -91,12 +110,13 @@ def test_lt_developing_st_qualified_still_selects_lt_ownership():
 
     result = arbitrate_entry_scenarios(lt, st)
 
-    assert result.selection is ArbiterSelection.LONG_TERM
-    assert result.selected_scenario.stage is ScenarioStage.DEVELOPING
-    assert DecisionHorizon.SHORT_TERM in result.suppressed_horizons
+    assert result.selection is ArbiterSelection.SHORT_TERM
+    assert result.selected_scenario is st
+    assert result.suppressed_horizons == (DecisionHorizon.LONG_TERM,)
+    assert "SHORT_TERM_QUALIFIED_OVERRIDES_NONQUALIFIED_LONG_TERM" in result.reasons
 
 
-def test_lt_blocked_st_qualified_cannot_bypass_lt():
+def test_qualified_st_bypasses_blocked_lt():
     lt = _scenario(
         DecisionHorizon.LONG_TERM,
         ScenarioPresence.PRESENT,
@@ -106,12 +126,13 @@ def test_lt_blocked_st_qualified_cannot_bypass_lt():
 
     result = arbitrate_entry_scenarios(lt, st)
 
-    assert result.selection is ArbiterSelection.LONG_TERM
-    assert result.selected_scenario.stage is ScenarioStage.BLOCKED
+    assert result.selection is ArbiterSelection.SHORT_TERM
+    assert result.selected_scenario is st
+    assert result.suppressed_horizons == (DecisionHorizon.LONG_TERM,)
 
 
-def test_only_explicit_lt_absence_allows_short_term_fallback():
-    lt = _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.ABSENT)
+def test_qualified_st_can_proceed_while_lt_presence_is_unknown():
+    lt = _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.UNKNOWN)
     st = _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT)
 
     result = arbitrate_entry_scenarios(lt, st)
@@ -119,11 +140,17 @@ def test_only_explicit_lt_absence_allows_short_term_fallback():
     assert result.state is ArbiterState.SELECTED
     assert result.selection is ArbiterSelection.SHORT_TERM
     assert result.selected_horizon is DecisionHorizon.SHORT_TERM
+    assert result.waiting_for == ()
+    assert "LONG_TERM_UNKNOWN_DOES_NOT_VETO_QUALIFIED_SHORT_TERM" in result.reasons
 
 
-def test_lt_unknown_never_falls_back_to_visible_st():
+def test_nonqualified_st_does_not_bypass_unknown_lt():
     lt = _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.UNKNOWN)
-    st = _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT)
+    st = _scenario(
+        DecisionHorizon.SHORT_TERM,
+        ScenarioPresence.PRESENT,
+        stage=ScenarioStage.DEVELOPING,
+    )
 
     result = arbitrate_entry_scenarios(lt, st)
 
@@ -131,6 +158,41 @@ def test_lt_unknown_never_falls_back_to_visible_st():
     assert result.selection is ArbiterSelection.UNRESOLVED
     assert result.selected_horizon is None
     assert result.suppressed_horizons == (DecisionHorizon.SHORT_TERM,)
+
+
+def test_when_neither_is_qualified_present_lt_retains_nonaction_ownership():
+    lt = _scenario(
+        DecisionHorizon.LONG_TERM,
+        ScenarioPresence.PRESENT,
+        stage=ScenarioStage.DEVELOPING,
+    )
+    st = _scenario(
+        DecisionHorizon.SHORT_TERM,
+        ScenarioPresence.PRESENT,
+        stage=ScenarioStage.DEVELOPING,
+    )
+
+    result = arbitrate_entry_scenarios(lt, st)
+
+    assert result.selection is ArbiterSelection.LONG_TERM
+    assert result.selected_scenario is lt
+    assert result.suppressed_horizons == (DecisionHorizon.SHORT_TERM,)
+
+
+def test_explicit_lt_absence_keeps_short_term_fallback_for_nonqualified_st():
+    lt = _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.ABSENT)
+    st = _scenario(
+        DecisionHorizon.SHORT_TERM,
+        ScenarioPresence.PRESENT,
+        stage=ScenarioStage.DEVELOPING,
+    )
+
+    result = arbitrate_entry_scenarios(lt, st)
+
+    assert result.state is ArbiterState.SELECTED
+    assert result.selection is ArbiterSelection.SHORT_TERM
+    assert result.selected_horizon is DecisionHorizon.SHORT_TERM
+    assert result.selected_scenario.stage is ScenarioStage.DEVELOPING
 
 
 def test_lt_absent_and_st_unknown_waits_for_st_resolution():
@@ -169,14 +231,18 @@ def test_lt_absent_can_allow_st_even_when_lt_structural_context_is_bearish():
 
 
 def test_repeat_is_deterministic_and_never_selects_two_horizons():
-    lt = _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT)
+    lt = _scenario(
+        DecisionHorizon.LONG_TERM,
+        ScenarioPresence.PRESENT,
+        stage=ScenarioStage.DEVELOPING,
+    )
     st = _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT)
 
     first = arbitrate_entry_scenarios(lt, st)
     second = arbitrate_entry_scenarios(lt, st)
 
     assert first == second
-    assert first.selected_horizon is DecisionHorizon.LONG_TERM
+    assert first.selected_horizon is DecisionHorizon.SHORT_TERM
     assert len(first.suppressed_horizons) == 1
 
 

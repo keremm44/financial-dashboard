@@ -178,23 +178,25 @@ def test_persistent_resume_matches_full_canonical_event_payload_and_markers(tmp_
     assert resumed.replay.final_audit_markers == cold.final_audit_markers
 
 
-def test_decision_contract_version_mismatch_requires_explicit_cold_replay(tmp_path):
+def test_previous_decision_contract_version_requires_explicit_cold_replay(tmp_path):
     t1 = pd.Timestamp("2026-01-05 10:00")
     snapshot = _Snapshot("TEST", t1, 100.0)
     runner = PersistentCanonicalLifecycleReplayRunner(tmp_path)
     prefix = runner.run("TEST", (snapshot,))
 
     config = DecisionEngineConfig()
+    assert DECISION_CONTRACT_VERSION == 3
     assert config.decision_contract_version == DECISION_CONTRACT_VERSION
-    legacy_repr = repr(config).replace(
-        f", decision_contract_version={DECISION_CONTRACT_VERSION}",
-        "",
+    previous_version = DECISION_CONTRACT_VERSION - 1
+    previous_repr = repr(config).replace(
+        f"decision_contract_version={DECISION_CONTRACT_VERSION}",
+        f"decision_contract_version={previous_version}",
     )
-    legacy_digest = sha256(legacy_repr.encode("utf-8")).hexdigest()
-    assert legacy_digest != prefix.checkpoint.decision_config_digest
+    previous_digest = sha256(previous_repr.encode("utf-8")).hexdigest()
+    assert previous_digest != prefix.checkpoint.decision_config_digest
 
     runner.store.save(
-        replace(prefix.checkpoint, decision_config_digest=legacy_digest)
+        replace(prefix.checkpoint, decision_config_digest=previous_digest)
     )
 
     with pytest.raises(ValueError, match="cold replay is required"):
