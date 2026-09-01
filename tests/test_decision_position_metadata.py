@@ -6,8 +6,9 @@ import pytest
 
 from financial_dashboard.decision.arbiter import arbitrate_entry_scenarios
 from financial_dashboard.decision.composer import DecisionAction
-from financial_dashboard.decision.eligibility import EligibilityState
+from financial_dashboard.decision.eligibility import EligibilityAssessment, EligibilityState
 from financial_dashboard.decision.entry import EntryDecision
+from financial_dashboard.decision.entry_qualification import EntryQualificationAssessment
 from financial_dashboard.decision.execution import ExecutionTriggerEvent, ExecutionTriggerState
 from financial_dashboard.decision.lifecycle import (
     ExitStage,
@@ -34,10 +35,26 @@ from financial_dashboard.decision.target_path import TargetPathStatus
 
 def _scenario(horizon, presence):
     present = presence is ScenarioPresence.PRESENT
+    eligibility = EligibilityAssessment(
+        EligibilityState.ELIGIBLE if present else EligibilityState.BLOCKED,
+        (),
+        (),
+        (),
+    )
+    qualification = (
+        EntryQualificationAssessment(
+            state=ScenarioStage.QUALIFIED,
+            eligibility=eligibility,
+            target_path_status=TargetPathStatus.READY,
+            target_path_waiting_for=(),
+            reasons=(),
+        )
+        if present
+        else None
+    )
     return EntryScenarioAssessment(
         horizon=horizon,
         presence=presence,
-        stage=ScenarioStage.QUALIFIED if present else ScenarioStage.NOT_APPLICABLE,
         kind=ScenarioKind.CONTINUATION if present else ScenarioKind.NONE,
         structural_direction=StructuralDirection.LONG if present else StructuralDirection.UNRESOLVED,
         thesis_state=ThesisState.INTACT if present else ThesisState.UNRESOLVED,
@@ -45,10 +62,10 @@ def _scenario(horizon, presence):
         opportunity_state=OpportunityState.MODERATE if present else OpportunityState.NONE,
         target_path_status=TargetPathStatus.READY if present else TargetPathStatus.NO_OBSERVED_PATH,
         active_target_identity="target:1" if present else None,
-        eligibility_state=EligibilityState.ELIGIBLE if present else EligibilityState.BLOCKED,
+        eligibility=eligibility,
+        qualification=qualification,
         reasons=("SCENARIO_PRESENT",) if present else ("SCENARIO_ABSENT",),
-        blockers=(),
-        waiting_for=(),
+        presence_waiting_for=(),
         source_lineage=(f"{horizon.value}:scenario",) if present else (),
     )
 
