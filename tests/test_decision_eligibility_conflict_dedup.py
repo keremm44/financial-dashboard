@@ -15,10 +15,10 @@ from financial_dashboard.context.projections import (
 )
 from financial_dashboard.decision.conflict import ConflictState
 from financial_dashboard.decision.eligibility import EligibilityState, assess_eligibility
-from financial_dashboard.decision.engine import _decision_structure_projection
 from financial_dashboard.decision.environment import EnvironmentRisk
 from financial_dashboard.decision.opportunity import OpportunityState
 from financial_dashboard.decision.structural import StructuralDirection, ThesisState
+from financial_dashboard.decision.structure_projection import normalize_decision_structure_projection
 from financial_dashboard.decision.timing import TimingState
 
 
@@ -71,7 +71,7 @@ def test_decision_structure_treats_generic_limited_quality_as_price_usable() -> 
         timeframe_facts=(row,),
     )
 
-    normalized = _decision_structure_projection(source)
+    normalized = normalize_decision_structure_projection(source)
 
     assert source.for_timeframe("1h").data_quality is ContextDataQuality.DATA_LIMITED
     assert normalized.for_timeframe("1h").data_quality is ContextDataQuality.VALID

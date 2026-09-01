@@ -131,9 +131,12 @@ class DecisionInputSnapshot:
             return cached
 
         from financial_dashboard.decision.market_state import build_market_state
+        from financial_dashboard.decision.structure_projection import (
+            normalize_decision_structure_projection,
+        )
 
         state = build_market_state(
-            self.structure,
+            normalize_decision_structure_projection(self.structure),
             as_of=self.as_of,
             stabil=self.stabil_support,
             volatility=self.volatility_environment,
