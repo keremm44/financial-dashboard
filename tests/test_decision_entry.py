@@ -19,6 +19,7 @@ from financial_dashboard.decision.scenario import (
     ScenarioPresence,
     ScenarioStage,
 )
+from financial_dashboard.decision.st_ownership import STEconomicOwnership
 from financial_dashboard.decision.structural import DecisionHorizon, StructuralDirection, ThesisState
 from financial_dashboard.decision.target_path import TargetPathStatus
 
@@ -163,6 +164,7 @@ def test_qualified_st_bypasses_blocked_lt_and_reaches_ready():
     arbitration = arbitrate_entry_scenarios(
         _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT, stage=ScenarioStage.BLOCKED),
         _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT),
+        short_term_ownership=STEconomicOwnership.INDEPENDENT_ST,
     )
 
     result = compose_entry_decision(
@@ -180,6 +182,7 @@ def test_qualified_st_bypasses_developing_lt_and_reaches_ready():
     arbitration = arbitrate_entry_scenarios(
         _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT, stage=ScenarioStage.DEVELOPING),
         _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT),
+        short_term_ownership=STEconomicOwnership.INDEPENDENT_ST,
     )
 
     result = compose_entry_decision(
@@ -195,6 +198,7 @@ def test_qualified_st_can_proceed_when_lt_presence_is_unresolved():
     arbitration = arbitrate_entry_scenarios(
         _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.UNKNOWN),
         _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT),
+        short_term_ownership=STEconomicOwnership.INDEPENDENT_ST,
     )
 
     result = compose_entry_decision(
@@ -273,6 +277,7 @@ def test_turn5b_controlled_decision_diff_captures_only_intended_override_rows():
         arbitration = arbitrate_entry_scenarios(
             lt,
             _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT),
+            short_term_ownership=STEconomicOwnership.INDEPENDENT_ST,
         )
         decision = compose_entry_decision(
             arbitration,
