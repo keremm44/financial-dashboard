@@ -20,13 +20,17 @@ from .position_metadata import (
     STTradeMemory,
 )
 from .scenario import ScenarioKind
+from .st_economic_history import (
+    deserialize_st_economic_history,
+    serialize_st_economic_history,
+)
 from .st_thesis_identity import STDefendedAnchorKind, STEconomicMission, STThesisFamily
 from .structural import DecisionHorizon
 from .target_path import TargetPathRole
 
 
-TRADE_LIFECYCLE_STATE_SCHEMA_VERSION = 3
-CANONICAL_LIFECYCLE_CONTRACT_VERSION = 3
+TRADE_LIFECYCLE_STATE_SCHEMA_VERSION = 4
+CANONICAL_LIFECYCLE_CONTRACT_VERSION = 4
 
 
 class LifecycleCheckpointStatus(StrEnum):
@@ -292,17 +296,26 @@ def _deserialize_st_trade_memory(payload: Any) -> STTradeMemory | None:
     )
 
 
-def _require_canonical_st_trade_memory(state: TradeLifecycleState) -> None:
-    """Fail closed when a v3 canonical OPEN ST position lacks entry-time memory."""
+def _require_canonical_st_state(state: TradeLifecycleState) -> None:
+    """Fail closed when a v4 canonical OPEN ST position lacks causal state."""
 
     metadata = state.entry_metadata
-    if (
+    is_open_st = (
         state.position is PositionState.OPEN
         and metadata is not None
         and metadata.entry_horizon is DecisionHorizon.SHORT_TERM
-        and metadata.st_trade_memory is None
-    ):
+    )
+    if is_open_st and metadata.st_trade_memory is None:
         raise ValueError("canonical persisted ST OPEN lifecycle requires ST trade memory")
+    if is_open_st and state.st_economic_history is None:
+        raise ValueError("canonical persisted ST OPEN lifecycle requires ST economic history")
+    if (
+        state.position is PositionState.OPEN
+        and metadata is not None
+        and metadata.entry_horizon is not DecisionHorizon.SHORT_TERM
+        and state.st_economic_history is not None
+    ):
+        raise ValueError("non-ST persisted lifecycle cannot carry ST economic history")
 
 
 def serialize_trade_lifecycle_state(state: TradeLifecycleState) -> dict[str, Any]:
@@ -333,6 +346,7 @@ def serialize_trade_lifecycle_state(state: TradeLifecycleState) -> dict[str, Any
         "trade_id": state.trade_id,
         "entry_as_of": _timestamp_payload(state.entry_as_of),
         "entry_metadata": metadata_payload,
+        "st_economic_history": serialize_st_economic_history(state.st_economic_history),
     }
 
 
@@ -345,7 +359,16 @@ def deserialize_trade_lifecycle_state(payload: Mapping[str, Any]) -> TradeLifecy
         raise ValueError("trade lifecycle state position is invalid") from exc
 
     if position is PositionState.FLAT:
-        if any(payload.get(key) is not None for key in ("exit_stage", "trade_id", "entry_as_of", "entry_metadata")):
+        if any(
+            payload.get(key) is not None
+            for key in (
+                "exit_stage",
+                "trade_id",
+                "entry_as_of",
+                "entry_metadata",
+                "st_economic_history",
+            )
+        ):
             raise ValueError("persisted FLAT lifecycle cannot carry open-position fields")
         return TradeLifecycleState()
 
@@ -390,6 +413,7 @@ def deserialize_trade_lifecycle_state(payload: Mapping[str, Any]) -> TradeLifecy
         trade_id=trade_id,
         entry_as_of=entry_as_of,
         entry_metadata=metadata,
+        st_economic_history=deserialize_st_economic_history(payload.get("st_economic_history")),
     )
 
 
@@ -422,7 +446,7 @@ def causal_prefix_digest(
 
 
 def serialize_trade_lifecycle_checkpoint(checkpoint: TradeLifecycleCheckpoint) -> dict[str, Any]:
-    _require_canonical_st_trade_memory(checkpoint.state)
+    _require_canonical_st_state(checkpoint.state)
     return {
         "schema_version": TRADE_LIFECYCLE_STATE_SCHEMA_VERSION,
         "contract_version": CANONICAL_LIFECYCLE_CONTRACT_VERSION,
@@ -463,7 +487,7 @@ def deserialize_trade_lifecycle_checkpoint(payload: Mapping[str, Any], *, expect
     if not isinstance(marker_payload, Mapping):
         raise ValueError("trade lifecycle checkpoint audit_markers are invalid")
     state = deserialize_trade_lifecycle_state(state_payload)
-    _require_canonical_st_trade_memory(state)
+    _require_canonical_st_state(state)
     return TradeLifecycleCheckpoint(
         symbol=expected_symbol,
         state=state,
