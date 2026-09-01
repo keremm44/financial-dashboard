@@ -4,8 +4,9 @@ import pytest
 
 from financial_dashboard.decision.arbiter import arbitrate_entry_scenarios
 from financial_dashboard.decision.composer import ActionSide, DecisionAction, FinalDecision
-from financial_dashboard.decision.eligibility import EligibilityState
+from financial_dashboard.decision.eligibility import EligibilityAssessment, EligibilityState
 from financial_dashboard.decision.entry import compose_entry_decision
+from financial_dashboard.decision.entry_qualification import EntryQualificationAssessment
 from financial_dashboard.decision.execution import ExecutionTriggerState
 from financial_dashboard.decision.market_state import StructuralRegime
 from financial_dashboard.decision.opportunity import OpportunityState
@@ -30,10 +31,41 @@ def _scenario(
         stage = ScenarioStage.UNAVAILABLE
     elif presence is ScenarioPresence.ABSENT:
         stage = ScenarioStage.NOT_APPLICABLE
+
+    eligibility = EligibilityAssessment(
+        (
+            EligibilityState.ELIGIBLE
+            if stage is ScenarioStage.QUALIFIED
+            else EligibilityState.BLOCKED
+            if stage is ScenarioStage.BLOCKED
+            else EligibilityState.WAITING
+        ),
+        (),
+        ("BLOCKED",) if stage is ScenarioStage.BLOCKED else (),
+        ("WAIT_FOR_SETUP",) if stage is ScenarioStage.DEVELOPING else (),
+    )
+    target_path_status = (
+        TargetPathStatus.READY
+        if presence is ScenarioPresence.PRESENT
+        else TargetPathStatus.UNKNOWN
+        if presence is ScenarioPresence.UNKNOWN
+        else TargetPathStatus.NO_OBSERVED_PATH
+    )
+    qualification = (
+        EntryQualificationAssessment(
+            state=stage,
+            eligibility=eligibility,
+            target_path_status=target_path_status,
+            target_path_waiting_for=(),
+            reasons=(),
+        )
+        if presence is ScenarioPresence.PRESENT
+        else None
+    )
+
     return EntryScenarioAssessment(
         horizon=horizon,
         presence=presence,
-        stage=stage,
         kind=ScenarioKind.CONTINUATION if presence is ScenarioPresence.PRESENT else ScenarioKind.NONE,
         structural_direction=direction,
         thesis_state=ThesisState.INTACT,
@@ -45,24 +77,12 @@ def _scenario(
             if presence is ScenarioPresence.UNKNOWN
             else OpportunityState.NONE
         ),
-        target_path_status=(
-            TargetPathStatus.READY
-            if presence is ScenarioPresence.PRESENT
-            else TargetPathStatus.UNKNOWN
-            if presence is ScenarioPresence.UNKNOWN
-            else TargetPathStatus.NO_OBSERVED_PATH
-        ),
+        target_path_status=target_path_status,
         active_target_identity="T1" if presence is ScenarioPresence.PRESENT else None,
-        eligibility_state=(
-            EligibilityState.ELIGIBLE
-            if stage is ScenarioStage.QUALIFIED
-            else EligibilityState.BLOCKED
-            if stage is ScenarioStage.BLOCKED
-            else EligibilityState.WAITING
-        ),
+        eligibility=eligibility,
+        qualification=qualification,
         reasons=("SCENARIO",) if presence is ScenarioPresence.PRESENT else (),
-        blockers=("BLOCKED",) if stage is ScenarioStage.BLOCKED else (),
-        waiting_for=("WAIT_FOR_SETUP",) if stage is ScenarioStage.DEVELOPING else (),
+        presence_waiting_for=(),
         source_lineage=(f"{horizon.value}:scenario",),
     )
 
