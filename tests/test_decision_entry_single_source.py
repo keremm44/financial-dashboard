@@ -17,6 +17,7 @@ from financial_dashboard.decision.scenario import (
     ScenarioPresence,
     ScenarioStage,
 )
+from financial_dashboard.decision.st_ownership import STEconomicOwnership
 from financial_dashboard.decision.structural import DecisionHorizon, StructuralDirection, ThesisState
 from financial_dashboard.decision.target_path import TargetPathStatus
 
@@ -104,6 +105,11 @@ def test_qualified_entry_prepares_each_horizon_once_and_finalizes_only_selected(
         return _finalized(assessment.horizon)
 
     monkeypatch.setattr(arbiter_module, "prepare_entry_scenario", prepare_entry_scenario)
+    monkeypatch.setattr(
+        arbiter_module,
+        "classify_st_economic_ownership",
+        lambda snapshot, long_term, short_term: STEconomicOwnership.UNRESOLVED,
+    )
     monkeypatch.setattr(engine_module, "finalize_horizon_assessment", finalize_horizon_assessment)
     monkeypatch.setattr(
         engine_module,
