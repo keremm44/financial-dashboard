@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 from financial_dashboard.context.axes import evaluate_context_axes
 from financial_dashboard.context.envelope import ContextDataQuality, FactRef
 from financial_dashboard.context.permissions import PermissionEnvelope, resolve_permission_axes
-from financial_dashboard.context.projections import StructuralFactsProjection
 from financial_dashboard.decision_input import DecisionInputSnapshot
 
 from .composer import ActionPolicy, FinalDecision, compose_final_decision
@@ -28,6 +27,7 @@ from .structural import (
     StructuralAssessment,
     build_horizon_structural_snapshot,
 )
+from .structure_projection import normalize_decision_structure_projection
 from .timing import TimingAssessment, assess_timing
 
 
@@ -119,57 +119,12 @@ def _permission_policy(horizon: DecisionHorizon) -> tuple[str, tuple[str, ...]]:
     return "1h", ("30m",)
 
 
-def _decision_structure_projection(structural):
-    """Normalize price-only Structure quality for Decision without mutating source diagnostics.
-
-    Generic OHLCV quality marks a batch DATA_LIMITED for warnings such as zero volume
-    or an open/incomplete source tail. Market Structure is price-only and its replay
-    already excludes unsafe candles, so those generic limitations must not erase 1D/1H
-    structural authority inside the Decision layer. Other domain projections retain
-    their native quality unchanged.
-
-    Some unit tests intentionally pass opaque pipeline doubles while monkeypatching the
-    downstream structural builder. Preserve those doubles unchanged; production calls
-    always provide ``StructuralFactsProjection``.
-    """
-
-    if not isinstance(structural, StructuralFactsProjection):
-        return structural
-
-    changed = False
-    rows = []
-    for row in structural.timeframe_facts:
-        if row.data_quality is not ContextDataQuality.DATA_LIMITED:
-            rows.append(row)
-            continue
-        changed = True
-        events = tuple(
-            replace(
-                event,
-                ref=replace(event.ref, data_quality=ContextDataQuality.VALID),
-            )
-            if event.ref.data_quality is ContextDataQuality.DATA_LIMITED
-            else event
-            for event in row.events
-        )
-        rows.append(
-            replace(
-                row,
-                data_quality=ContextDataQuality.VALID,
-                events=events,
-            )
-        )
-    if not changed:
-        return structural
-    return replace(structural, timeframe_facts=tuple(rows))
-
-
 def _horizon_permission(
     snapshot: DecisionInputSnapshot,
     horizon: DecisionHorizon,
 ) -> PermissionEnvelope:
     anchor_timeframe, trigger_timeframes = _permission_policy(horizon)
-    structural = _decision_structure_projection(snapshot.structure)
+    structural = normalize_decision_structure_projection(snapshot.structure)
     axes = evaluate_context_axes(
         structural=structural,
         zones=snapshot.qualified_zones,
@@ -182,6 +137,85 @@ def _horizon_permission(
         trigger_timeframes=trigger_timeframes,
     )
     return resolve_permission_axes(axes)
+
+
+def _market_row(rows, timeframe: str, *, family: str):
+    normalized = timeframe.strip().lower()
+    for key, assessment in rows:
+        if key == normalized:
+            return assessment
+    raise ValueError(f"market state missing {family} timeframe:{normalized}")
+
+
+def _market_state_facts(
+    snapshot: DecisionInputSnapshot,
+    horizon: DecisionHorizon,
+    *,
+    participation_timeframe: str,
+    environment_timeframe: str,
+) -> tuple[
+    HorizonStructuralSnapshot,
+    StructuralAssessment,
+    ParticipationAssessment,
+    EnvironmentAssessment,
+]:
+    """Read factual Structure/Participation/Environment once from Decision MarketState.
+
+    Production callers always pass ``DecisionInputSnapshot`` and therefore reuse its
+    single cached MarketState. The non-contract fallback exists only for the opaque
+    unit-test doubles that predate DecisionInputSnapshot and preserves their current
+    monkeypatched pipeline behavior.
+    """
+
+    if not isinstance(snapshot, DecisionInputSnapshot):
+        decision_structure = normalize_decision_structure_projection(snapshot.structure)
+        structural_snapshot = build_horizon_structural_snapshot(decision_structure)
+        structural = (
+            structural_snapshot.long_term
+            if horizon is DecisionHorizon.LONG_TERM
+            else structural_snapshot.short_term
+        )
+        participation = assess_participation(
+            structural.direction,
+            snapshot.participation_behavior,
+            timeframe=participation_timeframe,
+        )
+        environment = assess_environment(
+            structural.direction,
+            snapshot.volatility_environment,
+            timeframe=environment_timeframe,
+        )
+        return structural_snapshot, structural, participation, environment
+
+    market = snapshot.market_state
+    if market.as_of != snapshot.as_of:
+        raise ValueError("market state must share prepared horizon as_of")
+
+    structural_snapshot = HorizonStructuralSnapshot(
+        long_term=market.long_term.structural,
+        short_term=market.short_term.structural,
+        relation=market.horizon_relation,
+        reasons=market.reasons,
+    )
+    horizon_market = (
+        market.long_term
+        if horizon is DecisionHorizon.LONG_TERM
+        else market.short_term
+    )
+    if horizon_market.horizon is not horizon:
+        raise ValueError("market state horizon must match prepared horizon")
+
+    participation = _market_row(
+        horizon_market.participation,
+        participation_timeframe,
+        family="participation",
+    )
+    environment = _market_row(
+        horizon_market.environment,
+        environment_timeframe,
+        family="environment",
+    )
+    return structural_snapshot, horizon_market.structural, participation, environment
 
 
 def _pattern_quality(snapshot: DecisionInputSnapshot, timeframe: str) -> ContextDataQuality:
@@ -287,14 +321,13 @@ def prepare_horizon_assessment(
     """Build Structure-through-Eligibility exactly once for one frozen horizon."""
 
     cfg = config or DecisionEngineConfig()
-    decision_structure = _decision_structure_projection(snapshot.structure)
-    structural_snapshot = build_horizon_structural_snapshot(decision_structure)
-    structural = (
-        structural_snapshot.long_term
-        if horizon is DecisionHorizon.LONG_TERM
-        else structural_snapshot.short_term
-    )
     reaction_timeframes, participation_tf, environment_tf, timing_tf = _timeframe_policy(horizon)
+    structural_snapshot, structural, participation, environment = _market_state_facts(
+        snapshot,
+        horizon,
+        participation_timeframe=participation_tf,
+        environment_timeframe=environment_tf,
+    )
     permission = _horizon_permission(snapshot, horizon)
 
     durability = assess_durability(snapshot.stabil_support)
@@ -309,16 +342,6 @@ def prepare_horizon_assessment(
         order_blocks=snapshot.order_block_behavior,
         fvg_engulfing=snapshot.fvg_engulfing_lifecycle,
         timeframes=(timing_tf,),
-    )
-    participation = assess_participation(
-        structural.direction,
-        snapshot.participation_behavior,
-        timeframe=participation_tf,
-    )
-    environment = assess_environment(
-        structural.direction,
-        snapshot.volatility_environment,
-        timeframe=environment_tf,
     )
     opportunity = assess_opportunity(
         structural.direction,
