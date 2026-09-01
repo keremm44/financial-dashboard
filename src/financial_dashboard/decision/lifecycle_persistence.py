@@ -30,7 +30,7 @@ from .target_path import TargetPathRole
 
 
 TRADE_LIFECYCLE_STATE_SCHEMA_VERSION = 4
-CANONICAL_LIFECYCLE_CONTRACT_VERSION = 4
+CANONICAL_LIFECYCLE_CONTRACT_VERSION = 5
 
 
 class LifecycleCheckpointStatus(StrEnum):

@@ -15,6 +15,7 @@ from financial_dashboard.decision.scenario import (
     ScenarioPresence,
     ScenarioStage,
 )
+from financial_dashboard.decision.st_ownership import STEconomicOwnership
 from financial_dashboard.decision.structural import DecisionHorizon, StructuralDirection, ThesisState
 from financial_dashboard.decision.target_path import TargetPathStatus
 
@@ -87,20 +88,51 @@ def _scenario(
     )
 
 
-def test_both_qualified_keep_long_term_tie_break():
+def test_both_qualified_independent_st_gets_product_priority():
+    lt = _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT)
+    st = _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT)
+
+    result = arbitrate_entry_scenarios(
+        lt,
+        st,
+        short_term_ownership=STEconomicOwnership.INDEPENDENT_ST,
+    )
+
+    assert result.state is ArbiterState.SELECTED
+    assert result.selection is ArbiterSelection.SHORT_TERM
+    assert result.selected_scenario is st
+    assert result.suppressed_horizons == (DecisionHorizon.LONG_TERM,)
+    assert "SHORT_TERM_INDEPENDENT_PRODUCT_PRIORITY" in result.reasons
+    assert result.is_actionable_signal is False
+
+
+def test_both_qualified_lt_timing_only_stays_long_term_owned():
+    lt = _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT)
+    st = _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT)
+
+    result = arbitrate_entry_scenarios(
+        lt,
+        st,
+        short_term_ownership=STEconomicOwnership.LT_TIMING_ONLY,
+    )
+
+    assert result.selection is ArbiterSelection.LONG_TERM
+    assert result.selected_scenario is lt
+    assert result.suppressed_horizons == (DecisionHorizon.SHORT_TERM,)
+    assert "SHORT_TERM_IS_LONG_TERM_TIMING_NOT_INDEPENDENT_PRODUCT" in result.reasons
+
+
+def test_both_qualified_unresolved_st_cannot_claim_product_priority():
     lt = _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.PRESENT)
     st = _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT)
 
     result = arbitrate_entry_scenarios(lt, st)
 
-    assert result.state is ArbiterState.SELECTED
     assert result.selection is ArbiterSelection.LONG_TERM
-    assert result.selected_scenario is lt
-    assert result.suppressed_horizons == (DecisionHorizon.SHORT_TERM,)
-    assert result.is_actionable_signal is False
+    assert "SHORT_TERM_INDEPENDENCE_UNRESOLVED" in result.reasons
 
 
-def test_qualified_st_bypasses_developing_lt():
+def test_independent_qualified_st_bypasses_developing_lt():
     lt = _scenario(
         DecisionHorizon.LONG_TERM,
         ScenarioPresence.PRESENT,
@@ -108,15 +140,36 @@ def test_qualified_st_bypasses_developing_lt():
     )
     st = _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT)
 
-    result = arbitrate_entry_scenarios(lt, st)
+    result = arbitrate_entry_scenarios(
+        lt,
+        st,
+        short_term_ownership=STEconomicOwnership.INDEPENDENT_ST,
+    )
 
     assert result.selection is ArbiterSelection.SHORT_TERM
     assert result.selected_scenario is st
     assert result.suppressed_horizons == (DecisionHorizon.LONG_TERM,)
-    assert "SHORT_TERM_QUALIFIED_OVERRIDES_NONQUALIFIED_LONG_TERM" in result.reasons
 
 
-def test_qualified_st_bypasses_blocked_lt():
+def test_timing_only_qualified_st_does_not_bypass_developing_lt():
+    lt = _scenario(
+        DecisionHorizon.LONG_TERM,
+        ScenarioPresence.PRESENT,
+        stage=ScenarioStage.DEVELOPING,
+    )
+    st = _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT)
+
+    result = arbitrate_entry_scenarios(
+        lt,
+        st,
+        short_term_ownership=STEconomicOwnership.LT_TIMING_ONLY,
+    )
+
+    assert result.selection is ArbiterSelection.LONG_TERM
+    assert result.selected_scenario is lt
+
+
+def test_independent_qualified_st_bypasses_blocked_lt():
     lt = _scenario(
         DecisionHorizon.LONG_TERM,
         ScenarioPresence.PRESENT,
@@ -124,24 +177,45 @@ def test_qualified_st_bypasses_blocked_lt():
     )
     st = _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT)
 
-    result = arbitrate_entry_scenarios(lt, st)
+    result = arbitrate_entry_scenarios(
+        lt,
+        st,
+        short_term_ownership=STEconomicOwnership.INDEPENDENT_ST,
+    )
 
     assert result.selection is ArbiterSelection.SHORT_TERM
     assert result.selected_scenario is st
     assert result.suppressed_horizons == (DecisionHorizon.LONG_TERM,)
 
 
-def test_qualified_st_can_proceed_while_lt_presence_is_unknown():
+def test_independent_qualified_st_can_proceed_while_lt_presence_is_unknown():
     lt = _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.UNKNOWN)
     st = _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT)
 
-    result = arbitrate_entry_scenarios(lt, st)
+    result = arbitrate_entry_scenarios(
+        lt,
+        st,
+        short_term_ownership=STEconomicOwnership.INDEPENDENT_ST,
+    )
 
     assert result.state is ArbiterState.SELECTED
     assert result.selection is ArbiterSelection.SHORT_TERM
     assert result.selected_horizon is DecisionHorizon.SHORT_TERM
     assert result.waiting_for == ()
-    assert "LONG_TERM_UNKNOWN_DOES_NOT_VETO_QUALIFIED_SHORT_TERM" in result.reasons
+    assert "LONG_TERM_UNKNOWN_DOES_NOT_VETO_INDEPENDENT_SHORT_TERM" in result.reasons
+
+
+def test_unresolved_qualified_st_does_not_bypass_unknown_lt():
+    lt = _scenario(DecisionHorizon.LONG_TERM, ScenarioPresence.UNKNOWN)
+    st = _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT)
+
+    result = arbitrate_entry_scenarios(lt, st)
+
+    assert result.state is ArbiterState.WAITING_FOR_LONG_TERM_RESOLUTION
+    assert result.selection is ArbiterSelection.UNRESOLVED
+    assert result.selected_horizon is None
+    assert result.suppressed_horizons == (DecisionHorizon.SHORT_TERM,)
+    assert "SHORT_TERM_INDEPENDENCE_NOT_PROVEN" in result.reasons
 
 
 def test_nonqualified_st_does_not_bypass_unknown_lt():
@@ -152,7 +226,11 @@ def test_nonqualified_st_does_not_bypass_unknown_lt():
         stage=ScenarioStage.DEVELOPING,
     )
 
-    result = arbitrate_entry_scenarios(lt, st)
+    result = arbitrate_entry_scenarios(
+        lt,
+        st,
+        short_term_ownership=STEconomicOwnership.INDEPENDENT_ST,
+    )
 
     assert result.state is ArbiterState.WAITING_FOR_LONG_TERM_RESOLUTION
     assert result.selection is ArbiterSelection.UNRESOLVED
@@ -172,7 +250,11 @@ def test_when_neither_is_qualified_present_lt_retains_nonaction_ownership():
         stage=ScenarioStage.DEVELOPING,
     )
 
-    result = arbitrate_entry_scenarios(lt, st)
+    result = arbitrate_entry_scenarios(
+        lt,
+        st,
+        short_term_ownership=STEconomicOwnership.INDEPENDENT_ST,
+    )
 
     assert result.selection is ArbiterSelection.LONG_TERM
     assert result.selected_scenario is lt
@@ -238,8 +320,16 @@ def test_repeat_is_deterministic_and_never_selects_two_horizons():
     )
     st = _scenario(DecisionHorizon.SHORT_TERM, ScenarioPresence.PRESENT)
 
-    first = arbitrate_entry_scenarios(lt, st)
-    second = arbitrate_entry_scenarios(lt, st)
+    first = arbitrate_entry_scenarios(
+        lt,
+        st,
+        short_term_ownership=STEconomicOwnership.INDEPENDENT_ST,
+    )
+    second = arbitrate_entry_scenarios(
+        lt,
+        st,
+        short_term_ownership=STEconomicOwnership.INDEPENDENT_ST,
+    )
 
     assert first == second
     assert first.selected_horizon is DecisionHorizon.SHORT_TERM
