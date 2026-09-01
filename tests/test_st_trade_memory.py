@@ -342,9 +342,9 @@ def _checkpoint_for_open_state(state):
     )
 
 
-def test_v3_checkpoint_requires_st_trade_memory_and_v2_cannot_be_silently_migrated(tmp_path):
-    assert TRADE_LIFECYCLE_STATE_SCHEMA_VERSION == 3
-    assert CANONICAL_LIFECYCLE_CONTRACT_VERSION == 3
+def test_v4_checkpoint_requires_st_trade_memory_and_v3_cannot_be_silently_migrated(tmp_path):
+    assert TRADE_LIFECYCLE_STATE_SCHEMA_VERSION == 4
+    assert CANONICAL_LIFECYCLE_CONTRACT_VERSION == 4
 
     as_of = pd.Timestamp("2026-01-05 10:00")
     legacy_metadata = PositionEntryMetadata(
@@ -385,8 +385,8 @@ def test_v3_checkpoint_requires_st_trade_memory_and_v2_cannot_be_silently_migrat
         "anchor_price": 111.0,
         "roles": ["OBJECTIVE"],
     }
-    payload["schema_version"] = 2
-    payload["contract_version"] = 2
+    payload["schema_version"] = 3
+    payload["contract_version"] = 3
 
     store = PersistentTradeLifecycleStore(tmp_path)
     store.path_for("TEST").write_text(json.dumps(payload), encoding="utf-8")

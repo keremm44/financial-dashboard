@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from .composer import DecisionAction, FinalDecision
 from .position_metadata import PositionEntryMetadata, build_position_entry_metadata
+from .st_economic_history import STEconomicHistory, initial_st_economic_history
 
 if TYPE_CHECKING:
     from financial_dashboard.decision_input import DecisionInputSnapshot
@@ -35,6 +36,7 @@ class TradeLifecycleState:
     trade_id: str | None = None
     entry_as_of: Any | None = None
     entry_metadata: PositionEntryMetadata | None = None
+    st_economic_history: STEconomicHistory | None = None
 
     def __post_init__(self) -> None:
         if self.position is PositionState.FLAT:
@@ -43,12 +45,19 @@ class TradeLifecycleState:
                 or self.trade_id is not None
                 or self.entry_as_of is not None
                 or self.entry_metadata is not None
+                or self.st_economic_history is not None
             ):
                 raise ValueError("FLAT lifecycle state cannot carry open-trade metadata")
         elif self.exit_stage is None or self.trade_id is None or self.entry_as_of is None:
             raise ValueError("OPEN lifecycle state requires exit stage and entry metadata")
         elif self.entry_metadata is not None and self.entry_metadata.entry_as_of != self.entry_as_of:
             raise ValueError("position entry metadata must share lifecycle entry_as_of")
+        elif (
+            self.st_economic_history is not None
+            and self.entry_metadata is not None
+            and self.entry_metadata.entry_horizon.value != "SHORT_TERM"
+        ):
+            raise ValueError("ST economic history may belong only to a short-term position")
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +86,7 @@ def _open_state_with_stage(state: TradeLifecycleState, stage: ExitStage) -> Trad
         trade_id=state.trade_id,
         entry_as_of=state.entry_as_of,
         entry_metadata=state.entry_metadata,
+        st_economic_history=state.st_economic_history,
     )
 
 
@@ -113,6 +123,7 @@ def transition_trade_lifecycle(
                 trade_id=_trade_id(as_of),
                 entry_as_of=as_of,
                 entry_metadata=entry_metadata,
+                st_economic_history=initial_st_economic_history(entry_metadata),
             )
             return TradeLifecycleTransition(
                 state,

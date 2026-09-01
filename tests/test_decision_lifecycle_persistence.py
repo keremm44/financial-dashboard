@@ -21,6 +21,7 @@ from financial_dashboard.decision.lifecycle_replay import replay_canonical_trade
 from financial_dashboard.decision.persistent_lifecycle_replay import PersistentCanonicalLifecycleReplayRunner
 from financial_dashboard.decision.position_metadata import PositionEntryMetadata, STTradeMemory
 from financial_dashboard.decision.scenario import ScenarioKind, ScenarioPresence, ScenarioStage
+from financial_dashboard.decision.st_economic_history import STEconomicHistory
 from financial_dashboard.decision.st_thesis_identity import STEconomicMission, STThesisFamily
 from financial_dashboard.decision.structural import DecisionHorizon, StructuralDirection
 
@@ -123,6 +124,7 @@ def _open_state():
         trade_id="trade:1",
         entry_as_of=as_of,
         entry_metadata=metadata,
+        st_economic_history=STEconomicHistory(),
     )
 
 
