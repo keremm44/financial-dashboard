@@ -7,11 +7,128 @@ from typing import TYPE_CHECKING, Any
 from .composer import DecisionAction
 from .execution import ExecutionTriggerEvent, ExecutionTriggerState
 from .scenario import ScenarioKind, ScenarioPresence, ScenarioStage
+from .st_thesis_identity import (
+    STDefendedAnchorKind,
+    STEconomicMission,
+    STThesisFamily,
+    classify_executed_st_thesis,
+)
 from .structural import DecisionHorizon, StructuralDirection
+from .target_path import TargetPathRole
 
 if TYPE_CHECKING:
     from financial_dashboard.decision_input import DecisionInputSnapshot
     from .entry import EntryDecision
+
+
+@dataclass(frozen=True, slots=True)
+class STInitialDefendedAnchor:
+    """Compact entry-time economic anchor safe for persistent trade memory.
+
+    The native/domain snapshot and FactRef objects are intentionally not copied into
+    lifecycle state. Only the entry-time identity and price bounds needed to preserve
+    the original ST thesis are retained.
+    """
+
+    kind: STDefendedAnchorKind
+    identity: str
+    timeframe: str
+    low: float
+    high: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, STDefendedAnchorKind):
+            raise ValueError("ST trade-memory defended anchor kind is invalid")
+        if not isinstance(self.identity, str) or not self.identity.strip() or self.identity != self.identity.strip():
+            raise ValueError("ST trade-memory defended anchor identity must be a canonical string")
+        if (
+            not isinstance(self.timeframe, str)
+            or not self.timeframe.strip()
+            or self.timeframe != self.timeframe.strip().lower()
+        ):
+            raise ValueError("ST trade-memory defended anchor timeframe must be canonical")
+        if not isfinite(float(self.low)) or not isfinite(float(self.high)):
+            raise ValueError("ST trade-memory defended anchor bounds must be finite")
+        if float(self.low) > float(self.high):
+            raise ValueError("ST trade-memory defended anchor low cannot exceed high")
+
+
+@dataclass(frozen=True, slots=True)
+class STInitialTargetContext:
+    """Minimal entry-frozen geometry for the target node selected at ST entry.
+
+    The target path itself is not persisted. Geometry and role are enough to retain
+    the original economic reference after that live path later moves or disappears.
+    """
+
+    identity: str
+    low: float
+    high: float
+    anchor_price: float
+    roles: tuple[TargetPathRole, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.identity, str) or not self.identity.strip() or self.identity != self.identity.strip():
+            raise ValueError("ST initial target identity must be a canonical string")
+        values = (float(self.low), float(self.high), float(self.anchor_price))
+        if any(not isfinite(value) for value in values):
+            raise ValueError("ST initial target geometry must be finite")
+        if self.low > self.high:
+            raise ValueError("ST initial target low cannot exceed high")
+        if not self.low <= self.anchor_price <= self.high:
+            raise ValueError("ST initial target anchor must remain inside target bounds")
+        if not self.roles or any(not isinstance(role, TargetPathRole) for role in self.roles):
+            raise ValueError("ST initial target context requires typed target roles")
+        canonical_roles = tuple(sorted(set(self.roles), key=lambda role: role.value))
+        if self.roles != canonical_roles:
+            raise ValueError("ST initial target roles must be sorted and unique")
+
+
+@dataclass(frozen=True, slots=True)
+class STTradeMemory:
+    """Minimal immutable ST economic identity persisted for one open trade.
+
+    This stores causal entry facts only. Maturity, healthy-base state, continuation
+    failures and CONSUMED are deliberately absent and must remain derived later.
+    Entry price and entry as_of already live on the enclosing PositionEntryMetadata.
+    """
+
+    thesis_family: STThesisFamily
+    economic_mission: STEconomicMission
+    initial_defended_anchor: STInitialDefendedAnchor | None
+    initial_target_context: STInitialTargetContext | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.thesis_family, STThesisFamily):
+            raise ValueError("ST trade-memory thesis family is invalid")
+        if not isinstance(self.economic_mission, STEconomicMission):
+            raise ValueError("ST trade-memory economic mission is invalid")
+
+        if self.thesis_family is STThesisFamily.UNRESOLVED:
+            if self.economic_mission is not STEconomicMission.UNRESOLVED:
+                raise ValueError("unresolved ST trade memory cannot carry a resolved mission")
+            if self.initial_defended_anchor is not None:
+                raise ValueError("unresolved ST trade memory cannot invent a defended anchor")
+            return
+
+        expected_mission = {
+            STThesisFamily.PULLBACK_CONTINUATION: STEconomicMission.CONTINUE_AFTER_BUYER_REGAIN,
+            STThesisFamily.BREAKOUT_ACCEPTANCE: STEconomicMission.EXPAND_FROM_ACCEPTED_HIGHER_AREA,
+            STThesisFamily.FAILED_SELL_RECLAIM: STEconomicMission.CAPTURE_FAILED_SELL_RECLAIM,
+        }[self.thesis_family]
+        expected_anchor_kind = {
+            STThesisFamily.PULLBACK_CONTINUATION: STDefendedAnchorKind.REACTION_ZONE,
+            STThesisFamily.BREAKOUT_ACCEPTANCE: STDefendedAnchorKind.BREAKOUT_ROLE_SUPPORT,
+            STThesisFamily.FAILED_SELL_RECLAIM: STDefendedAnchorKind.FAILED_SELL_RECLAIM_LEVEL,
+        }[self.thesis_family]
+        if self.economic_mission is not expected_mission:
+            raise ValueError("ST trade-memory thesis family and economic mission are inconsistent")
+        if self.initial_defended_anchor is None:
+            raise ValueError("resolved ST trade memory requires the entry-time defended anchor")
+        if self.initial_defended_anchor.kind is not expected_anchor_kind:
+            raise ValueError("ST trade-memory thesis family and defended anchor are inconsistent")
+        if self.initial_target_context is None:
+            raise ValueError("resolved ST trade memory requires initial target context")
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +138,11 @@ class PositionEntryMetadata:
     This is ownership/audit metadata, not fresh market evidence. It must never be
     recomputed from later bars or used to invent a different entry horizon while a
     position remains open.
+
+    For SHORT_TERM entries, ``st_trade_memory`` is built from the Step-1 causal thesis
+    shadow and the same causal target path at the entry snapshot. The legacy
+    ``active_target_identity`` remains for compatibility and must match the compact
+    target context whenever that context is present.
     """
 
     symbol: str
@@ -34,6 +156,7 @@ class PositionEntryMetadata:
     execution_available_at: Any
     execution_reason: str
     source_lineage: tuple[str, ...]
+    st_trade_memory: STTradeMemory | None = None
 
     def __post_init__(self) -> None:
         if not self.symbol.strip():
@@ -51,6 +174,12 @@ class PositionEntryMetadata:
             raise ValueError("position entry price must be finite and positive")
         if self.scenario_kind is ScenarioKind.NONE:
             raise ValueError("open position metadata requires a concrete entry scenario")
+        if self.active_target_identity is not None and (
+            not isinstance(self.active_target_identity, str)
+            or not self.active_target_identity.strip()
+            or self.active_target_identity != self.active_target_identity.strip()
+        ):
+            raise ValueError("position entry target identity must be a canonical string when present")
         if self.execution_timeframe.strip().lower() != "30m":
             raise ValueError("v1 position entry execution timeframe is fixed to 30m")
         if not self.execution_reason.strip():
@@ -58,6 +187,96 @@ class PositionEntryMetadata:
         canonical = tuple(sorted(set(self.source_lineage)))
         if self.source_lineage != canonical:
             raise ValueError("position entry source lineage must be sorted and unique")
+        if self.entry_horizon is DecisionHorizon.LONG_TERM and self.st_trade_memory is not None:
+            raise ValueError("LT position metadata cannot carry ST trade memory")
+        target_context = None if self.st_trade_memory is None else self.st_trade_memory.initial_target_context
+        if target_context is not None and target_context.identity != self.active_target_identity:
+            raise ValueError("ST initial target context must match frozen entry target identity")
+        if (
+            self.st_trade_memory is not None
+            and self.st_trade_memory.thesis_family is not STThesisFamily.UNRESOLVED
+            and self.active_target_identity is None
+        ):
+            raise ValueError("resolved ST trade memory requires the frozen initial target reference")
+
+    @property
+    def initial_target_identity(self) -> str | None:
+        """Compatibility alias for the entry-frozen target reference."""
+
+        return self.active_target_identity
+
+
+def _build_st_initial_target_context(
+    snapshot: "DecisionInputSnapshot",
+    target_identity: str | None,
+) -> STInitialTargetContext | None:
+    if target_identity is None:
+        return None
+    builder = getattr(snapshot, "target_path", None)
+    if not callable(builder):
+        return None
+    path = builder(StructuralDirection.LONG)
+    if getattr(path, "as_of", None) != snapshot.as_of:
+        return None
+    matches = tuple(
+        node for node in getattr(path, "nodes", ()) if getattr(node, "identity", None) == target_identity
+    )
+    if len(matches) != 1:
+        return None
+    node = matches[0]
+    if getattr(node, "direction", StructuralDirection.LONG) is not StructuralDirection.LONG:
+        return None
+    refs = tuple(getattr(node, "source_refs", ()))
+    if any(not ref.is_available_at(snapshot.as_of) for ref in refs):
+        return None
+    return STInitialTargetContext(
+        identity=target_identity,
+        low=float(node.low),
+        high=float(node.high),
+        anchor_price=float(node.anchor_price),
+        roles=tuple(sorted(set(node.roles), key=lambda role: role.value)),
+    )
+
+
+def _build_st_trade_memory(
+    snapshot: "DecisionInputSnapshot",
+    entry: "EntryDecision",
+) -> STTradeMemory:
+    shadow = classify_executed_st_thesis(snapshot, entry)
+    if shadow is None:
+        raise ValueError("executed ST BUY must produce an entry-time thesis shadow")
+
+    target_context = _build_st_initial_target_context(snapshot, shadow.initial_target_identity)
+    anchor = shadow.initial_defended_anchor
+    persistent_anchor = (
+        None
+        if anchor is None
+        else STInitialDefendedAnchor(
+            kind=anchor.kind,
+            identity=anchor.identity,
+            timeframe=anchor.timeframe.strip().lower(),
+            low=float(anchor.low),
+            high=float(anchor.high),
+        )
+    )
+
+    # A resolved family without its original target geometry is incomplete economic
+    # identity. Preserve action behavior and fail safe semantically by storing the ST
+    # trade as UNRESOLVED rather than inventing target context from later information.
+    if shadow.family is not STThesisFamily.UNRESOLVED and target_context is None:
+        return STTradeMemory(
+            thesis_family=STThesisFamily.UNRESOLVED,
+            economic_mission=STEconomicMission.UNRESOLVED,
+            initial_defended_anchor=None,
+            initial_target_context=None,
+        )
+
+    return STTradeMemory(
+        thesis_family=shadow.family,
+        economic_mission=shadow.economic_mission,
+        initial_defended_anchor=persistent_anchor,
+        initial_target_context=target_context,
+    )
 
 
 def build_position_entry_metadata(
@@ -70,6 +289,8 @@ def build_position_entry_metadata(
 
     The raw execution event is required even though Turn 6 already assessed it. This
     prevents persistence from fabricating execution provenance from a boolean flag.
+    SHORT_TERM entries additionally freeze only the compact Step-1 economic identity
+    and target geometry; no current domain snapshot is copied into trade state.
     """
 
     if entry.action is not DecisionAction.BUY:
@@ -116,6 +337,12 @@ def build_position_entry_metadata(
     except TypeError as exc:
         raise TypeError("position entry event timestamps must be comparable") from exc
 
+    st_trade_memory = (
+        _build_st_trade_memory(snapshot, entry)
+        if entry.selected_horizon is DecisionHorizon.SHORT_TERM
+        else None
+    )
+
     return PositionEntryMetadata(
         symbol=str(snapshot.symbol),
         entry_horizon=entry.selected_horizon,
@@ -128,7 +355,14 @@ def build_position_entry_metadata(
         execution_available_at=execution_event.available_at,
         execution_reason=execution_event.reason.strip(),
         source_lineage=tuple(sorted(set(entry.source_lineage))),
+        st_trade_memory=st_trade_memory,
     )
 
 
-__all__ = ["PositionEntryMetadata", "build_position_entry_metadata"]
+__all__ = [
+    "PositionEntryMetadata",
+    "STInitialDefendedAnchor",
+    "STInitialTargetContext",
+    "STTradeMemory",
+    "build_position_entry_metadata",
+]

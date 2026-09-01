@@ -13,13 +13,20 @@ import pandas as pd
 
 from .lifecycle import ExitStage, PositionState, TradeLifecycleState
 from .lifecycle_replay import ReplayAuditMarkerState
-from .position_metadata import PositionEntryMetadata
+from .position_metadata import (
+    PositionEntryMetadata,
+    STInitialDefendedAnchor,
+    STInitialTargetContext,
+    STTradeMemory,
+)
 from .scenario import ScenarioKind
+from .st_thesis_identity import STDefendedAnchorKind, STEconomicMission, STThesisFamily
 from .structural import DecisionHorizon
+from .target_path import TargetPathRole
 
 
-TRADE_LIFECYCLE_STATE_SCHEMA_VERSION = 2
-CANONICAL_LIFECYCLE_CONTRACT_VERSION = 2
+TRADE_LIFECYCLE_STATE_SCHEMA_VERSION = 3
+CANONICAL_LIFECYCLE_CONTRACT_VERSION = 3
 
 
 class LifecycleCheckpointStatus(StrEnum):
@@ -187,6 +194,117 @@ def deserialize_replay_audit_marker_state(payload: Mapping[str, Any]) -> ReplayA
     )
 
 
+def _serialize_st_trade_memory(memory: STTradeMemory | None) -> dict[str, Any] | None:
+    if memory is None:
+        return None
+    anchor = memory.initial_defended_anchor
+    target = memory.initial_target_context
+    return {
+        "thesis_family": memory.thesis_family.value,
+        "economic_mission": memory.economic_mission.value,
+        "initial_defended_anchor": (
+            None
+            if anchor is None
+            else {
+                "kind": anchor.kind.value,
+                "identity": anchor.identity,
+                "timeframe": anchor.timeframe,
+                "low": float(anchor.low),
+                "high": float(anchor.high),
+            }
+        ),
+        "initial_target_context": (
+            None
+            if target is None
+            else {
+                "identity": target.identity,
+                "low": float(target.low),
+                "high": float(target.high),
+                "anchor_price": float(target.anchor_price),
+                "roles": [role.value for role in target.roles],
+            }
+        ),
+    }
+
+
+def _deserialize_st_trade_memory(payload: Any) -> STTradeMemory | None:
+    if payload is None:
+        return None
+    if not isinstance(payload, Mapping):
+        raise ValueError("persisted ST trade memory must be a mapping")
+    try:
+        family = STThesisFamily(str(payload["thesis_family"]))
+        mission = STEconomicMission(str(payload["economic_mission"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("persisted ST trade memory thesis/mission is invalid") from exc
+
+    raw_anchor = payload.get("initial_defended_anchor")
+    anchor: STInitialDefendedAnchor | None
+    if raw_anchor is None:
+        anchor = None
+    else:
+        if not isinstance(raw_anchor, Mapping):
+            raise ValueError("persisted ST defended anchor must be a mapping")
+        raw_identity = raw_anchor.get("identity")
+        raw_timeframe = raw_anchor.get("timeframe")
+        if not isinstance(raw_identity, str) or not isinstance(raw_timeframe, str):
+            raise ValueError("persisted ST defended anchor identity/timeframe must be strings")
+        try:
+            anchor = STInitialDefendedAnchor(
+                kind=STDefendedAnchorKind(str(raw_anchor["kind"])),
+                identity=raw_identity,
+                timeframe=raw_timeframe,
+                low=float(raw_anchor["low"]),
+                high=float(raw_anchor["high"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("persisted ST defended anchor is invalid") from exc
+
+    raw_target = payload.get("initial_target_context")
+    target: STInitialTargetContext | None
+    if raw_target is None:
+        target = None
+    else:
+        if not isinstance(raw_target, Mapping):
+            raise ValueError("persisted ST initial target context must be a mapping")
+        raw_identity = raw_target.get("identity")
+        raw_roles = raw_target.get("roles")
+        if not isinstance(raw_identity, str):
+            raise ValueError("persisted ST initial target identity must be a string")
+        if not isinstance(raw_roles, list) or any(not isinstance(role, str) for role in raw_roles):
+            raise ValueError("persisted ST initial target roles must be a string list")
+        try:
+            target = STInitialTargetContext(
+                identity=raw_identity,
+                low=float(raw_target["low"]),
+                high=float(raw_target["high"]),
+                anchor_price=float(raw_target["anchor_price"]),
+                roles=tuple(TargetPathRole(role) for role in raw_roles),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("persisted ST initial target context is invalid") from exc
+
+    return STTradeMemory(
+        thesis_family=family,
+        economic_mission=mission,
+        initial_defended_anchor=anchor,
+        initial_target_context=target,
+    )
+
+
+def _require_canonical_st_trade_memory(state: TradeLifecycleState) -> None:
+    """Fail closed when a v3 canonical OPEN ST position lacks entry-time memory."""
+
+    metadata = state.entry_metadata
+    if (
+        state.position is PositionState.OPEN
+        and metadata is not None
+        and metadata.entry_horizon is DecisionHorizon.SHORT_TERM
+        and metadata.st_trade_memory is None
+    ):
+        raise ValueError("canonical persisted ST OPEN lifecycle requires ST trade memory")
+
+
 def serialize_trade_lifecycle_state(state: TradeLifecycleState) -> dict[str, Any]:
     if state.position is PositionState.OPEN and state.entry_metadata is None:
         raise ValueError("canonical persisted OPEN lifecycle requires entry metadata")
@@ -206,6 +324,7 @@ def serialize_trade_lifecycle_state(state: TradeLifecycleState) -> dict[str, Any
             "execution_available_at": _timestamp_payload(metadata.execution_available_at),
             "execution_reason": metadata.execution_reason,
             "source_lineage": list(metadata.source_lineage),
+            "st_trade_memory": _serialize_st_trade_memory(metadata.st_trade_memory),
         }
 
     return {
@@ -263,6 +382,7 @@ def deserialize_trade_lifecycle_state(payload: Mapping[str, Any]) -> TradeLifecy
         execution_available_at=_timestamp_from_payload(raw.get("execution_available_at"), field="entry_metadata.execution_available_at", required=True),
         execution_reason=str(raw.get("execution_reason", "")),
         source_lineage=tuple(source_lineage),
+        st_trade_memory=_deserialize_st_trade_memory(raw.get("st_trade_memory")),
     )
     return TradeLifecycleState(
         position=position,
@@ -302,6 +422,7 @@ def causal_prefix_digest(
 
 
 def serialize_trade_lifecycle_checkpoint(checkpoint: TradeLifecycleCheckpoint) -> dict[str, Any]:
+    _require_canonical_st_trade_memory(checkpoint.state)
     return {
         "schema_version": TRADE_LIFECYCLE_STATE_SCHEMA_VERSION,
         "contract_version": CANONICAL_LIFECYCLE_CONTRACT_VERSION,
@@ -341,9 +462,11 @@ def deserialize_trade_lifecycle_checkpoint(payload: Mapping[str, Any], *, expect
     marker_payload = payload.get("audit_markers")
     if not isinstance(marker_payload, Mapping):
         raise ValueError("trade lifecycle checkpoint audit_markers are invalid")
+    state = deserialize_trade_lifecycle_state(state_payload)
+    _require_canonical_st_trade_memory(state)
     return TradeLifecycleCheckpoint(
         symbol=expected_symbol,
-        state=deserialize_trade_lifecycle_state(state_payload),
+        state=state,
         prefix_count=prefix_count,
         last_as_of=last_as_of,
         causal_prefix_digest=causal_digest,
