@@ -101,8 +101,9 @@ def _timeframe_policy(horizon: DecisionHorizon) -> tuple[tuple[str, ...], str, s
         # LT Structure remains 1D-owned. 4H describes supporting participation/regime,
         # while 1H is the immediate LT setup-timing context. 30m remains execution.
         return _LT_REACTION_TIMEFRAMES, "4h", "4h", "1h"
-    # ST Structure remains 1H-owned. 30m is setup timing / trigger context.
-    return _ST_REACTION_TIMEFRAMES, "1h", "1h", "30m"
+    # ST Structure remains 1H-owned. 4H describes higher-timeframe volatility regime,
+    # while 30m remains the immediate ST setup-timing / execution context.
+    return _ST_REACTION_TIMEFRAMES, "1h", "4h", "30m"
 
 
 def _permission_policy(horizon: DecisionHorizon) -> tuple[str, tuple[str, ...]]:
