@@ -14,7 +14,7 @@ from .target_path import TargetPath, TargetPathNodeState, TargetPathStatus
 
 if TYPE_CHECKING:
     from financial_dashboard.decision_input import DecisionInputSnapshot
-    from .engine import DecisionEngineConfig, HorizonDecisionAssessment
+    from .engine import DecisionEngineConfig, HorizonDecisionAssessment, PreparedHorizonAssessment
 
 
 class ScenarioPresence(StrEnum):
@@ -72,7 +72,17 @@ class EntryScenarioAssessment:
         return self.presence is ScenarioPresence.PRESENT
 
 
-def _lineage_from_assessment(assessment: "HorizonDecisionAssessment") -> set[str]:
+@dataclass(frozen=True, slots=True)
+class PreparedEntryScenario:
+    """Internal scenario plus the exact execution-independent assessment that built it."""
+
+    scenario: EntryScenarioAssessment
+    assessment: "PreparedHorizonAssessment"
+
+
+def _lineage_from_assessment(
+    assessment: "HorizonDecisionAssessment | PreparedHorizonAssessment",
+) -> set[str]:
     values = set(assessment.opportunity.source_lineage)
     for ref in assessment.structural.source_refs:
         values.add(ref.lineage_id or f"{ref.domain.value}:{ref.timeframe}:{ref.native_id}")
@@ -88,7 +98,9 @@ def _lineage_from_path(path: TargetPath) -> set[str]:
     return values
 
 
-def _scenario_kind(assessment: "HorizonDecisionAssessment") -> ScenarioKind:
+def _scenario_kind(
+    assessment: "HorizonDecisionAssessment | PreparedHorizonAssessment",
+) -> ScenarioKind:
     relation = assessment.structural_snapshot.relation
     horizon = assessment.horizon
     if assessment.structural.thesis_state is ThesisState.TRANSITIONING:
@@ -104,7 +116,10 @@ def _scenario_kind(assessment: "HorizonDecisionAssessment") -> ScenarioKind:
     return ScenarioKind.SHORT_TERM_STANDALONE
 
 
-def _observed_opportunity(assessment: "HorizonDecisionAssessment", path: TargetPath) -> bool:
+def _observed_opportunity(
+    assessment: "HorizonDecisionAssessment | PreparedHorizonAssessment",
+    path: TargetPath,
+) -> bool:
     opportunity = assessment.opportunity
     if opportunity.state in {
         OpportunityState.AMPLE,
@@ -118,7 +133,7 @@ def _observed_opportunity(assessment: "HorizonDecisionAssessment", path: TargetP
 
 
 def build_entry_scenario(
-    assessment: "HorizonDecisionAssessment",
+    assessment: "HorizonDecisionAssessment | PreparedHorizonAssessment",
     *,
     target_path: TargetPath,
     market_state: HorizonMarketState,
@@ -294,6 +309,24 @@ def build_entry_scenario(
     )
 
 
+def prepare_entry_scenario(
+    snapshot: "DecisionInputSnapshot",
+    horizon: DecisionHorizon,
+    *,
+    config: "DecisionEngineConfig | None" = None,
+) -> PreparedEntryScenario:
+    """Build one scenario and retain the exact prepared assessment behind it."""
+
+    from .engine import prepare_horizon_assessment
+
+    assessment = prepare_horizon_assessment(snapshot, horizon, config=config)
+    market = snapshot.market_state
+    horizon_market = market.long_term if horizon is DecisionHorizon.LONG_TERM else market.short_term
+    path = snapshot.target_path(assessment.structural.direction)
+    scenario = build_entry_scenario(assessment, target_path=path, market_state=horizon_market)
+    return PreparedEntryScenario(scenario=scenario, assessment=assessment)
+
+
 def assess_entry_scenario(
     snapshot: "DecisionInputSnapshot",
     horizon: DecisionHorizon,
@@ -302,14 +335,7 @@ def assess_entry_scenario(
 ) -> EntryScenarioAssessment:
     """Build the causal non-action scenario directly from one frozen input snapshot."""
 
-    # Local import avoids making the existing horizon engine depend on this layer.
-    from .engine import assess_horizon_decision
-
-    assessment = assess_horizon_decision(snapshot, horizon, config=config, execution_event=None)
-    market = snapshot.market_state
-    horizon_market = market.long_term if horizon is DecisionHorizon.LONG_TERM else market.short_term
-    path = snapshot.target_path(assessment.structural.direction)
-    return build_entry_scenario(assessment, target_path=path, market_state=horizon_market)
+    return prepare_entry_scenario(snapshot, horizon, config=config).scenario
 
 
 __all__ = [

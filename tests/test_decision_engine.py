@@ -233,6 +233,60 @@ def test_engine_emits_buy_only_with_fresh_current_execution_event(monkeypatch):
     assert result.final.action is DecisionAction.BUY
 
 
+def test_finalize_uses_prepared_market_assessment_without_recomputing_upstream(monkeypatch):
+    calls = {}
+    _patch_pipeline(monkeypatch, calls=calls)
+    snapshot = _snapshot()
+    prepared = engine_module.prepare_horizon_assessment(snapshot, DecisionHorizon.SHORT_TERM)
+    upstream_calls = {name: tuple(values) for name, values in calls.items()}
+    event = ExecutionTriggerEvent(
+        state=ExecutionTriggerState.CONFIRMED,
+        side=StructuralDirection.LONG,
+        timeframe="30m",
+        observed_at=10,
+        available_at=10,
+        reason="FRESH_EVENT",
+    )
+
+    result = engine_module.finalize_horizon_assessment(
+        snapshot,
+        prepared,
+        execution_event=event,
+    )
+
+    assert result.final.action is DecisionAction.BUY
+    assert {name: tuple(values) for name, values in calls.items()} == upstream_calls
+    assert result.structural is prepared.structural
+    assert result.eligibility is prepared.eligibility
+
+
+def test_prepare_finalize_matches_public_compatibility_wrapper(monkeypatch):
+    _patch_pipeline(monkeypatch)
+    snapshot = _snapshot()
+    event = ExecutionTriggerEvent(
+        state=ExecutionTriggerState.CONFIRMED,
+        side=StructuralDirection.LONG,
+        timeframe="30m",
+        observed_at=10,
+        available_at=10,
+        reason="FRESH_EVENT",
+    )
+
+    prepared = engine_module.prepare_horizon_assessment(snapshot, DecisionHorizon.LONG_TERM)
+    explicit = engine_module.finalize_horizon_assessment(
+        snapshot,
+        prepared,
+        execution_event=event,
+    )
+    compatibility = engine_module.assess_horizon_decision(
+        snapshot,
+        DecisionHorizon.LONG_TERM,
+        execution_event=event,
+    )
+
+    assert explicit == compatibility
+
+
 def test_turn6_horizon_decision_fingerprint_matches_frozen_baseline(monkeypatch):
     _patch_pipeline(monkeypatch)
     actual = []

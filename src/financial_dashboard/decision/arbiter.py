@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from .scenario import EntryScenarioAssessment, ScenarioPresence
+from .scenario import EntryScenarioAssessment, PreparedEntryScenario, ScenarioPresence, prepare_entry_scenario
 from .structural import DecisionHorizon
 
 if TYPE_CHECKING:
@@ -50,6 +50,23 @@ class EntryScenarioArbitration:
         """Arbitration owns horizon selection only; Turn 6 owns entry actions."""
 
         return False
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedEntryArbitration:
+    """Internal arbitration plus the exact prepared LT/ST assessments it selected from."""
+
+    arbitration: EntryScenarioArbitration
+    long_term: PreparedEntryScenario
+    short_term: PreparedEntryScenario
+
+    @property
+    def selected_prepared(self) -> PreparedEntryScenario | None:
+        if self.arbitration.selected_horizon is DecisionHorizon.LONG_TERM:
+            return self.long_term
+        if self.arbitration.selected_horizon is DecisionHorizon.SHORT_TERM:
+            return self.short_term
+        return None
 
 
 def _validate_horizons(
@@ -156,6 +173,23 @@ def arbitrate_entry_scenarios(
     )
 
 
+def prepare_entry_arbitration(
+    snapshot: "DecisionInputSnapshot",
+    *,
+    config: "DecisionEngineConfig | None" = None,
+) -> PreparedEntryArbitration:
+    """Prepare LT/ST once, then apply the unchanged strict ownership rule."""
+
+    long_term = prepare_entry_scenario(snapshot, DecisionHorizon.LONG_TERM, config=config)
+    short_term = prepare_entry_scenario(snapshot, DecisionHorizon.SHORT_TERM, config=config)
+    arbitration = arbitrate_entry_scenarios(long_term.scenario, short_term.scenario)
+    return PreparedEntryArbitration(
+        arbitration=arbitration,
+        long_term=long_term,
+        short_term=short_term,
+    )
+
+
 def assess_entry_arbitration(
     snapshot: "DecisionInputSnapshot",
     *,
@@ -163,9 +197,7 @@ def assess_entry_arbitration(
 ) -> EntryScenarioArbitration:
     """Build both causal scenarios then apply strict horizon ownership."""
 
-    long_term = snapshot.entry_scenario(DecisionHorizon.LONG_TERM, config=config)
-    short_term = snapshot.entry_scenario(DecisionHorizon.SHORT_TERM, config=config)
-    return arbitrate_entry_scenarios(long_term, short_term)
+    return prepare_entry_arbitration(snapshot, config=config).arbitration
 
 
 __all__ = [
