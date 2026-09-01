@@ -139,6 +139,30 @@ def test_persistent_downside_is_preserved_as_downside_evidence_for_both_horizons
     assert st.state is StabilHorizonState.DOWNSIDE_CONTINUATION
 
 
+def test_interpretation_preserves_native_context_for_later_horizon_policy() -> None:
+    result = assess_stabil_horizon(_stabil(), DecisionHorizon.LONG_TERM)
+
+    assert result.validity == "ACTIVE"
+    assert result.dynamics == "FLAT"
+    assert result.progression == "SAME"
+    assert result.motion == "FLAT"
+    assert result.relation == "ABOVE_NEAR"
+    assert result.interaction == "HOLDING_ABOVE"
+    assert result.approach_origin == "FROM_ABOVE"
+    assert result.support_level == 100.0
+    assert result.support_floor == 98.0
+    assert result.distance_atr == 1.0
+    assert result.distance_delta_atr == 0.1
+    assert result.bars_above_support == 4
+    assert result.bars_below_support == 0
+    assert result.reclaim_count == 0
+    assert result.bars_since_rebase == 5
+    assert result.cross_count == 1
+    assert result.last_rebase_step_atr is None
+    assert result.reclaim_active is False
+    assert result.event_types == ()
+
+
 def test_missing_support_is_explicit_not_established_and_non_actionable() -> None:
     stabil = _stabil(validity="NO_SUPPORT", with_support=False)
     result = assess_stabil_horizon(stabil, DecisionHorizon.LONG_TERM)
