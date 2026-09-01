@@ -24,6 +24,7 @@ from .opportunity import OpportunityAssessment, OpportunityCalibration, assess_o
 from .participation import ParticipationAssessment, assess_participation
 from .reaction import ReactionAssessment, assess_reaction
 from .stabil_interpretation import StabilHorizonAssessment, assess_stabil_horizon
+from .stabil_policy import StabilEntryPolicyAssessment, assess_stabil_entry_policy
 from .structural import (
     DecisionHorizon,
     HorizonStructuralSnapshot,
@@ -33,7 +34,7 @@ from .structural import (
 from .timing import TimingAssessment, assess_timing
 
 
-DECISION_CONTRACT_VERSION = 1
+DECISION_CONTRACT_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +73,7 @@ class PreparedHorizonAssessment:
     permission: PermissionEnvelope
     durability: DurabilityAssessment
     stabil: StabilHorizonAssessment
+    stabil_policy: StabilEntryPolicyAssessment
     reaction: ReactionAssessment
     timing_reaction: ReactionAssessment
     participation: ParticipationAssessment
@@ -92,6 +94,7 @@ class HorizonDecisionAssessment:
     permission: PermissionEnvelope
     durability: DurabilityAssessment
     stabil: StabilHorizonAssessment
+    stabil_policy: StabilEntryPolicyAssessment
     reaction: ReactionAssessment
     timing_reaction: ReactionAssessment
     participation: ParticipationAssessment
@@ -306,6 +309,7 @@ def prepare_horizon_assessment(
         None if factual_market_state is None else factual_market_state.stabil,
         horizon,
     )
+    stabil_policy = assess_stabil_entry_policy(stabil)
     reaction = assess_reaction(
         structural.direction,
         order_blocks=snapshot.order_block_behavior,
@@ -364,6 +368,7 @@ def prepare_horizon_assessment(
         conflict=conflict,
         environment=environment,
         coverage=coverage,
+        stabil_policy=stabil_policy,
     )
 
     return PreparedHorizonAssessment(
@@ -375,6 +380,7 @@ def prepare_horizon_assessment(
         permission=permission,
         durability=durability,
         stabil=stabil,
+        stabil_policy=stabil_policy,
         reaction=reaction,
         timing_reaction=timing_reaction,
         participation=participation,
@@ -430,6 +436,7 @@ def finalize_horizon_assessment(
         permission=prepared.permission,
         durability=prepared.durability,
         stabil=prepared.stabil,
+        stabil_policy=prepared.stabil_policy,
         reaction=prepared.reaction,
         timing_reaction=prepared.timing_reaction,
         participation=prepared.participation,
