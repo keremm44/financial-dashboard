@@ -13,10 +13,16 @@ import pandas as pd
 
 from .lifecycle import ExitStage, PositionState, TradeLifecycleState
 from .lifecycle_replay import ReplayAuditMarkerState
-from .position_metadata import PositionEntryMetadata, STInitialDefendedAnchor, STTradeMemory
+from .position_metadata import (
+    PositionEntryMetadata,
+    STInitialDefendedAnchor,
+    STInitialTargetContext,
+    STTradeMemory,
+)
 from .scenario import ScenarioKind
 from .st_thesis_identity import STDefendedAnchorKind, STEconomicMission, STThesisFamily
 from .structural import DecisionHorizon
+from .target_path import TargetPathRole
 
 
 TRADE_LIFECYCLE_STATE_SCHEMA_VERSION = 3
@@ -192,6 +198,7 @@ def _serialize_st_trade_memory(memory: STTradeMemory | None) -> dict[str, Any] |
     if memory is None:
         return None
     anchor = memory.initial_defended_anchor
+    target = memory.initial_target_context
     return {
         "thesis_family": memory.thesis_family.value,
         "economic_mission": memory.economic_mission.value,
@@ -204,6 +211,17 @@ def _serialize_st_trade_memory(memory: STTradeMemory | None) -> dict[str, Any] |
                 "timeframe": anchor.timeframe,
                 "low": float(anchor.low),
                 "high": float(anchor.high),
+            }
+        ),
+        "initial_target_context": (
+            None
+            if target is None
+            else {
+                "identity": target.identity,
+                "low": float(target.low),
+                "high": float(target.high),
+                "anchor_price": float(target.anchor_price),
+                "roles": [role.value for role in target.roles],
             }
         ),
     }
@@ -242,10 +260,35 @@ def _deserialize_st_trade_memory(payload: Any) -> STTradeMemory | None:
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("persisted ST defended anchor is invalid") from exc
 
+    raw_target = payload.get("initial_target_context")
+    target: STInitialTargetContext | None
+    if raw_target is None:
+        target = None
+    else:
+        if not isinstance(raw_target, Mapping):
+            raise ValueError("persisted ST initial target context must be a mapping")
+        raw_identity = raw_target.get("identity")
+        raw_roles = raw_target.get("roles")
+        if not isinstance(raw_identity, str):
+            raise ValueError("persisted ST initial target identity must be a string")
+        if not isinstance(raw_roles, list) or any(not isinstance(role, str) for role in raw_roles):
+            raise ValueError("persisted ST initial target roles must be a string list")
+        try:
+            target = STInitialTargetContext(
+                identity=raw_identity,
+                low=float(raw_target["low"]),
+                high=float(raw_target["high"]),
+                anchor_price=float(raw_target["anchor_price"]),
+                roles=tuple(TargetPathRole(role) for role in raw_roles),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("persisted ST initial target context is invalid") from exc
+
     return STTradeMemory(
         thesis_family=family,
         economic_mission=mission,
         initial_defended_anchor=anchor,
+        initial_target_context=target,
     )
 
 
