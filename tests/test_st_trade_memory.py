@@ -36,6 +36,7 @@ from financial_dashboard.decision.persistent_lifecycle_replay import PersistentC
 from financial_dashboard.decision.position_metadata import (
     PositionEntryMetadata,
     STInitialDefendedAnchor,
+    STInitialTargetContext,
     STTradeMemory,
     build_position_entry_metadata,
 )
@@ -46,9 +47,10 @@ from financial_dashboard.decision.st_thesis_identity import (
     STThesisFamily,
 )
 from financial_dashboard.decision.structural import DecisionHorizon, StructuralDirection
+from financial_dashboard.decision.target_path import TargetPathRole
 
 
-def _ref(as_of, *, native_id="sr:1"):
+def _ref(as_of, *, native_id="sr:1", available_at=None):
     return FactRef(
         domain=ContextDomain.SUPPORT_RESISTANCE,
         fact_type="RANGE_EXPORT",
@@ -58,7 +60,7 @@ def _ref(as_of, *, native_id="sr:1"):
         native_state="RANGE_BREAK_CONFIRMED",
         origin_time=as_of,
         confirmed_at=as_of,
-        available_at=as_of,
+        available_at=as_of if available_at is None else available_at,
         lineage_id=native_id,
         causal_family=CausalFamily.STRUCTURAL_LEVEL,
         source_family=SourceFamily.PRICE_GEOMETRY,
@@ -90,7 +92,35 @@ def _sr_projection(
     return SimpleNamespace(timeframe_facts=(row,)), ref
 
 
-def _snapshot(as_of, *, price=104.0, support_resistance=None, source_refs=()):
+def _target_path(
+    as_of,
+    *,
+    identity="target:st:1",
+    low=110.0,
+    high=112.0,
+    source_refs=(),
+):
+    node = SimpleNamespace(
+        identity=identity,
+        direction=StructuralDirection.LONG,
+        low=low,
+        high=high,
+        anchor_price=(low + high) * 0.5,
+        roles=(TargetPathRole.OBJECTIVE,),
+        source_refs=source_refs,
+    )
+    return SimpleNamespace(as_of=as_of, nodes=(node,))
+
+
+def _snapshot(
+    as_of,
+    *,
+    price=104.0,
+    support_resistance=None,
+    source_refs=(),
+    target_path=None,
+):
+    path = target_path or _target_path(as_of)
     return SimpleNamespace(
         symbol="TEST",
         as_of=as_of,
@@ -99,6 +129,7 @@ def _snapshot(as_of, *, price=104.0, support_resistance=None, source_refs=()):
         order_block_behavior=None,
         fvg_engulfing_lifecycle=None,
         source_refs=source_refs,
+        target_path=lambda direction: path,
     )
 
 
@@ -153,6 +184,11 @@ def test_resolved_st_entry_freezes_minimal_breakout_trade_memory():
     assert memory.initial_defended_anchor is not None
     assert memory.initial_defended_anchor.kind is STDefendedAnchorKind.BREAKOUT_ROLE_SUPPORT
     assert (memory.initial_defended_anchor.low, memory.initial_defended_anchor.high) == (99.0, 100.0)
+    assert memory.initial_target_context is not None
+    assert memory.initial_target_context.identity == "target:st:1"
+    assert (memory.initial_target_context.low, memory.initial_target_context.high) == (110.0, 112.0)
+    assert memory.initial_target_context.anchor_price == 111.0
+    assert memory.initial_target_context.roles == (TargetPathRole.OBJECTIVE,)
     assert metadata.entry_price == 104.0
     assert metadata.entry_as_of == as_of
     assert metadata.initial_target_identity == "target:st:1"
@@ -162,6 +198,7 @@ def test_resolved_st_entry_freezes_minimal_breakout_trade_memory():
         "thesis_family",
         "economic_mission",
         "initial_defended_anchor",
+        "initial_target_context",
     }
     assert {item.name for item in fields(STInitialDefendedAnchor)} == {
         "kind",
@@ -170,7 +207,15 @@ def test_resolved_st_entry_freezes_minimal_breakout_trade_memory():
         "low",
         "high",
     }
+    assert {item.name for item in fields(STInitialTargetContext)} == {
+        "identity",
+        "low",
+        "high",
+        "anchor_price",
+        "roles",
+    }
     assert not hasattr(memory.initial_defended_anchor, "source_refs")
+    assert not hasattr(memory.initial_target_context, "source_refs")
 
     forbidden_policy_flags = {
         "maturity",
@@ -195,10 +240,40 @@ def test_ambiguous_or_missing_entry_evidence_persists_unresolved_without_inventi
     assert memory.thesis_family is STThesisFamily.UNRESOLVED
     assert memory.economic_mission is STEconomicMission.UNRESOLVED
     assert memory.initial_defended_anchor is None
+    assert memory.initial_target_context is not None
+    assert memory.initial_target_context.identity == "target:st:1"
     assert metadata.initial_target_identity == "target:st:1"
 
 
-def test_entry_anchor_is_immutable_and_later_buy_cannot_rewrite_trade_memory():
+def test_future_unavailable_target_context_cannot_be_frozen_into_resolved_trade_memory():
+    as_of = pd.Timestamp("2026-01-05 10:00")
+    sr, ref = _sr_projection(as_of)
+    future_ref = _ref(
+        as_of,
+        native_id="target:future",
+        available_at=as_of + pd.Timedelta(minutes=30),
+    )
+    path = _target_path(as_of, source_refs=(future_ref,))
+    metadata = build_position_entry_metadata(
+        _snapshot(
+            as_of,
+            support_resistance=sr,
+            source_refs=(ref,),
+            target_path=path,
+        ),
+        _entry(),
+        execution_event=_event(as_of),
+    )
+
+    memory = metadata.st_trade_memory
+    assert memory is not None
+    assert memory.thesis_family is STThesisFamily.UNRESOLVED
+    assert memory.economic_mission is STEconomicMission.UNRESOLVED
+    assert memory.initial_defended_anchor is None
+    assert memory.initial_target_context is None
+
+
+def test_entry_anchors_are_immutable_and_later_buy_cannot_rewrite_trade_memory():
     t1 = pd.Timestamp("2026-01-05 10:00")
     sr1, ref1 = _sr_projection(t1)
     first_snapshot = _snapshot(t1, support_resistance=sr1, source_refs=(ref1,))
@@ -213,6 +288,8 @@ def test_entry_anchor_is_immutable_and_later_buy_cannot_rewrite_trade_memory():
 
     with pytest.raises(FrozenInstanceError):
         original.st_trade_memory.initial_defended_anchor.low = 1.0
+    with pytest.raises(FrozenInstanceError):
+        original.st_trade_memory.initial_target_context.high = 999.0
 
     t2 = pd.Timestamp("2026-01-05 11:00")
     sr2, ref2 = _sr_projection(
@@ -224,7 +301,18 @@ def test_entry_anchor_is_immutable_and_later_buy_cannot_rewrite_trade_memory():
         native_id="sr:later",
     )
     conflicting = build_position_entry_metadata(
-        _snapshot(t2, price=97.0, support_resistance=sr2, source_refs=(ref2,)),
+        _snapshot(
+            t2,
+            price=97.0,
+            support_resistance=sr2,
+            source_refs=(ref2,),
+            target_path=_target_path(
+                t2,
+                identity="target:later",
+                low=108.0,
+                high=109.0,
+            ),
+        ),
         _entry(target_identity="target:later"),
         execution_event=_event(t2),
     )
@@ -240,6 +328,7 @@ def test_entry_anchor_is_immutable_and_later_buy_cannot_rewrite_trade_memory():
     assert repeated.current.entry_metadata is original
     assert repeated.current.entry_metadata.st_trade_memory.thesis_family is STThesisFamily.BREAKOUT_ACCEPTANCE
     assert repeated.current.entry_metadata.initial_target_identity == "target:st:1"
+    assert repeated.current.entry_metadata.st_trade_memory.initial_target_context.high == 112.0
 
 
 def _checkpoint_for_open_state(state):
@@ -289,6 +378,13 @@ def test_v3_checkpoint_requires_st_trade_memory_and_v2_cannot_be_silently_migrat
         execution_event=_event(as_of),
     ).current
     payload = serialize_trade_lifecycle_checkpoint(_checkpoint_for_open_state(canonical_state))
+    assert payload["state"]["entry_metadata"]["st_trade_memory"]["initial_target_context"] == {
+        "identity": "target:st:1",
+        "low": 110.0,
+        "high": 112.0,
+        "anchor_price": 111.0,
+        "roles": ["OBJECTIVE"],
+    }
     payload["schema_version"] = 2
     payload["contract_version"] = 2
 
@@ -309,10 +405,21 @@ class _ReplaySnapshot:
     entry_action: DecisionAction = DecisionAction.WAIT
     order_block_behavior: object | None = None
     fvg_engulfing_lifecycle: object | None = None
+    target_identity: str = "target:st:1"
+    target_low: float = 110.0
+    target_high: float = 112.0
+
+    def target_path(self, direction):
+        return _target_path(
+            self.as_of,
+            identity=self.target_identity,
+            low=self.target_low,
+            high=self.target_high,
+        )
 
     def entry_decision(self, *, config=None, execution_event=None):
         if self.entry_action is DecisionAction.BUY and execution_event is not None:
-            return _entry()
+            return _entry(target_identity=self.target_identity)
         return SimpleNamespace(
             action=DecisionAction.WAIT,
             selected_horizon=None,
@@ -356,6 +463,7 @@ def test_cold_warm_and_restart_replay_preserve_same_st_trade_memory(tmp_path):
     cold_memory = cold.final_state.entry_metadata.st_trade_memory
     assert cold_memory is not None
     assert cold_memory.thesis_family is STThesisFamily.BREAKOUT_ACCEPTANCE
+    assert cold_memory.initial_target_context is not None
 
     runner = PersistentCanonicalLifecycleReplayRunner(tmp_path)
     prefix = runner.run("TEST", snapshots[:2], entry_execution_events=events)
