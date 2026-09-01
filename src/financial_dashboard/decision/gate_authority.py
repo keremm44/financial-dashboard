@@ -7,6 +7,7 @@ from enum import StrEnum
 class GateAuthority(StrEnum):
     STRUCTURE = "STRUCTURE"
     PERMISSION = "PERMISSION"
+    STABIL = "STABIL"
     ENVIRONMENT = "ENVIRONMENT"
     OPPORTUNITY = "OPPORTUNITY"
     CONFLICT = "CONFLICT"
@@ -31,6 +32,7 @@ HARD_GATE_OWNERSHIP: tuple[HardGateOwnership, ...] = (
     HardGateOwnership("STRUCTURAL_DIRECTION_UNRESOLVED", GateAuthority.STRUCTURE),
     HardGateOwnership("STRUCTURAL_THESIS", GateAuthority.STRUCTURE),
     HardGateOwnership("PERMISSION_BLOCKED", GateAuthority.PERMISSION),
+    HardGateOwnership("STABIL_LONG_ENTRY_CONTRADICTION", GateAuthority.STABIL),
     HardGateOwnership("VOLATILITY_SHOCK", GateAuthority.ENVIRONMENT),
     HardGateOwnership("OPPORTUNITY_NONE", GateAuthority.OPPORTUNITY),
     HardGateOwnership("INDEPENDENT_FAMILY_CONFLICT_HIGH", GateAuthority.CONFLICT),
