@@ -12,6 +12,7 @@ from financial_dashboard.decision.coverage import CoverageAssessment, CoverageFa
 from financial_dashboard.decision.eligibility import EligibilityState, assess_eligibility
 from financial_dashboard.decision.environment import EnvironmentRisk
 from financial_dashboard.decision.opportunity import OpportunityState
+from financial_dashboard.decision.stabil_policy import StabilPolicyEffect
 from financial_dashboard.decision.structural import StructuralDirection, ThesisState
 from financial_dashboard.decision.timing import TimingState
 
@@ -150,3 +151,34 @@ def test_unresolved_conflict_is_wait_not_high_conflict_gate():
     result = _assess(conflict=_conflict(ConflictState.UNRESOLVED))
     assert result.state is EligibilityState.WAITING
     assert "CONFLICT_EVIDENCE_TO_RESOLVE" in result.waiting_for
+
+
+def test_stabil_hard_contradiction_blocks_fresh_long_only():
+    policy = SimpleNamespace(effect=StabilPolicyEffect.HARD_CONTRADICTION)
+    result = _assess(stabil_policy=policy)
+
+    assert result.state is EligibilityState.BLOCKED
+    assert result.blockers == ("STABIL_LONG_ENTRY_CONTRADICTION",)
+
+    short = _assess(
+        structural=_structural(direction=StructuralDirection.SHORT),
+        permission=_permission(side=PermittedSide.SHORT),
+        stabil_policy=policy,
+    )
+    assert short.state is EligibilityState.ELIGIBLE
+
+
+def test_stabil_wait_holds_fresh_long_without_hard_blocking():
+    result = _assess(stabil_policy=SimpleNamespace(effect=StabilPolicyEffect.WAIT))
+
+    assert result.state is EligibilityState.WAITING
+    assert result.blockers == ()
+    assert result.waiting_for == ("STABIL_RECOVERY_TO_CONFIRM",)
+
+
+def test_stabil_risk_context_does_not_rejudge_clean_entry():
+    result = _assess(stabil_policy=SimpleNamespace(effect=StabilPolicyEffect.RISK_CONTEXT))
+
+    assert result.state is EligibilityState.ELIGIBLE
+    assert result.blockers == ()
+    assert result.waiting_for == ()
