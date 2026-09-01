@@ -82,6 +82,11 @@ def test_decision_contract_version_is_part_of_checkpoint_config_digest() -> None
     assert current_digest != legacy_digest
 
 
+def test_stabil_entry_policy_semantics_are_contract_version_two() -> None:
+    assert DECISION_CONTRACT_VERSION == 2
+    assert DecisionEngineConfig().decision_contract_version == 2
+
+
 def test_execution_timeframe_still_matches_both_horizon_profiles() -> None:
     config = DecisionEngineConfig()
     assert config.execution_timeframe == LONG_TERM_EVALUATION_PROFILE.execution_timeframe
