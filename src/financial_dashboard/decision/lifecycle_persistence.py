@@ -227,11 +227,15 @@ def _deserialize_st_trade_memory(payload: Any) -> STTradeMemory | None:
     else:
         if not isinstance(raw_anchor, Mapping):
             raise ValueError("persisted ST defended anchor must be a mapping")
+        raw_identity = raw_anchor.get("identity")
+        raw_timeframe = raw_anchor.get("timeframe")
+        if not isinstance(raw_identity, str) or not isinstance(raw_timeframe, str):
+            raise ValueError("persisted ST defended anchor identity/timeframe must be strings")
         try:
             anchor = STInitialDefendedAnchor(
                 kind=STDefendedAnchorKind(str(raw_anchor["kind"])),
-                identity=str(raw_anchor["identity"]),
-                timeframe=str(raw_anchor["timeframe"]),
+                identity=raw_identity,
+                timeframe=raw_timeframe,
                 low=float(raw_anchor["low"]),
                 high=float(raw_anchor["high"]),
             )
