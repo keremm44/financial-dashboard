@@ -1,0 +1,48 @@
+{
+  "events": [
+    {
+      "timestamp": "10",
+      "action": "READY",
+      "blockers": [],
+      "waiting_for": ["FRESH_EXECUTION_EVENT"],
+      "snapshot": {
+        "entry_horizon": "LONG_TERM",
+        "execution": {"state": "ABSENT", "event_consumed": false},
+        "trade_lifecycle": {"position_state": "FLAT", "exit_stage": null}
+      }
+    },
+    {
+      "timestamp": "11",
+      "action": "BUY",
+      "blockers": [],
+      "waiting_for": [],
+      "snapshot": {
+        "entry_horizon": "LONG_TERM",
+        "execution": {"state": "CONFIRMED", "event_consumed": true},
+        "trade_lifecycle": {"position_state": "OPEN", "exit_stage": null}
+      }
+    },
+    {
+      "timestamp": "12",
+      "action": "READY",
+      "blockers": [],
+      "waiting_for": ["FRESH_EXECUTION_EVENT"],
+      "snapshot": {
+        "entry_horizon": "SHORT_TERM",
+        "execution": {"state": "ABSENT", "event_consumed": false},
+        "trade_lifecycle": {"position_state": "FLAT", "exit_stage": null}
+      }
+    },
+    {
+      "timestamp": "13",
+      "action": "BUY",
+      "blockers": [],
+      "waiting_for": [],
+      "snapshot": {
+        "entry_horizon": "SHORT_TERM",
+        "execution": {"state": "CONFIRMED", "event_consumed": true},
+        "trade_lifecycle": {"position_state": "OPEN", "exit_stage": null}
+      }
+    }
+  ]
+}

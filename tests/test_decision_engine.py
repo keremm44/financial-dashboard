@@ -1,3 +1,7 @@
+import importlib.util
+import json
+from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import financial_dashboard.decision.engine as engine_module
@@ -23,6 +27,20 @@ from financial_dashboard.decision.structural import (
 )
 from financial_dashboard.decision.timing import SetupTriggerAssessment, SetupTriggerState, TimingAssessment, TimingState
 from financial_dashboard.context.volatility_environment_projection import ExpansionCharacter, VolatilityRangeRegime
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DECISION_DIFF_TOOL = ROOT / "tools" / "decision_diff.py"
+TURN6_BASELINE = ROOT / "tests" / "fixtures" / "decision" / "turn6_horizon_decision_baseline.json"
+
+
+def _decision_diff_tool():
+    spec = importlib.util.spec_from_file_location("turn6_decision_diff", DECISION_DIFF_TOOL)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _structural(horizon, side=StructuralDirection.LONG):
@@ -144,6 +162,26 @@ def _patch_pipeline(monkeypatch, *, side=StructuralDirection.LONG, calls=None):
     )
 
 
+def _baseline_event(snapshot, result, *, event_consumed: bool):
+    return {
+        "timestamp": str(snapshot.as_of),
+        "action": result.final.action.value,
+        "blockers": list(result.final.blockers),
+        "waiting_for": list(result.final.waiting_for),
+        "snapshot": {
+            "entry_horizon": result.horizon.value,
+            "execution": {
+                "state": result.execution.state.value,
+                "event_consumed": event_consumed,
+            },
+            "trade_lifecycle": {
+                "position_state": "OPEN" if result.final.action is DecisionAction.BUY else "FLAT",
+                "exit_stage": None,
+            },
+        },
+    }
+
+
 def test_permission_policy_uses_actual_horizon_structural_authorities():
     assert engine_module._permission_policy(DecisionHorizon.LONG_TERM) == (
         "1d",
@@ -193,6 +231,41 @@ def test_engine_emits_buy_only_with_fresh_current_execution_event(monkeypatch):
         execution_event=event,
     )
     assert result.final.action is DecisionAction.BUY
+
+
+def test_turn6_horizon_decision_fingerprint_matches_frozen_baseline(monkeypatch):
+    _patch_pipeline(monkeypatch)
+    actual = []
+    for timestamp, horizon, with_event in (
+        (10, DecisionHorizon.LONG_TERM, False),
+        (11, DecisionHorizon.LONG_TERM, True),
+        (12, DecisionHorizon.SHORT_TERM, False),
+        (13, DecisionHorizon.SHORT_TERM, True),
+    ):
+        snapshot = _snapshot()
+        snapshot.as_of = timestamp
+        event = None
+        if with_event:
+            event = ExecutionTriggerEvent(
+                state=ExecutionTriggerState.CONFIRMED,
+                side=StructuralDirection.LONG,
+                timeframe="30m",
+                observed_at=timestamp,
+                available_at=timestamp,
+                reason="TURN6_BASELINE_EVENT",
+            )
+        result = engine_module.assess_horizon_decision(
+            snapshot,
+            horizon,
+            execution_event=event,
+        )
+        actual.append(_baseline_event(snapshot, result, event_consumed=with_event))
+
+    expected = json.loads(TURN6_BASELINE.read_text(encoding="utf-8"))["events"]
+    report = _decision_diff_tool().compare_events(expected, actual)
+
+    assert report.status == "UNCHANGED", report.to_payload()
+    assert report.is_empty, report.to_payload()
 
 
 def test_v1_execution_timeframe_cannot_be_silently_changed():
