@@ -225,6 +225,66 @@ def _fmt(value: float) -> str:
     return f"{float(value):.12g}"
 
 
+def _post_entry_structural_break(
+    snapshot: "DecisionInputSnapshot",
+    state: "TradeLifecycleState",
+    *,
+    boundary: float,
+    native_tolerance: Any,
+) -> Any | None:
+    """Return one causal 1h bullish BOS corroborating the accepted S/R boundary.
+
+    S/R exports are snapshot-state read models: an old confirmed range can remain
+    visible on later bars. It therefore cannot establish *new post-entry progress*
+    by itself. The structural event supplies the true confirmation timestamp while
+    S/R supplies the native acceptance band/tolerance. They are one composite fact,
+    not two independent votes or two progress events.
+    """
+
+    metadata = state.entry_metadata
+    if metadata is None or native_tolerance is None:
+        return None
+    tolerance = _finite(native_tolerance, "accepted-area native tolerance")
+    if tolerance < 0.0:
+        return None
+
+    timeframe_fact = _fact_for_timeframe(getattr(snapshot, "structure", None), "1h")
+    if timeframe_fact is None:
+        return None
+    quality = getattr(timeframe_fact, "data_quality", ContextDataQuality.VALID)
+    if quality is not ContextDataQuality.VALID:
+        return None
+
+    candidates: list[Any] = []
+    for event in getattr(timeframe_fact, "events", ()):
+        ref = getattr(event, "ref", None)
+        if not _available_valid(ref, snapshot.as_of):
+            continue
+        if str(getattr(event, "event_type", "")).strip().upper() not in {"BOS", "EVENT_BOS"}:
+            continue
+        if int(getattr(event, "direction", 0) or 0) != 1:
+            continue
+        if str(getattr(event, "confirmation_status", "")).strip().upper() != "CONFIRMED":
+            continue
+        if str(getattr(event, "validity", "")).strip().upper() != "VALID":
+            continue
+        if str(getattr(event, "relevance", "")).strip().upper() != "CURRENT":
+            continue
+        confirmed_at = getattr(ref, "confirmed_at", None)
+        if confirmed_at is None or pd.Timestamp(confirmed_at) <= pd.Timestamp(metadata.entry_as_of):
+            continue
+        broken_level = getattr(event, "broken_level", None)
+        if broken_level is None:
+            continue
+        if abs(float(broken_level) - float(boundary)) > tolerance:
+            continue
+        candidates.append(event)
+
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda event: event.ref.deterministic_key)[0]
+
+
 def _accepted_area(snapshot: "DecisionInputSnapshot", state: "TradeLifecycleState") -> STAcceptedAreaEvent | None:
     metadata = state.entry_metadata
     if metadata is None or pd.Timestamp(snapshot.as_of) <= pd.Timestamp(metadata.entry_as_of):
@@ -255,6 +315,15 @@ def _accepted_area(snapshot: "DecisionInputSnapshot", state: "TradeLifecycleStat
     # Fail closed: the entire accepted support band must be at/above entry.
     # Raw favorable PnL or a wick/new high never creates economic progress.
     if low < float(metadata.entry_price):
+        return None
+
+    structural_break = _post_entry_structural_break(
+        snapshot,
+        state,
+        boundary=boundary,
+        native_tolerance=getattr(row, "break_buffer", None),
+    )
+    if structural_break is None:
         return None
 
     event_id = (
