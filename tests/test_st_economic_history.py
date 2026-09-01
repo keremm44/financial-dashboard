@@ -53,6 +53,7 @@ def _ref(
     *,
     native_id="sr:1",
     available_at=None,
+    confirmed_at=None,
     domain=ContextDomain.SUPPORT_RESISTANCE,
     fact_type="RANGE_EXPORT",
     native_state="RANGE_BREAK_CONFIRMED",
@@ -67,13 +68,56 @@ def _ref(
         native_id=native_id,
         native_state=native_state,
         origin_time=as_of if origin_time is None else origin_time,
-        confirmed_at=as_of,
+        confirmed_at=as_of if confirmed_at is None else confirmed_at,
         available_at=as_of if available_at is None else available_at,
         lineage_id=lineage_id or native_id,
         causal_family=CausalFamily.STRUCTURAL_LEVEL,
         source_family=SourceFamily.PRICE_GEOMETRY,
         data_quality=ContextDataQuality.VALID,
     )
+
+
+def _structure(
+    as_of,
+    *,
+    boundary,
+    confirmed_at=None,
+    available_at=None,
+    native_id="bos:1",
+    event_type="BOS",
+    direction=1,
+    validity="VALID",
+    relevance="CURRENT",
+):
+    confirmed = as_of if confirmed_at is None else confirmed_at
+    ref = _ref(
+        as_of,
+        native_id=native_id,
+        confirmed_at=confirmed,
+        available_at=available_at,
+        domain=ContextDomain.MARKET_STRUCTURE,
+        fact_type="BOS",
+        native_state=f"{validity}:{relevance}",
+        origin_time=confirmed,
+        lineage_id=native_id,
+    )
+    event = SimpleNamespace(
+        ref=ref,
+        event_type=event_type,
+        direction=direction,
+        broken_level=boundary,
+        confirmation_status="CONFIRMED",
+        validity=validity,
+        relevance=relevance,
+        outcome="CONTINUATION",
+        bos_maturity="CONFIRMED",
+    )
+    timeframe = SimpleNamespace(
+        timeframe="1h",
+        data_quality=ContextDataQuality.VALID,
+        events=(event,),
+    )
+    return SimpleNamespace(timeframe_facts=(timeframe,)), ref
 
 
 def _sr(
@@ -83,9 +127,18 @@ def _sr(
     confirmed_index=20,
     boundary=105.0,
     support=(104.0, 105.0),
+    break_buffer=0.5,
     available_at=None,
+    structural_confirmed_at=None,
+    structural_boundary=None,
 ):
     ref = _ref(as_of, native_id=f"sr:{range_identity}", available_at=available_at)
+    structure, structure_ref = _structure(
+        as_of,
+        boundary=boundary if structural_boundary is None else structural_boundary,
+        confirmed_at=as_of if structural_confirmed_at is None else structural_confirmed_at,
+        native_id=f"bos:{range_identity}:{confirmed_index}",
+    )
     row = SimpleNamespace(
         timeframe="1h",
         ref=ref,
@@ -95,10 +148,16 @@ def _sr(
         break_candidate_index=confirmed_index - 1,
         break_confirmed_index=confirmed_index,
         break_boundary=boundary,
+        break_buffer=break_buffer,
         role_reversal_support_low=support[0],
         role_reversal_support_high=support[1],
     )
-    return SimpleNamespace(timeframe_facts=(row,)), ref
+    projection = SimpleNamespace(
+        timeframe_facts=(row,),
+        _structure=structure,
+        _structure_ref=structure_ref,
+    )
+    return projection, ref
 
 
 def _fvg(
@@ -185,16 +244,31 @@ def _snapshot(
     *,
     price,
     support_resistance=None,
+    structure=None,
     fvg=None,
     source_refs=(),
 ):
+    if structure is None and support_resistance is not None:
+        structure = getattr(support_resistance, "_structure", None)
     return SimpleNamespace(
         symbol="TEST",
         as_of=as_of,
         current_price=price,
+        structure=structure,
         support_resistance=support_resistance,
         fvg_engulfing_lifecycle=fvg,
         source_refs=source_refs,
+    )
+
+
+def _with_history(state, history):
+    return TradeLifecycleState(
+        position=state.position,
+        exit_stage=state.exit_stage,
+        trade_id=state.trade_id,
+        entry_as_of=state.entry_as_of,
+        entry_metadata=state.entry_metadata,
+        st_economic_history=history,
     )
 
 
@@ -211,6 +285,50 @@ def test_favorable_price_without_accepted_area_is_not_economic_progress():
     assert history.mission_completion is None
 
 
+def test_pre_entry_confirmed_sr_state_cannot_be_recounted_as_post_entry_gained_area():
+    entry = pd.Timestamp("2026-01-05 10:00")
+    state = _open_state(entry)
+    old_confirmation = entry - pd.Timedelta(minutes=30)
+    sr, sr_ref = _sr(
+        entry + pd.Timedelta(hours=1),
+        support=(105.0, 106.0),
+        boundary=106.0,
+        structural_confirmed_at=old_confirmation,
+    )
+
+    history = observe_st_economic_history(
+        _snapshot(
+            entry + pd.Timedelta(hours=1),
+            price=109.0,
+            support_resistance=sr,
+            source_refs=(sr_ref, sr._structure_ref),
+        ),
+        state,
+    )
+
+    assert history == STEconomicHistory()
+
+
+def test_sr_acceptance_without_native_aligned_post_entry_bos_is_fail_closed():
+    entry = pd.Timestamp("2026-01-05 10:00")
+    state = _open_state(entry)
+    as_of = entry + pd.Timedelta(hours=1)
+    sr, sr_ref = _sr(
+        as_of,
+        boundary=106.0,
+        support=(105.0, 106.0),
+        break_buffer=0.25,
+        structural_boundary=106.5,
+    )
+
+    history = observe_st_economic_history(
+        _snapshot(as_of, price=109.0, support_resistance=sr, source_refs=(sr_ref, sr._structure_ref)),
+        state,
+    )
+
+    assert history == STEconomicHistory()
+
+
 def test_accepted_area_is_distinct_from_progress_and_earned_defense_never_loosens():
     entry = pd.Timestamp("2026-01-05 10:00")
     state = _open_state(entry)
@@ -218,21 +336,14 @@ def test_accepted_area_is_distinct_from_progress_and_earned_defense_never_loosen
     t1 = entry + pd.Timedelta(hours=1)
     sr1, ref1 = _sr(t1, support=(104.0, 105.0), boundary=105.0)
     first = observe_st_economic_history(
-        _snapshot(t1, price=107.0, support_resistance=sr1, source_refs=(ref1,)),
+        _snapshot(t1, price=107.0, support_resistance=sr1, source_refs=(ref1, sr1._structure_ref)),
         state,
     )
     assert len(first.accepted_areas) == 1
     assert len(first.earned_defenses) == 1
     assert first.progress_events == ()
 
-    state = TradeLifecycleState(
-        position=state.position,
-        exit_stage=state.exit_stage,
-        trade_id=state.trade_id,
-        entry_as_of=state.entry_as_of,
-        entry_metadata=state.entry_metadata,
-        st_economic_history=first,
-    )
+    state = _with_history(state, first)
     t2 = entry + pd.Timedelta(hours=2)
     sr2, ref2 = _sr(
         t2,
@@ -242,7 +353,7 @@ def test_accepted_area_is_distinct_from_progress_and_earned_defense_never_loosen
         boundary=106.0,
     )
     second = observe_st_economic_history(
-        _snapshot(t2, price=108.0, support_resistance=sr2, source_refs=(ref2,)),
+        _snapshot(t2, price=108.0, support_resistance=sr2, source_refs=(ref2, sr2._structure_ref)),
         state,
     )
     assert len(second.accepted_areas) == 1
@@ -256,16 +367,9 @@ def test_accepted_area_is_distinct_from_progress_and_earned_defense_never_loosen
         support=(105.0, 106.0),
         boundary=106.0,
     )
-    state = TradeLifecycleState(
-        position=state.position,
-        exit_stage=state.exit_stage,
-        trade_id=state.trade_id,
-        entry_as_of=state.entry_as_of,
-        entry_metadata=state.entry_metadata,
-        st_economic_history=second,
-    )
+    state = _with_history(state, second)
     third = observe_st_economic_history(
-        _snapshot(t3, price=109.0, support_resistance=sr3, source_refs=(ref3,)),
+        _snapshot(t3, price=109.0, support_resistance=sr3, source_refs=(ref3, sr3._structure_ref)),
         state,
     )
     assert len(third.accepted_areas) == 2
@@ -292,17 +396,9 @@ def test_mission_completion_requires_accepted_area_at_initial_target_not_price_t
         support=(110.0, 111.0),
         boundary=111.0,
     )
-    state = TradeLifecycleState(
-        position=state.position,
-        exit_stage=state.exit_stage,
-        trade_id=state.trade_id,
-        entry_as_of=state.entry_as_of,
-        entry_metadata=state.entry_metadata,
-        st_economic_history=touched,
-    )
     completed = observe_st_economic_history(
-        _snapshot(t2, price=113.0, support_resistance=sr, source_refs=(ref,)),
-        state,
+        _snapshot(t2, price=113.0, support_resistance=sr, source_refs=(ref, sr._structure_ref)),
+        _with_history(state, touched),
     )
     assert completed.mission_completion is not None
     assert completed.mission_completion.target_identity == "target:st:1"
@@ -315,17 +411,10 @@ def test_duplicate_and_future_unavailable_area_evidence_are_ignored():
     sr, ref = _sr(t1, support=(105.0, 106.0), boundary=106.0)
 
     once = observe_st_economic_history(
-        _snapshot(t1, price=108.0, support_resistance=sr, source_refs=(ref,)),
+        _snapshot(t1, price=108.0, support_resistance=sr, source_refs=(ref, sr._structure_ref)),
         state,
     )
-    state_once = TradeLifecycleState(
-        position=state.position,
-        exit_stage=state.exit_stage,
-        trade_id=state.trade_id,
-        entry_as_of=state.entry_as_of,
-        entry_metadata=state.entry_metadata,
-        st_economic_history=once,
-    )
+    state_once = _with_history(state, once)
     twice = observe_st_economic_history(
         _snapshot(t1 + pd.Timedelta(minutes=30), price=109.0, support_resistance=sr),
         state_once,
@@ -372,21 +461,14 @@ def test_continuation_episode_is_live_then_succeeds_only_with_new_accepted_progr
         support=(106.0, 107.0),
         boundary=107.0,
     )
-    state = TradeLifecycleState(
-        position=state.position,
-        exit_stage=state.exit_stage,
-        trade_id=state.trade_id,
-        entry_as_of=state.entry_as_of,
-        entry_metadata=state.entry_metadata,
-        st_economic_history=live,
-    )
+    state = _with_history(state, live)
     succeeded = observe_st_economic_history(
         _snapshot(
             t2,
             price=109.0,
             support_resistance=sr,
             fvg=fvg2,
-            source_refs=(sr_ref, fvg_ref2),
+            source_refs=(sr_ref, sr._structure_ref, fvg_ref2),
         ),
         state,
     )
@@ -419,7 +501,7 @@ def test_economic_history_round_trip_is_exact():
     t1 = entry + pd.Timedelta(hours=1)
     sr, ref = _sr(t1, support=(105.0, 106.0), boundary=106.0)
     history = observe_st_economic_history(
-        _snapshot(t1, price=108.0, support_resistance=sr, source_refs=(ref,)),
+        _snapshot(t1, price=108.0, support_resistance=sr, source_refs=(ref, sr._structure_ref)),
         state,
     )
 
@@ -484,6 +566,7 @@ class _ReplaySnapshot:
     current_price: float
     support_resistance: object | None
     source_refs: tuple
+    structure: object | None = None
     entry_action: DecisionAction = DecisionAction.WAIT
     fvg_engulfing_lifecycle: object | None = None
     order_block_behavior: object | None = None
@@ -540,9 +623,24 @@ def test_cold_warm_restart_history_equivalence_and_zero_action_diff(tmp_path):
         support=(105.0, 106.0),
     )
     snapshots = (
-        _ReplaySnapshot("TEST", t1, 104.0, entry_sr, (entry_ref,), entry_action=DecisionAction.BUY),
+        _ReplaySnapshot(
+            "TEST",
+            t1,
+            104.0,
+            entry_sr,
+            (entry_ref, entry_sr._structure_ref),
+            structure=entry_sr._structure,
+            entry_action=DecisionAction.BUY,
+        ),
         _ReplaySnapshot("TEST", t2, 118.0, None, ()),
-        _ReplaySnapshot("TEST", t3, 109.0, gained_sr, (gained_ref,)),
+        _ReplaySnapshot(
+            "TEST",
+            t3,
+            109.0,
+            gained_sr,
+            (gained_ref, gained_sr._structure_ref),
+            structure=gained_sr._structure,
+        ),
     )
     events = {t1: _event(t1)}
 
