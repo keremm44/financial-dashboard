@@ -58,6 +58,7 @@ def test_eligibility_has_small_typed_input_surface_without_raw_domain_projection
         "conflict",
         "environment",
         "coverage",
+        "stabil_policy",
     }
 
 
