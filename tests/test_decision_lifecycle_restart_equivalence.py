@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from hashlib import sha256
 from types import SimpleNamespace
 
 import pandas as pd
@@ -6,6 +7,7 @@ import pytest
 
 from financial_dashboard.decision.canonical_events import canonical_decision_events_from_replay
 from financial_dashboard.decision.composer import DecisionAction
+from financial_dashboard.decision.engine import DECISION_CONTRACT_VERSION, DecisionEngineConfig
 from financial_dashboard.decision.execution import ExecutionTriggerEvent, ExecutionTriggerState
 from financial_dashboard.decision.lifecycle import ExitStage
 from financial_dashboard.decision.lifecycle_persistence import (
@@ -174,6 +176,29 @@ def test_persistent_resume_matches_full_canonical_event_payload_and_markers(tmp_
     assert reconstructed_events == cold_events
     assert resumed.replay.final_state == cold.final_state
     assert resumed.replay.final_audit_markers == cold.final_audit_markers
+
+
+def test_decision_contract_version_mismatch_requires_explicit_cold_replay(tmp_path):
+    t1 = pd.Timestamp("2026-01-05 10:00")
+    snapshot = _Snapshot("TEST", t1, 100.0)
+    runner = PersistentCanonicalLifecycleReplayRunner(tmp_path)
+    prefix = runner.run("TEST", (snapshot,))
+
+    config = DecisionEngineConfig()
+    assert config.decision_contract_version == DECISION_CONTRACT_VERSION
+    legacy_repr = repr(config).replace(
+        f", decision_contract_version={DECISION_CONTRACT_VERSION}",
+        "",
+    )
+    legacy_digest = sha256(legacy_repr.encode("utf-8")).hexdigest()
+    assert legacy_digest != prefix.checkpoint.decision_config_digest
+
+    runner.store.save(
+        replace(prefix.checkpoint, decision_config_digest=legacy_digest)
+    )
+
+    with pytest.raises(ValueError, match="cold replay is required"):
+        runner.run("TEST", (snapshot,), config=config)
 
 
 def test_old_checkpoint_schema_fails_closed(tmp_path):
