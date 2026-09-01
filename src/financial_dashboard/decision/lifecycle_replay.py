@@ -15,6 +15,7 @@ from .lifecycle import (
     transition_entry_lifecycle,
 )
 from .scenario import ScenarioStage
+from .st_economic_history import observe_st_economic_history
 from .structural import StructuralDirection
 
 if TYPE_CHECKING:
@@ -327,6 +328,9 @@ def replay_canonical_trade_lifecycle(
             )
         else:
             raw_exit_event = exit_events.get(snapshot.as_of)
+            # Economic history is shadow Class-A state. The canonical exit decision
+            # deliberately receives the pre-observation state so Step 3 cannot alter
+            # HOLD/SELL, exit stage, or execution consumption.
             exit_decision = snapshot.position_exit_decision(
                 state,
                 execution_event=raw_exit_event,
@@ -347,7 +351,17 @@ def replay_canonical_trade_lifecycle(
                     execution_event=raw_exit_event,
                 )
                 proxy_used = exit_decision.action is DecisionAction.SELL
-            transition = transition_position_exit_lifecycle(state, exit_decision)
+
+            observed_history = observe_st_economic_history(snapshot, state)
+            observed_state = (
+                state
+                if observed_history == state.st_economic_history
+                else replace(state, st_economic_history=observed_history)
+            )
+            observed_transition = transition_position_exit_lifecycle(observed_state, exit_decision)
+            # One replay row remains one contiguous atomic transition from the prior
+            # bar's state. Only current state receives the causal history fold.
+            transition = replace(observed_transition, previous=state)
 
         row_markers = _markers_for_row(
             markers,
