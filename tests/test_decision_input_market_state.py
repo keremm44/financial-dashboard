@@ -8,6 +8,7 @@ from financial_dashboard.decision import market_state as market_state_module
 
 def _snapshot_for_market_state():
     snapshot = object.__new__(decision_input.DecisionInputSnapshot)
+    object.__setattr__(snapshot, "as_of", 123)
     object.__setattr__(snapshot, "structure", object())
     object.__setattr__(snapshot, "stabil_support", object())
     object.__setattr__(snapshot, "volatility_environment", object())
@@ -21,8 +22,8 @@ def test_decision_input_market_state_is_built_once_and_reused(monkeypatch) -> No
     sentinel = object()
     calls = []
 
-    def fake_build(structure, *, stabil=None, volatility=None, participation=None):
-        calls.append((structure, stabil, volatility, participation))
+    def fake_build(structure, *, as_of=None, stabil=None, volatility=None, participation=None):
+        calls.append((structure, as_of, stabil, volatility, participation))
         return sentinel
 
     monkeypatch.setattr(market_state_module, "build_market_state", fake_build)
@@ -36,6 +37,7 @@ def test_decision_input_market_state_is_built_once_and_reused(monkeypatch) -> No
     assert calls == [
         (
             snapshot.structure,
+            snapshot.as_of,
             snapshot.stabil_support,
             snapshot.volatility_environment,
             snapshot.participation_behavior,
