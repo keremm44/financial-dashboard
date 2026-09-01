@@ -214,6 +214,21 @@ def test_breached_with_heavier_native_interaction_remains_hard(horizon, interact
     assert result.effect is StabilPolicyEffect.HARD_CONTRADICTION
 
 
+def test_supportive_and_neutral_share_the_same_no_gate_winning_tier() -> None:
+    result = assess_stabil_entry_policy(
+        _assessment(
+            DecisionHorizon.SHORT_TERM,
+            StabilHorizonState.STABLE_FOUNDATION,
+            relation="ABOVE_NEAR",
+            interaction="HOLDING_ABOVE",
+        )
+    )
+
+    assert result.effect is StabilPolicyEffect.SUPPORTIVE
+    assert StabilHorizonState.STABLE_FOUNDATION in result.winning_rows
+    assert StabilHorizonState.HOLDING_ABOVE in result.winning_rows
+
+
 def test_policy_result_has_no_action_or_exit_authority() -> None:
     result = assess_stabil_entry_policy(
         _assessment(
