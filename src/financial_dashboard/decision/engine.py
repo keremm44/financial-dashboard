@@ -23,6 +23,7 @@ from .horizon_profile import horizon_evaluation_profile
 from .opportunity import OpportunityAssessment, OpportunityCalibration, assess_opportunity
 from .participation import ParticipationAssessment, assess_participation
 from .reaction import ReactionAssessment, assess_reaction
+from .stabil_interpretation import StabilHorizonAssessment, assess_stabil_horizon
 from .structural import (
     DecisionHorizon,
     HorizonStructuralSnapshot,
@@ -70,6 +71,7 @@ class PreparedHorizonAssessment:
     structural: StructuralAssessment
     permission: PermissionEnvelope
     durability: DurabilityAssessment
+    stabil: StabilHorizonAssessment
     reaction: ReactionAssessment
     timing_reaction: ReactionAssessment
     participation: ParticipationAssessment
@@ -89,6 +91,7 @@ class HorizonDecisionAssessment:
     structural: StructuralAssessment
     permission: PermissionEnvelope
     durability: DurabilityAssessment
+    stabil: StabilHorizonAssessment
     reaction: ReactionAssessment
     timing_reaction: ReactionAssessment
     participation: ParticipationAssessment
@@ -298,6 +301,11 @@ def prepare_horizon_assessment(
     permission = _horizon_permission(snapshot, horizon)
 
     durability = assess_durability(snapshot.stabil_support)
+    factual_market_state = getattr(snapshot, "market_state", None)
+    stabil = assess_stabil_horizon(
+        None if factual_market_state is None else factual_market_state.stabil,
+        horizon,
+    )
     reaction = assess_reaction(
         structural.direction,
         order_blocks=snapshot.order_block_behavior,
@@ -366,6 +374,7 @@ def prepare_horizon_assessment(
         structural=structural,
         permission=permission,
         durability=durability,
+        stabil=stabil,
         reaction=reaction,
         timing_reaction=timing_reaction,
         participation=participation,
@@ -420,6 +429,7 @@ def finalize_horizon_assessment(
         structural=prepared.structural,
         permission=prepared.permission,
         durability=prepared.durability,
+        stabil=prepared.stabil,
         reaction=prepared.reaction,
         timing_reaction=prepared.timing_reaction,
         participation=prepared.participation,
