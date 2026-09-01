@@ -30,6 +30,19 @@ def test_repository_architecture_baseline_does_not_expand() -> None:
     assert report.trade_action_leaks == ()
 
 
+def test_gate_audit_tracks_separated_scenario_qualification_waits() -> None:
+    audit = _audit_module()
+    tokens = set(audit.scan_gate_tokens())
+
+    assert {
+        "VALID_STRUCTURAL_AUTHORITY",
+        "STRUCTURAL_DIRECTION_TO_RESOLVE",
+        "OBSERVED_DIRECTIONAL_OPPORTUNITY",
+        "TARGET_PATH_TO_RESOLVE",
+        "ACTIVE_TARGET_PATH_NODE_DEFENDED",
+    } <= tokens
+
+
 def test_shell_classifier_catches_explicit_and_star_reexports(tmp_path) -> None:
     audit = _audit_module()
 
