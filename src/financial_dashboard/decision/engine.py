@@ -19,6 +19,7 @@ from .execution import (
     ExecutionTriggerEvent,
     assess_execution_trigger,
 )
+from .horizon_profile import horizon_evaluation_profile
 from .opportunity import OpportunityAssessment, OpportunityCalibration, assess_opportunity
 from .participation import ParticipationAssessment, assess_participation
 from .reaction import ReactionAssessment, assess_reaction
@@ -31,8 +32,7 @@ from .structural import (
 from .timing import TimingAssessment, assess_timing
 
 
-_LT_REACTION_TIMEFRAMES = ("1d", "4h", "2h", "1h")
-_ST_REACTION_TIMEFRAMES = ("4h", "2h", "1h", "30m")
+DECISION_CONTRACT_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,10 +41,16 @@ class DecisionEngineConfig:
 
     opportunity_calibration: OpportunityCalibration | None = None
     action_policy: ActionPolicy = field(default_factory=ActionPolicy)
-    execution_timeframe: str = "30m"
+    execution_timeframe: str = field(
+        default_factory=lambda: horizon_evaluation_profile(DecisionHorizon.LONG_TERM).execution_timeframe
+    )
+    decision_contract_version: int = field(default=DECISION_CONTRACT_VERSION, init=False)
 
     def __post_init__(self) -> None:
-        if self.execution_timeframe.strip().lower() != "30m":
+        lt_execution = horizon_evaluation_profile(DecisionHorizon.LONG_TERM).execution_timeframe
+        st_execution = horizon_evaluation_profile(DecisionHorizon.SHORT_TERM).execution_timeframe
+        normalized = self.execution_timeframe.strip().lower()
+        if lt_execution != st_execution or normalized != lt_execution:
             raise ValueError("v1 execution timeframe is architecturally fixed to 30m")
 
 
@@ -97,26 +103,20 @@ class HorizonDecisionAssessment:
 
 
 def _timeframe_policy(horizon: DecisionHorizon) -> tuple[tuple[str, ...], str, str, str]:
-    if horizon is DecisionHorizon.LONG_TERM:
-        # LT Structure remains 1D-owned. 4H describes supporting participation/regime,
-        # while 1H is the immediate LT setup-timing context. 30m remains execution.
-        return _LT_REACTION_TIMEFRAMES, "4h", "4h", "1h"
-    # ST Structure remains 1H-owned. 4H describes higher-timeframe volatility regime,
-    # while 30m remains the immediate ST setup-timing / execution context.
-    return _ST_REACTION_TIMEFRAMES, "1h", "4h", "30m"
+    profile = horizon_evaluation_profile(horizon)
+    return (
+        profile.reaction_timeframes,
+        profile.participation_timeframe,
+        profile.environment_timeframe,
+        profile.timing_timeframe,
+    )
 
 
 def _permission_policy(horizon: DecisionHorizon) -> tuple[str, tuple[str, ...]]:
-    """Return the structural anchor and subordinate context TFs for permission.
+    """Return the structural anchor and subordinate context TFs for permission."""
 
-    Permission is derived cheaply from already-frozen read models. It must follow the
-    horizon's actual structural authority rather than reusing the workspace's generic
-    4H context anchor for both LT and ST decisions.
-    """
-
-    if horizon is DecisionHorizon.LONG_TERM:
-        return "1d", ("4h", "2h", "1h")
-    return "1h", ("30m",)
+    profile = horizon_evaluation_profile(horizon)
+    return profile.permission_anchor_timeframe, profile.permission_context_timeframes
 
 
 def _decision_structure_projection(structural):
@@ -457,6 +457,7 @@ def assess_horizon_decision(
 
 
 __all__ = [
+    "DECISION_CONTRACT_VERSION",
     "DecisionEngineConfig",
     "HorizonDecisionAssessment",
     "PreparedHorizonAssessment",
