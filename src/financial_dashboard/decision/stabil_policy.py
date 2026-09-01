@@ -31,8 +31,9 @@ class StabilEntryPolicyAssessment:
 
     Multiple native facts may make several matrix rows applicable at the same as_of.
     The result is deterministic: HARD_CONTRADICTION > WAIT > RISK_CONTEXT >
-    SUPPORTIVE > NEUTRAL. There is no score or vote. Rows tied at the winning effect
-    remain visible together instead of inventing a second within-effect ranking.
+    SUPPORTIVE/NEUTRAL. There is no score or vote. SUPPORTIVE and NEUTRAL share the
+    same no-gate tier; if both occur, both rows remain visible and SUPPORTIVE is used
+    only as the descriptive result label. No second gate precedence is introduced.
     """
 
     horizon: DecisionHorizon
@@ -83,10 +84,10 @@ _ST_EFFECTS: dict[StabilHorizonState, StabilPolicyEffect] = {
 
 _EFFECT_PRIORITY: dict[StabilPolicyEffect, int] = {
     StabilPolicyEffect.NEUTRAL: 0,
-    StabilPolicyEffect.SUPPORTIVE: 1,
-    StabilPolicyEffect.RISK_CONTEXT: 2,
-    StabilPolicyEffect.WAIT: 3,
-    StabilPolicyEffect.HARD_CONTRADICTION: 4,
+    StabilPolicyEffect.SUPPORTIVE: 0,
+    StabilPolicyEffect.RISK_CONTEXT: 1,
+    StabilPolicyEffect.WAIT: 2,
+    StabilPolicyEffect.HARD_CONTRADICTION: 3,
 }
 _ROW_ORDER = {row: index for index, row in enumerate(StabilHorizonState)}
 
@@ -168,13 +169,21 @@ def assess_stabil_entry_policy(stabil: StabilHorizonAssessment) -> StabilEntryPo
         StabilPolicyContribution(row=row, effect=policy_effect_for_row(stabil.horizon, row))
         for row in rows
     )
-    winning_effect = max(
-        (item.effect for item in contributions),
-        key=_EFFECT_PRIORITY.__getitem__,
+    winning_priority = max(_EFFECT_PRIORITY[item.effect] for item in contributions)
+    winning_contributions = tuple(
+        item for item in contributions if _EFFECT_PRIORITY[item.effect] == winning_priority
     )
-    winning_rows = tuple(
-        item.row for item in contributions if item.effect is winning_effect
-    )
+    winning_rows = tuple(item.row for item in winning_contributions)
+
+    # SUPPORTIVE and NEUTRAL intentionally share the lowest, non-gating tier. The
+    # single effect label remains descriptive only: prefer SUPPORTIVE if present while
+    # preserving every same-tier winning row for attribution.
+    winning_effect = winning_contributions[0].effect
+    if winning_priority == 0 and any(
+        item.effect is StabilPolicyEffect.SUPPORTIVE for item in winning_contributions
+    ):
+        winning_effect = StabilPolicyEffect.SUPPORTIVE
+
     return StabilEntryPolicyAssessment(
         horizon=stabil.horizon,
         effect=winning_effect,
