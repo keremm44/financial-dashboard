@@ -28,9 +28,10 @@ def classify_st_economic_ownership(
 
     A separate ST product is proven only when the same causal thesis evidence used by
     the Step-1 thesis shadow resolves to exactly one canonical ST family and the ST
-    scenario already has target context. Generic short-term continuation by itself is
-    only LT timing when an LT scenario is concurrently present. Ambiguity and missing
-    causal evidence fail closed as UNRESOLVED rather than receiving ST priority.
+    scenario already has target context. Generic short-term continuation with known
+    target context is LT timing when an LT scenario is concurrently present but no
+    independent ST thesis evidence exists. Ambiguity and missing target context fail
+    closed as UNRESOLVED rather than receiving ST priority.
     """
 
     if long_term.horizon is not DecisionHorizon.LONG_TERM:
@@ -57,7 +58,8 @@ def classify_st_economic_ownership(
         return STEconomicOwnership.INDEPENDENT_ST
 
     if (
-        long_term.presence is ScenarioPresence.PRESENT
+        target_identity is not None
+        and long_term.presence is ScenarioPresence.PRESENT
         and short_term.kind is ScenarioKind.CONTINUATION
         and not candidates
     ):
