@@ -36,16 +36,35 @@ class StabilHorizonState(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class StabilHorizonAssessment:
-    """Read-only LT/ST interpretation of one frozen factual Stabil state."""
+    """Read-only LT/ST interpretation of one frozen factual Stabil state.
+
+    The interpreted state is intentionally accompanied by the native factual context
+    that may matter differently to LT and ST policy later. No thresholds, gate tokens
+    or action authority are introduced here.
+    """
 
     horizon: DecisionHorizon
     state: StabilHorizonState
     data_quality: ContextDataQuality
     validity: str | None
+    dynamics: str | None
     progression: str | None
     motion: str | None
     relation: str | None
     interaction: str | None
+    approach_origin: str | None
+    support_level: float | None
+    support_floor: float | None
+    distance_atr: float | None
+    distance_delta_atr: float | None
+    bars_above_support: int | None
+    bars_below_support: int | None
+    reclaim_count: int | None
+    bars_since_rebase: int | None
+    cross_count: int | None
+    last_rebase_step_atr: float | None
+    reclaim_active: bool | None
+    event_types: tuple[str, ...]
     reasons: tuple[str, ...]
     source_refs: tuple[FactRef, ...]
 
@@ -77,10 +96,24 @@ def _assessment(
         state=state,
         data_quality=quality,
         validity=None if stabil is None else stabil.validity,
+        dynamics=None if stabil is None else stabil.dynamics,
         progression=None if stabil is None else stabil.progression,
         motion=None if stabil is None else stabil.motion,
         relation=None if stabil is None else stabil.relation,
         interaction=None if stabil is None else stabil.interaction,
+        approach_origin=None if stabil is None else stabil.approach_origin,
+        support_level=None if stabil is None else stabil.support_level,
+        support_floor=None if stabil is None else stabil.support_floor,
+        distance_atr=None if stabil is None else stabil.distance_atr,
+        distance_delta_atr=None if stabil is None else stabil.distance_delta_atr,
+        bars_above_support=None if stabil is None else stabil.bars_above_support,
+        bars_below_support=None if stabil is None else stabil.bars_below_support,
+        reclaim_count=None if stabil is None else stabil.reclaim_count,
+        bars_since_rebase=None if stabil is None else stabil.bars_since_rebase,
+        cross_count=None if stabil is None else stabil.cross_count,
+        last_rebase_step_atr=None if stabil is None else stabil.last_rebase_step_atr,
+        reclaim_active=None if stabil is None else stabil.reclaim_active,
+        event_types=() if stabil is None else tuple(event.event_type for event in stabil.events),
         reasons=tuple(reasons),
         source_refs=_refs(stabil),
     )
