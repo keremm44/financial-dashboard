@@ -19,8 +19,9 @@ from financial_dashboard.decision.lifecycle_persistence import (
 )
 from financial_dashboard.decision.lifecycle_replay import replay_canonical_trade_lifecycle
 from financial_dashboard.decision.persistent_lifecycle_replay import PersistentCanonicalLifecycleReplayRunner
-from financial_dashboard.decision.position_metadata import PositionEntryMetadata
+from financial_dashboard.decision.position_metadata import PositionEntryMetadata, STTradeMemory
 from financial_dashboard.decision.scenario import ScenarioKind, ScenarioPresence, ScenarioStage
+from financial_dashboard.decision.st_thesis_identity import STEconomicMission, STThesisFamily
 from financial_dashboard.decision.structural import DecisionHorizon, StructuralDirection
 
 
@@ -110,6 +111,11 @@ def _open_state():
         execution_available_at=as_of,
         execution_reason="CONFIRMED",
         source_lineage=("entry:lineage",),
+        st_trade_memory=STTradeMemory(
+            thesis_family=STThesisFamily.UNRESOLVED,
+            economic_mission=STEconomicMission.UNRESOLVED,
+            initial_defended_anchor=None,
+        ),
     )
     return TradeLifecycleState(
         position=PositionState.OPEN,
