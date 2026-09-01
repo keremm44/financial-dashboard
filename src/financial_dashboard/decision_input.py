@@ -134,6 +134,7 @@ class DecisionInputSnapshot:
 
         state = build_market_state(
             self.structure,
+            as_of=self.as_of,
             stabil=self.stabil_support,
             volatility=self.volatility_environment,
             participation=self.participation_behavior,

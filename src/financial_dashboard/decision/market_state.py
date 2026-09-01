@@ -152,11 +152,62 @@ class StabilMarketState:
 
 @dataclass(frozen=True, slots=True)
 class MarketStateSnapshot:
+    """Causal factual MTF state with traceable evidence only.
+
+    ``source_refs`` contains only real FactRef objects already carried by the factual
+    projections used here. Unknown lineage remains unknown; ``source_lineage`` never
+    fabricates replacement identities for refs whose lineage_id is absent.
+    """
+
+    as_of: object
     long_term: HorizonMarketState
     short_term: HorizonMarketState
     horizon_relation: HorizonRelation
     stabil: StabilMarketState
+    source_refs: tuple[FactRef, ...]
+    source_lineage: tuple[str, ...]
     reasons: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.as_of is None:
+            raise ValueError("market state as_of must be known")
+
+        keys = tuple(ref.deterministic_key for ref in self.source_refs)
+        if keys != tuple(sorted(keys)) or len(keys) != len(set(keys)):
+            raise ValueError("market state source refs must be unique and deterministic")
+        if any(not ref.is_available_at(self.as_of) for ref in self.source_refs):
+            raise ValueError("market state cannot contain future-unavailable refs")
+
+        expected_lineage = tuple(
+            sorted(
+                {
+                    ref.lineage_id
+                    for ref in self.source_refs
+                    if ref.lineage_id is not None
+                }
+            )
+        )
+        if self.source_lineage != expected_lineage:
+            raise ValueError("market state source lineage must match known source refs")
+
+        for horizon_state in (self.long_term, self.short_term):
+            authority_as_of = horizon_state.structural.authority_as_of
+            if authority_as_of is None:
+                continue
+            try:
+                is_future = authority_as_of > self.as_of
+            except TypeError as exc:
+                raise TypeError("market state structural as_of must be comparable") from exc
+            if is_future:
+                raise ValueError("market state cannot contain future structural authority")
+
+        if self.stabil.as_of is not None:
+            try:
+                stabil_is_future = self.stabil.as_of > self.as_of
+            except TypeError as exc:
+                raise TypeError("market state Stabil as_of must be comparable") from exc
+            if stabil_is_future:
+                raise ValueError("market state cannot contain future Stabil state")
 
 
 _LT_ROLES: tuple[tuple[str, TimeframeAuthorityRole], ...] = (
@@ -520,9 +571,71 @@ def _build_horizon_market_state(
     )
 
 
+def _latest_structure_as_of(structure: StructuralFactsProjection) -> object:
+    rows = structure.timeframe_facts
+    if not rows:
+        raise ValueError("market state as_of is required when Structure has no timeframe facts")
+    latest = rows[0].as_of
+    if latest is None:
+        raise ValueError("market state Structure as_of must be known")
+    for row in rows[1:]:
+        if row.as_of is None:
+            raise ValueError("market state Structure as_of must be known")
+        try:
+            if row.as_of > latest:
+                latest = row.as_of
+        except TypeError as exc:
+            raise TypeError("market state Structure as_of values must be comparable") from exc
+    return latest
+
+
+def _validate_structure_as_of(structure: StructuralFactsProjection, as_of: object) -> None:
+    for row in structure.timeframe_facts:
+        if row.as_of is None:
+            raise ValueError("market state Structure as_of must be known")
+        try:
+            is_future = row.as_of > as_of
+        except TypeError as exc:
+            raise TypeError("market state Structure as_of must be comparable to snapshot as_of") from exc
+        if is_future:
+            raise ValueError(f"market state cannot contain future Structure state:{row.timeframe}")
+
+
+def _horizon_source_refs(state: HorizonMarketState) -> tuple[FactRef, ...]:
+    refs: list[FactRef] = list(state.structural.source_refs)
+    for node in state.structural_map.nodes:
+        refs.extend(node.current_external_refs)
+    for _, assessment in state.environment:
+        refs.extend(assessment.source_refs)
+    for _, assessment in state.participation:
+        refs.extend(assessment.source_refs)
+    return tuple(refs)
+
+
+def _market_state_source_refs(
+    long_term: HorizonMarketState,
+    short_term: HorizonMarketState,
+    stabil: StabilMarketState,
+) -> tuple[FactRef, ...]:
+    refs = [*_horizon_source_refs(long_term), *_horizon_source_refs(short_term)]
+    if stabil.support_ref is not None:
+        refs.append(stabil.support_ref)
+    refs.extend(event.ref for event in stabil.events)
+
+    by_key: dict[tuple[str, str, str, str, str], FactRef] = {}
+    for ref in refs:
+        key = ref.deterministic_key
+        existing = by_key.get(key)
+        if existing is not None and existing != ref:
+            raise ValueError("market state source ref identity collision")
+        by_key[key] = ref
+    return tuple(by_key[key] for key in sorted(by_key))
+
+
 def build_market_state(
     structure: StructuralFactsProjection,
     *,
+    as_of: object | None = None,
     stabil: StabilSupportProjection | None = None,
     volatility: VolatilityEnvironmentProjection | None = None,
     participation: ParticipationBehaviorProjection | None = None,
@@ -532,7 +645,14 @@ def build_market_state(
     Existing Structure authority, volatility and participation behavior is preserved
     unchanged in this read-only migration. Stabil native support/lifecycle behavior is
     carried alongside those facts without creating a vote, gate or BUY/SELL action.
+    Traceable evidence is exposed only through real source refs already present in the
+    frozen projections, and every such ref is bounded by the resolved ``as_of``.
     """
+
+    resolved_as_of = _latest_structure_as_of(structure) if as_of is None else as_of
+    if resolved_as_of is None:
+        raise ValueError("market state as_of must be known")
+    _validate_structure_as_of(structure, resolved_as_of)
 
     structural = build_horizon_structural_snapshot(structure)
     long_term = _build_horizon_market_state(
@@ -547,11 +667,25 @@ def build_market_state(
         volatility=volatility,
         participation=participation,
     )
+    stabil_state = _stabil_state(stabil)
+    source_refs = _market_state_source_refs(long_term, short_term, stabil_state)
+    source_lineage = tuple(
+        sorted(
+            {
+                ref.lineage_id
+                for ref in source_refs
+                if ref.lineage_id is not None
+            }
+        )
+    )
     return MarketStateSnapshot(
+        as_of=resolved_as_of,
         long_term=long_term,
         short_term=short_term,
         horizon_relation=structural.relation,
-        stabil=_stabil_state(stabil),
+        stabil=stabil_state,
+        source_refs=source_refs,
+        source_lineage=source_lineage,
         reasons=structural.reasons,
     )
 
