@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Iterable
 
 from financial_dashboard.context.envelope import ContextDataQuality, FactRef
@@ -12,13 +12,18 @@ from .lifecycle import (
     PositionState,
     TradeLifecycleState,
     TradeLifecycleTransition,
+    transition_st_exit_intent,
     transition_trade_lifecycle,
+)
+from .st_exit_intent import STExitFamily
+from .st_exit_policy import (
+    STCanonicalExitAssessment,
+    as_long_exit_assessment,
+    assess_st_canonical_exit,
 )
 from .structural import (
     DecisionHorizon,
     HorizonStructuralSnapshot,
-    StructuralDirection,
-    ThesisState,
     build_horizon_structural_snapshot,
 )
 from .trade_exit import (
@@ -38,9 +43,10 @@ if TYPE_CHECKING:
 class PositionExitDecision:
     """Final action layer for one already-open long position.
 
-    The decision does not create a bearish trade thesis. The immutable entry horizon
-    only selects which already-existing structural authority owns position health.
-    SELL remains gated by EXIT_READY plus one fresh 30m exit execution event.
+    LT ownership continues to use its existing structural exit authority. ST ownership
+    uses the Step-8 thesis-aware economic policy. A terminal ST economic outcome arms
+    the existing EXIT_READY execution path; Step 9 has not yet changed how urgently
+    that path executes, so SELL still requires the current fresh 30m exit event.
     """
 
     action: DecisionAction
@@ -55,6 +61,9 @@ class PositionExitDecision:
     waiting_for: tuple[str, ...]
     source_refs: tuple[FactRef, ...]
     source_lineage: tuple[str, ...]
+    economic_exit_family: STExitFamily | None = None
+    economic_reasons: tuple[str, ...] = ()
+    economic_source_lineage: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.action not in {DecisionAction.HOLD, DecisionAction.SELL}:
@@ -72,6 +81,17 @@ class PositionExitDecision:
             raise ValueError("CONFIRMED exit execution must resolve to SELL")
         if self.execution_event_consumed and self.stage is not ExitStage.EXIT_READY:
             raise ValueError("exit execution event may be consumed only while EXIT_READY")
+        if self.economic_exit_family is not None:
+            if self.entry_horizon is not DecisionHorizon.SHORT_TERM:
+                raise ValueError("terminal economic exit family may belong only to an ST position")
+            if self.stage is not ExitStage.EXIT_READY:
+                raise ValueError("terminal ST economic exit must arm EXIT_READY")
+            if not self.economic_reasons:
+                raise ValueError("terminal ST economic exit requires economic reasons")
+        if self.entry_horizon is not DecisionHorizon.SHORT_TERM and (
+            self.economic_reasons or self.economic_source_lineage
+        ):
+            raise ValueError("non-ST position cannot carry ST economic exit evidence")
 
 
 def _dedup(values: Iterable[str]) -> tuple[str, ...]:
@@ -98,94 +118,6 @@ def _lineage_from_refs(refs: Iterable[FactRef]) -> tuple[str, ...]:
     return tuple(sorted(set(values)))
 
 
-def _short_term_position_exit(snapshot: HorizonStructuralSnapshot) -> LongExitAssessment:
-    """Use the canonical 1H ST Structure as authority for an ST-origin position.
-
-    No supporting-domain score, price threshold, ATR rule or new timeframe authority
-    is introduced here. The state mapping mirrors the existing structural exit FSM:
-    intact long protects ownership, transition-down arms watch, and established short
-    arms EXIT_READY. EXIT_READY still requires a separate fresh execution event.
-    """
-
-    st = snapshot.short_term
-    refs = _canonical_refs(st.source_refs)
-
-    if st.data_quality is not ContextDataQuality.VALID:
-        return LongExitAssessment(
-            ExitStage.EXIT_WATCH,
-            PositionHealth.UNKNOWN,
-            (f"ST_STRUCTURE_DATA_{st.data_quality.value}",),
-            ("ST_STRUCTURE_AUTHORITY_TO_RECOVER",),
-            refs,
-        )
-
-    if st.thesis_state is ThesisState.INVALIDATED:
-        return LongExitAssessment(
-            ExitStage.EXIT_READY,
-            PositionHealth.PRESSURED,
-            ("ST_LONG_THESIS_INVALIDATED",),
-            ("FRESH_LONG_EXIT_EXECUTION_EVENT",),
-            refs,
-        )
-
-    if st.direction is StructuralDirection.UNRESOLVED or st.thesis_state is ThesisState.UNRESOLVED:
-        return LongExitAssessment(
-            ExitStage.EXIT_WATCH,
-            PositionHealth.UNKNOWN,
-            ("ST_STRUCTURE_UNRESOLVED_FOR_OPEN_LONG",),
-            ("ST_STRUCTURE_AUTHORITY_TO_RESOLVE",),
-            refs,
-        )
-
-    if st.direction is StructuralDirection.SHORT and st.thesis_state is ThesisState.INTACT:
-        return LongExitAssessment(
-            ExitStage.EXIT_READY,
-            PositionHealth.PRESSURED,
-            ("ST_BEARISH_THESIS_ESTABLISHED_AGAINST_ST_POSITION",),
-            ("FRESH_LONG_EXIT_EXECUTION_EVENT",),
-            refs,
-        )
-
-    if (
-        st.direction is StructuralDirection.LONG
-        and st.thesis_state is ThesisState.TRANSITIONING
-        and st.transition_target is StructuralDirection.SHORT
-    ):
-        return LongExitAssessment(
-            ExitStage.EXIT_WATCH,
-            PositionHealth.PRESSURED,
-            ("ST_LONG_THESIS_TRANSITIONING_TOWARD_SHORT",),
-            ("ST_TRANSITION_TO_RESOLVE",),
-            refs,
-        )
-
-    if st.direction is StructuralDirection.SHORT and st.thesis_state is ThesisState.TRANSITIONING:
-        return LongExitAssessment(
-            ExitStage.EXIT_WATCH,
-            PositionHealth.PRESSURED,
-            ("ST_ESTABLISHED_SIDE_SHORT_BUT_TRANSITIONING",),
-            ("ST_TRANSITION_TO_RESOLVE",),
-            refs,
-        )
-
-    if st.direction is StructuralDirection.LONG and st.thesis_state is ThesisState.INTACT:
-        return LongExitAssessment(
-            ExitStage.MONITOR,
-            PositionHealth.HEALTHY,
-            ("ST_LONG_THESIS_INTACT",),
-            (),
-            refs,
-        )
-
-    return LongExitAssessment(
-        ExitStage.EXIT_WATCH,
-        PositionHealth.UNKNOWN,
-        ("OPEN_ST_LONG_EXIT_STATE_NOT_CANONICALLY_CLASSIFIED",),
-        ("CANONICAL_ST_STRUCTURE_STATE",),
-        refs,
-    )
-
-
 def _missing_entry_metadata_exit(snapshot: HorizonStructuralSnapshot) -> LongExitAssessment:
     refs = _canonical_refs(
         (*snapshot.long_term.source_refs, *snapshot.short_term.source_refs)
@@ -206,11 +138,14 @@ def compose_position_exit_decision(
     as_of: Any,
     execution_event: ExecutionTriggerEvent | None = None,
     channel_available: bool = True,
+    st_economic_exit: STCanonicalExitAssessment | None = None,
 ) -> PositionExitDecision:
     """Compose HOLD/SELL for one OPEN position from frozen ownership metadata.
 
     Premature 30m events are deliberately not passed into the execution validator.
     They are therefore not consumed and cannot be cached for a later EXIT_READY bar.
+    ST callers must supply the canonical economic assessment; there is no fallback
+    path to the pre-Step-8 Structure-only ST exit engine.
     """
 
     if state.position is not PositionState.OPEN:
@@ -219,18 +154,29 @@ def compose_position_exit_decision(
         raise ValueError("position exit decision as_of must be known")
 
     metadata = state.entry_metadata
+    economic_exit_family: STExitFamily | None = None
+    economic_reasons: tuple[str, ...] = ()
+    economic_lineage: tuple[str, ...] = ()
+
     if metadata is None:
         entry_horizon = None
         structural = _missing_entry_metadata_exit(structural_snapshot)
         authority_reason = "POSITION_EXIT_AUTHORITY_UNRESOLVED"
     elif metadata.entry_horizon is DecisionHorizon.LONG_TERM:
+        if st_economic_exit is not None:
+            raise ValueError("LT exit cannot consume an ST economic assessment")
         entry_horizon = DecisionHorizon.LONG_TERM
         structural = assess_long_position_exit(structural_snapshot)
         authority_reason = "POSITION_EXIT_AUTHORITY_LONG_TERM_ENTRY"
     elif metadata.entry_horizon is DecisionHorizon.SHORT_TERM:
+        if st_economic_exit is None:
+            raise ValueError("canonical ST exit requires Step-8 economic assessment")
         entry_horizon = DecisionHorizon.SHORT_TERM
-        structural = _short_term_position_exit(structural_snapshot)
-        authority_reason = "POSITION_EXIT_AUTHORITY_SHORT_TERM_ENTRY"
+        structural = as_long_exit_assessment(st_economic_exit)
+        authority_reason = "POSITION_EXIT_AUTHORITY_SHORT_TERM_ECONOMIC_POLICY"
+        economic_exit_family = st_economic_exit.exit_family
+        economic_reasons = st_economic_exit.reasons
+        economic_lineage = st_economic_exit.source_lineage
     else:
         raise ValueError("unsupported position entry horizon")
 
@@ -250,6 +196,7 @@ def compose_position_exit_decision(
     )
 
     refs = _canonical_refs((*structural.source_refs, *execution.source_refs))
+    lineage = tuple(sorted(set((*_lineage_from_refs(refs), *economic_lineage))))
     return PositionExitDecision(
         action=action,
         as_of=as_of,
@@ -262,7 +209,10 @@ def compose_position_exit_decision(
         reasons=_dedup((authority_reason, *structural.reasons, *execution.reasons)),
         waiting_for=_dedup((*structural.waiting_for, *execution.waiting_for)),
         source_refs=refs,
-        source_lineage=_lineage_from_refs(refs),
+        source_lineage=lineage,
+        economic_exit_family=economic_exit_family,
+        economic_reasons=economic_reasons,
+        economic_source_lineage=economic_lineage,
     )
 
 
@@ -272,7 +222,7 @@ def assess_position_exit_decision(
     *,
     execution_event: ExecutionTriggerEvent | None = None,
 ) -> PositionExitDecision:
-    """Build the causal Turn 8 exit decision from one frozen market snapshot."""
+    """Build the causal canonical exit decision from one frozen market snapshot."""
 
     if snapshot.as_of is None:
         raise ValueError("position exit snapshot as_of must be known")
@@ -280,6 +230,13 @@ def assess_position_exit_decision(
         raise ValueError("position entry metadata symbol must match exit snapshot symbol")
 
     structural_snapshot = build_horizon_structural_snapshot(snapshot.structure)
+    st_economic_exit = None
+    if (
+        state.entry_metadata is not None
+        and state.entry_metadata.entry_horizon is DecisionHorizon.SHORT_TERM
+    ):
+        st_economic_exit = assess_st_canonical_exit(snapshot, state)
+
     channel_available = snapshot.quality_for_timeframe("30m") is ContextDataQuality.VALID
     return compose_position_exit_decision(
         state,
@@ -287,6 +244,7 @@ def assess_position_exit_decision(
         as_of=snapshot.as_of,
         execution_event=execution_event,
         channel_available=channel_available,
+        st_economic_exit=st_economic_exit,
     )
 
 
@@ -294,7 +252,7 @@ def transition_position_exit_lifecycle(
     state: TradeLifecycleState,
     decision: PositionExitDecision,
 ) -> TradeLifecycleTransition:
-    """Apply one Turn 8 exit result to persistent ownership without reinterpretation."""
+    """Atomically fold Step-8 economic intent and the existing execution result."""
 
     if state.position is not PositionState.OPEN:
         raise ValueError("position exit lifecycle transition requires OPEN state")
@@ -303,13 +261,29 @@ def transition_position_exit_lifecycle(
     if state.entry_metadata is None and decision.entry_horizon is not None:
         raise ValueError("metadata-less position cannot acquire an exit horizon later")
 
-    return transition_trade_lifecycle(
-        state,
+    intent_state = state
+    if decision.entry_horizon is DecisionHorizon.SHORT_TERM:
+        if decision.economic_exit_family is None:
+            intent_state = transition_st_exit_intent(state, None)
+        else:
+            intent_state = transition_st_exit_intent(
+                state,
+                decision.economic_exit_family,
+                as_of=decision.as_of,
+                reasons=decision.economic_reasons,
+                source_lineage=decision.economic_source_lineage,
+            )
+
+    transition = transition_trade_lifecycle(
+        intent_state,
         decision,
         as_of=decision.as_of,
         exit_stage=decision.stage,
         exit_execution_confirmed=decision.action is DecisionAction.SELL,
     )
+    if intent_state is state:
+        return transition
+    return replace(transition, previous=state)
 
 
 __all__ = [
