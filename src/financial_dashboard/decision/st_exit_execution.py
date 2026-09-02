@@ -30,22 +30,27 @@ class STExitExecutionAssessment:
     urgency: STExitExecutionUrgency
     execution: LongExitExecutionAssessment
     execution_event_consumed: bool
+    policy_mandated: bool = False
 
-    @property
-    def policy_mandated(self) -> bool:
-        return self.execution.state is ExitExecutionState.POLICY_MANDATED
+    def __post_init__(self) -> None:
+        if self.policy_mandated:
+            if self.execution_event_consumed:
+                raise ValueError("policy-mandated ST exit cannot consume a timing event")
+            if self.execution.waiting_for:
+                raise ValueError("policy-mandated ST exit cannot wait for timing confirmation")
 
 
 def _policy_mandated(reason: str, urgency: STExitExecutionUrgency) -> STExitExecutionAssessment:
     return STExitExecutionAssessment(
         urgency=urgency,
         execution=LongExitExecutionAssessment(
-            state=ExitExecutionState.POLICY_MANDATED,
+            state=ExitExecutionState.ABSENT,
             reasons=(reason,),
             waiting_for=(),
             source_refs=(),
         ),
         execution_event_consumed=False,
+        policy_mandated=True,
     )
 
 
