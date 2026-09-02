@@ -8,6 +8,7 @@ from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
+from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES
 from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.decision.calibration import load_opportunity_calibration
@@ -20,6 +21,7 @@ from financial_dashboard.decision.timeline_cache import (
     DecisionTimelineCacheMiss,
     load_frozen_decision_timeline,
 )
+from financial_dashboard.structure_location_replay import CausalBarClock
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +34,53 @@ class DiagnosticEntry:
     forward_return_pct: float | None
     mfe_pct: float | None
     mae_pct: float | None
+
+
+def _align_requested_start(value: str, reference: pd.Timestamp) -> pd.Timestamp:
+    requested = pd.Timestamp(value)
+    if reference.tzinfo is not None and requested.tzinfo is None:
+        requested = requested.tz_localize(reference.tzinfo)
+    elif reference.tzinfo is None and requested.tzinfo is not None:
+        requested = requested.tz_localize(None)
+    elif reference.tzinfo is not None and requested.tzinfo is not None:
+        requested = requested.tz_convert(reference.tzinfo)
+    return requested
+
+
+def _causal_warmup_start(
+    store: ParquetOHLCVStore,
+    *,
+    symbol: str,
+    requested_start: str | None,
+    decision_timeframe: str = "1h",
+) -> pd.Timestamp:
+    clock = CausalBarClock()
+    first_available: list[pd.Timestamp] = []
+    for timeframe in ANALYSIS_TIMEFRAMES:
+        frame = store.load(symbol, timeframe)
+        if frame.empty:
+            raise SystemExit(f"No historical bars found for {symbol} {timeframe}")
+        first_timestamp = pd.Timestamp(frame.iloc[0]["timestamp"])
+        first_available.append(pd.Timestamp(clock.available_at(first_timestamp, timeframe)))
+
+    common_cutoff = max(first_available)
+    decision_frame = store.load(symbol, decision_timeframe)
+    if decision_frame.empty:
+        raise SystemExit(f"No historical bars found for {symbol} {decision_timeframe}")
+
+    warmup_start: pd.Timestamp | None = None
+    for value in decision_frame["timestamp"]:
+        timestamp = pd.Timestamp(value)
+        if pd.Timestamp(clock.available_at(timestamp, decision_timeframe)) >= common_cutoff:
+            warmup_start = timestamp
+            break
+    if warmup_start is None:
+        raise SystemExit(
+            "No decision bar exists after all required timeframe histories become causally available"
+        )
+    if requested_start is None:
+        return warmup_start
+    return max(warmup_start, _align_requested_start(requested_start, warmup_start))
 
 
 def _value(value: Any) -> str | None:
@@ -136,14 +185,19 @@ def main() -> None:
 
     clean_symbol = normalize_symbol(args.symbol)
     store = ParquetOHLCVStore(args.cache_root)
-    config = HistoricalDecisionInputConfig(
+    effective_start = _causal_warmup_start(
+        store,
+        symbol=clean_symbol,
+        requested_start=args.start,
+    )
+    history_config = HistoricalDecisionInputConfig(
         pattern_profile=args.pattern_profile,
         max_bars=args.max_bars,
-        start_at=pd.Timestamp(args.start) if args.start else None,
+        start_at=effective_start,
         end_at=args.end,
     )
     try:
-        frozen = load_frozen_decision_timeline(store, clean_symbol, config=config)
+        frozen = load_frozen_decision_timeline(store, clean_symbol, config=history_config)
     except DecisionTimelineCacheMiss as exc:
         raise SystemExit(
             "FROZEN_DECISION_TIMELINE_CACHE_MISS: build the exact frozen timeline first"
@@ -176,7 +230,9 @@ def main() -> None:
     print("ST ENTRY FORCED-FLAT DIAGNOSTIC")
     print("=" * 76)
     print(f"SYMBOL\t{clean_symbol}")
+    print(f"CAUSAL_WARMUP_START\t{effective_start}")
     print(f"SNAPSHOTS\t{len(snapshots)}")
+    print(f"FROZEN_CACHE_STATUS\t{frozen.cache_status}")
     print(f"ENTRY_EXECUTION_EVENTS\t{len(entry_events)}")
     print(f"EXIT_EXECUTION_EVENTS\t{len(exit_events)}")
     print(f"FORCE_FLAT_AFTER_BARS\t{args.force_flat_after_bars}")
