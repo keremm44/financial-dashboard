@@ -193,7 +193,6 @@ def test_resolved_st_entry_freezes_minimal_breakout_trade_memory():
     assert metadata.entry_as_of == as_of
     assert metadata.initial_target_identity == "target:st:1"
 
-    # Persistent memory is deliberately compact: no domain snapshot or FactRef copy.
     assert {item.name for item in fields(STTradeMemory)} == {
         "thesis_family",
         "economic_mission",
@@ -344,7 +343,7 @@ def _checkpoint_for_open_state(state):
 
 def test_v5_checkpoint_requires_st_trade_memory_and_v3_cannot_be_silently_migrated(tmp_path):
     assert TRADE_LIFECYCLE_STATE_SCHEMA_VERSION == 5
-    assert CANONICAL_LIFECYCLE_CONTRACT_VERSION == 6
+    assert CANONICAL_LIFECYCLE_CONTRACT_VERSION == 7
 
     as_of = pd.Timestamp("2026-01-05 10:00")
     legacy_metadata = PositionEntryMetadata(
