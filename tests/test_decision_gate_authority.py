@@ -17,7 +17,7 @@ from financial_dashboard.decision.gate_authority import (
     deferred_permission_blocker_owner,
 )
 from financial_dashboard.decision.opportunity import OpportunityState
-from financial_dashboard.decision.structural import StructuralDirection, ThesisState
+from financial_dashboard.decision.structural import DecisionHorizon, StructuralDirection, ThesisState
 from financial_dashboard.decision.timing import TimingState
 
 
@@ -55,6 +55,7 @@ def _ready_inputs():
 
 def test_structure_owned_failures_are_not_counted_again_as_permission_or_coverage_vetoes():
     structural = SimpleNamespace(
+        horizon=DecisionHorizon.LONG_TERM,
         data_quality=ContextDataQuality.UNAVAILABLE,
         direction=StructuralDirection.UNRESOLVED,
         thesis_state=ThesisState.UNRESOLVED,
@@ -80,6 +81,7 @@ def test_structure_owned_failures_are_not_counted_again_as_permission_or_coverag
 
 def test_context_conflict_disagreement_keeps_existing_wait_behavior():
     structural = SimpleNamespace(
+        horizon=DecisionHorizon.LONG_TERM,
         data_quality=ContextDataQuality.VALID,
         direction=StructuralDirection.LONG,
         thesis_state=ThesisState.INTACT,
