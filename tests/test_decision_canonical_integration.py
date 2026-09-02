@@ -9,6 +9,7 @@ from financial_dashboard.decision.execution import ExecutionTriggerState
 from financial_dashboard.decision.lifecycle import ExitStage, PositionState
 from financial_dashboard.decision.lifecycle_replay import replay_canonical_trade_lifecycle
 from financial_dashboard.decision.scenario import ScenarioKind, ScenarioPresence, ScenarioStage
+from financial_dashboard.decision.st_exit_intent import STExitFamily
 from financial_dashboard.decision.structural import DecisionHorizon, StructuralDirection
 from financial_dashboard.decision.trade_exit import ExitExecutionState, PositionHealth
 from financial_dashboard.decision_audit import DecisionAction as AuditDecisionAction
@@ -78,6 +79,9 @@ class _Snapshot:
             waiting_for=() if confirmed else (("FRESH_LONG_EXIT_EXECUTION_EVENT",) if ready else ()),
             source_refs=(),
             source_lineage=("exit:lineage",),
+            economic_exit_family=STExitFamily.PROTECTIVE_EXIT if ready else None,
+            economic_reasons=("READINESS_PROXY_TERMINAL_EXIT",) if ready else (),
+            economic_source_lineage=("exit:lineage",) if ready else (),
         )
 
 
