@@ -49,6 +49,18 @@ def test_attribute_entry_bottlenecks_identifies_timing_only() -> None:
     assert result.is_single_family
 
 
+
+def test_attribution_uses_canonical_gate_registry_ownership() -> None:
+    conflict = attribute_entry_bottlenecks(
+        _scenario(waiting=("CONTEXT_CONFLICT_TO_RECONCILE",))
+    )
+    structure = attribute_entry_bottlenecks(
+        _scenario(waiting=("LOWER_HORIZON_COUNTER_MOVE_TO_RESOLVE",))
+    )
+
+    assert conflict.families == (EntryBottleneckFamily.CONFLICT,)
+    assert structure.families == (EntryBottleneckFamily.STRUCTURE,)
+
 def test_qualified_scenario_has_no_diagnostic_bottleneck() -> None:
     result = attribute_entry_bottlenecks(
         _scenario(stage=ScenarioStage.QUALIFIED, waiting=("SETUP_TRIGGER",))
