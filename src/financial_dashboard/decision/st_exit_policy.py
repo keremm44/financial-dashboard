@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Iterable
 from financial_dashboard.context.envelope import FactRef
 
 from .lifecycle import ExitStage, PositionState, TradeLifecycleState
+from .st_calibration import STExitCalibration
 from .st_exit_intent import STExitFamily
 from .st_harvest import (
     STHarvestShadowAssessment,
@@ -125,16 +126,15 @@ def _hold_result(shadow: STHarvestShadowAssessment) -> STCanonicalExitAssessment
 def assess_st_canonical_exit(
     snapshot: "DecisionInputSnapshot",
     state: TradeLifecycleState,
+    *,
+    calibration: STExitCalibration | None = None,
 ) -> STCanonicalExitAssessment:
-    """Activate the frozen Step-8 ST economic exit hierarchy.
+    """Activate the frozen ST economic exit hierarchy under one explicit calibration.
 
-    Precedence is inherited from the Step-5/6 causal policy shadow:
-    thesis invalidation -> PROTECTIVE_EXIT; productive/healthy/uncertain evidence ->
-    HOLD; full CONSUMED story -> PROFIT_HARVEST. UNKNOWN never becomes confirmation.
-
-    Step-7 terminal intent is monotonic. A previously committed HARVEST survives a
-    later HOLD/uncertain evaluation and may escalate to PROTECTIVE. A previously
-    committed PROTECTIVE intent can never be downgraded inside the same trade.
+    Precedence is fixed: thesis invalidation -> PROTECTIVE_EXIT;
+    productive/healthy/uncertain evidence -> HOLD; full CONSUMED story ->
+    PROFIT_HARVEST. Step-12 calibration may alter only an explicitly calibratable
+    evidence sensitivity and cannot change that hierarchy or terminal-intent rules.
     """
 
     if state.position is not PositionState.OPEN:
@@ -143,7 +143,11 @@ def assess_st_canonical_exit(
     if metadata is None or metadata.entry_horizon is not DecisionHorizon.SHORT_TERM:
         raise ValueError("canonical ST exit policy requires short-term entry ownership")
 
-    shadow = assess_st_harvest_shadow(snapshot, state)
+    shadow = (
+        assess_st_harvest_shadow(snapshot, state)
+        if calibration is None
+        else assess_st_harvest_shadow(snapshot, state, calibration=calibration)
+    )
     existing = state.st_exit_intent
 
     if existing is not None and existing.family is STExitFamily.PROTECTIVE_EXIT:

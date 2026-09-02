@@ -174,7 +174,7 @@ class DecisionInputSnapshot:
             execution_event=execution_event,
         )
 
-    def position_exit_decision(self, state, *, execution_event=None):
+    def position_exit_decision(self, state, *, config=None, execution_event=None):
         """Resolve one OPEN position through its frozen entry-horizon exit contract."""
 
         from financial_dashboard.decision.exit import assess_position_exit_decision
@@ -182,6 +182,7 @@ class DecisionInputSnapshot:
         return assess_position_exit_decision(
             self,
             state,
+            config=config,
             execution_event=execution_event,
         )
 

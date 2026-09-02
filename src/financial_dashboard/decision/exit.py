@@ -41,6 +41,7 @@ from .trade_exit import (
 
 if TYPE_CHECKING:
     from financial_dashboard.decision_input import DecisionInputSnapshot
+    from .engine import DecisionEngineConfig
 
 
 _POLICY_MANDATED_URGENCIES = frozenset(
@@ -288,6 +289,7 @@ def assess_position_exit_decision(
     snapshot: "DecisionInputSnapshot",
     state: TradeLifecycleState,
     *,
+    config: "DecisionEngineConfig | None" = None,
     execution_event: ExecutionTriggerEvent | None = None,
 ) -> PositionExitDecision:
     """Build the causal canonical exit decision from one frozen market snapshot."""
@@ -297,13 +299,20 @@ def assess_position_exit_decision(
     if state.entry_metadata is not None and state.entry_metadata.symbol != snapshot.symbol:
         raise ValueError("position entry metadata symbol must match exit snapshot symbol")
 
+    from .engine import DecisionEngineConfig
+
+    cfg = config or DecisionEngineConfig()
     structural_snapshot = build_horizon_structural_snapshot(snapshot.structure)
     st_economic_exit = None
     if (
         state.entry_metadata is not None
         and state.entry_metadata.entry_horizon is DecisionHorizon.SHORT_TERM
     ):
-        st_economic_exit = assess_st_canonical_exit(snapshot, state)
+        st_economic_exit = assess_st_canonical_exit(
+            snapshot,
+            state,
+            calibration=cfg.st_exit_calibration,
+        )
 
     channel_available = snapshot.quality_for_timeframe("30m") is ContextDataQuality.VALID
     return compose_position_exit_decision(

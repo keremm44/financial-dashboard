@@ -11,6 +11,7 @@ from financial_dashboard.context.pattern_behavior_projection import PatternBehav
 
 from .lifecycle import PositionState, TradeLifecycleState
 from .participation import ParticipationState, assess_participation
+from .st_calibration import STExitCalibration, STHealthyBaseReactionConfidence
 from .st_economic_history import (
     STContinuationEpisode,
     STContinuationEpisodeState,
@@ -218,11 +219,13 @@ def _buyer_reaction_at_defense(
     timeframe: str,
     defense_low: float,
     defense_high: float,
+    confidence: STHealthyBaseReactionConfidence,
 ) -> tuple[bool | None, tuple[str, ...], tuple[FactRef, ...]]:
     normalized = timeframe.strip().lower()
     valid_related_seen = False
     unavailable_related_seen = False
-    alive = False
+    confirmed_alive = False
+    developing_alive = False
     evidence: list[str] = []
     refs: list[FactRef] = []
 
@@ -252,7 +255,7 @@ def _buyer_reaction_at_defense(
             if failed:
                 continue
             if interaction == "REACTION_CONFIRMED" or state == "REACTION_CONFIRMED":
-                alive = True
+                confirmed_alive = True
                 evidence.append(
                     f"HEALTHY_BASE_BUYER_REACTION_CONFIRMED:OB:{getattr(item, 'identity', 'UNKNOWN')}"
                 )
@@ -263,7 +266,7 @@ def _buyer_reaction_at_defense(
                 "EXITING_FAVORABLE",
                 "HOLDING_FAVORABLE",
             }:
-                alive = True
+                developing_alive = True
                 evidence.append(
                     f"HEALTHY_BASE_BUYER_REACTION_DEVELOPING:OB:{getattr(item, 'identity', 'UNKNOWN')}"
                 )
@@ -295,18 +298,25 @@ def _buyer_reaction_at_defense(
             if failed:
                 continue
             if bool(getattr(item, "reaction_confirmed", False)):
-                alive = True
+                confirmed_alive = True
                 evidence.append(
                     f"HEALTHY_BASE_BUYER_REACTION_CONFIRMED:FVG:{getattr(item, 'identity', 'UNKNOWN')}"
                 )
             elif getattr(item, "first_test_index", None) is not None:
-                alive = True
+                developing_alive = True
                 evidence.append(
                     f"HEALTHY_BASE_BUYER_REACTION_DEVELOPING:FVG:{getattr(item, 'identity', 'UNKNOWN')}"
                 )
 
-    if alive:
+    if confirmed_alive:
         return True, tuple(evidence), _unique_refs(refs)
+    if (
+        developing_alive
+        and confidence is STHealthyBaseReactionConfidence.DEVELOPING_OR_CONFIRMED
+    ):
+        return True, tuple(evidence), _unique_refs(refs)
+    if developing_alive:
+        return False, tuple(evidence), _unique_refs(refs)
     if valid_related_seen:
         return False, (), _unique_refs(refs)
     if unavailable_related_seen or (order_blocks is None and lifecycle is None):
@@ -391,6 +401,7 @@ def _healthy_base(
     *,
     mission: STMissionCompletionMilestone,
     live_episode: STContinuationEpisode | None,
+    calibration: STExitCalibration,
 ) -> _HealthyBaseAssessment:
     metadata = state.entry_metadata
     memory = None if metadata is None else metadata.st_trade_memory
@@ -475,6 +486,7 @@ def _healthy_base(
         timeframe="1h",
         defense_low=float(defense.low),
         defense_high=float(defense.high),
+        confidence=calibration.healthy_base_reaction_confidence,
     )
     refs.extend(reaction_refs)
     if reaction is None:
@@ -487,8 +499,8 @@ def _healthy_base(
     if reaction is False:
         return _HealthyBaseAssessment(
             STHealthyBaseState.ABSENT,
-            ("HEALTHY_BASE_BUYER_REACTION_NOT_ALIVE",),
-            tuple(evidence),
+            ("HEALTHY_BASE_BUYER_REACTION_CONFIDENCE_NOT_MET",),
+            tuple((*evidence, *reaction_evidence)),
             _unique_refs(refs),
         )
     evidence.extend(reaction_evidence)
@@ -556,6 +568,8 @@ def _healthy_base(
 def assess_st_harvest_shadow(
     snapshot: "DecisionInputSnapshot",
     state: TradeLifecycleState,
+    *,
+    calibration: STExitCalibration | None = None,
 ) -> STHarvestShadowAssessment:
     """Derive Step-6 HOLD/HARVEST interpretation without changing canonical action.
 
@@ -563,6 +577,8 @@ def assess_st_harvest_shadow(
     causal economic history and the current causal snapshot. None of those policy
     conclusions are persisted here. Protective invalidation always takes precedence.
     """
+
+    cfg = calibration or STExitCalibration()
 
     if state.position is not PositionState.OPEN:
         return _result(
@@ -654,6 +670,7 @@ def assess_st_harvest_shadow(
         history,
         mission=mission,
         live_episode=live_episode,
+        calibration=cfg,
     )
     primary: list[str] = [
         "INITIAL_MISSION_MATERIALLY_COMPLETED",

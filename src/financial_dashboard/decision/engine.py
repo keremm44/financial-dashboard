@@ -23,6 +23,7 @@ from .horizon_profile import horizon_evaluation_profile
 from .opportunity import OpportunityAssessment, OpportunityCalibration, assess_opportunity
 from .participation import ParticipationAssessment, assess_participation
 from .reaction import ReactionAssessment, assess_reaction
+from .st_calibration import STExitCalibration
 from .stabil_interpretation import StabilHorizonAssessment, assess_stabil_horizon
 from .stabil_policy import StabilEntryPolicyAssessment, assess_stabil_entry_policy
 from .structural import (
@@ -39,9 +40,10 @@ DECISION_CONTRACT_VERSION = 3
 
 @dataclass(frozen=True, slots=True)
 class DecisionEngineConfig:
-    """V1 policy/calibration inputs; no hidden market thresholds."""
+    """Canonical policy/calibration inputs; no hidden market thresholds."""
 
     opportunity_calibration: OpportunityCalibration | None = None
+    st_exit_calibration: STExitCalibration = field(default_factory=STExitCalibration)
     action_policy: ActionPolicy = field(default_factory=ActionPolicy)
     execution_timeframe: str = field(
         default_factory=lambda: horizon_evaluation_profile(DecisionHorizon.LONG_TERM).execution_timeframe

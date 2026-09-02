@@ -102,7 +102,11 @@ class PersistentCanonicalLifecycleReplayRunner:
 
         replay = replay_canonical_trade_lifecycle(
             tail,
-            config=cfg,
+            # ``cfg`` is always used for the checkpoint digest. Only an explicitly
+            # supplied config is forwarded as an override to policy calls; omitting
+            # config preserves the canonical default call surface while hashing the
+            # exact same default semantics.
+            config=config,
             entry_execution_events=entry_events,
             exit_execution_events=exit_events,
             initial_state=initial_state,
