@@ -96,15 +96,17 @@ def assess_eligibility(
     structure_hard_blocked = bool(blockers)
 
     # G4: Permission remains scope/context only. Some Permission reasons summarize
-    # facts whose canonical hard-gate owner is already present in this Decision
-    # assessment. Do not count those summaries as a second independent veto.
+    # facts whose canonical owner is already present in this Decision assessment.
+    # Context HIGH is produced only by canonical structural contradiction in the
+    # current Context model, so it is Structure-owned rather than an independent
+    # Reaction/Participation/Environment Conflict vote.
     expected_permission_side = _permission_side(structural.direction)
     if permission.gate_state is GateState.BLOCKED:
         permission_blockers = tuple(permission.blocking_reasons or ("PERMISSION_BLOCKED",))
         non_context_blockers = tuple(
             item
             for item in permission_blockers
-            if deferred_permission_blocker_owner(item) is not GateAuthority.CONFLICT
+            if item != "CONTEXT_CONFLICT_HIGH"
         )
         authoritative_permission_blockers = tuple(
             item
@@ -119,8 +121,11 @@ def assess_eligibility(
         elif non_context_blockers:
             reasons.append("PERMISSION_STRUCTURE_BLOCK_DEFERRED_TO_STRUCTURE")
         elif "CONTEXT_CONFLICT_HIGH" in permission_blockers:
-            reasons.append("CONTEXT_CONFLICT_DEFERRED_TO_INDEPENDENT_FAMILY_GATE")
-            waiting.append("CONTEXT_CONFLICT_TO_RECONCILE")
+            if structural.thesis_state is ThesisState.TRANSITIONING:
+                reasons.append("CONTEXT_STRUCTURAL_CONFLICT_ALREADY_OWNED_BY_STRUCTURE")
+            else:
+                reasons.append("CURRENT_STRUCTURAL_CONTEXT_CONFLICT_TO_RECONCILE")
+                waiting.append("CONTEXT_CONFLICT_TO_RECONCILE")
     elif permission.permitted_side not in {expected_permission_side, PermittedSide.NONE}:
         waiting.append("PERMISSION_SCOPE_SIDE_TO_RECONCILE")
     elif permission.permitted_side is PermittedSide.NONE and permission.gate_state in {
