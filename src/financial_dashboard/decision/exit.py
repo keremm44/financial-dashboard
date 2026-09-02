@@ -330,11 +330,12 @@ def transition_position_exit_lifecycle(
         raise ValueError("metadata-less position cannot acquire an exit horizon later")
 
     intent_state = state
-    if decision.entry_horizon is DecisionHorizon.SHORT_TERM:
-        economic_family = decision.economic_exit_family
-        economic_reasons = decision.economic_reasons
-        economic_lineage = decision.economic_source_lineage
+    economic_family = getattr(decision, "economic_exit_family", None)
+    economic_reasons = getattr(decision, "economic_reasons", ())
+    economic_lineage = getattr(decision, "economic_source_lineage", ())
+    execution_urgency = getattr(decision, "execution_urgency", None)
 
+    if decision.entry_horizon is DecisionHorizon.SHORT_TERM:
         if economic_family is None and decision.stage is not ExitStage.MONITOR:
             raise ValueError("canonical nonterminal ST exit must remain MONITOR")
         if decision.stage is ExitStage.EXIT_READY and economic_family is None:
@@ -343,8 +344,13 @@ def transition_position_exit_lifecycle(
             raise ValueError("canonical ST SELL requires terminal economic exit family")
 
         if economic_family is None:
+            if execution_urgency is not None and execution_urgency is not STExitExecutionUrgency.NOT_ARMED:
+                raise ValueError("nonterminal ST replay decision cannot carry terminal urgency")
+            execution_urgency = STExitExecutionUrgency.NOT_ARMED
             intent_state = transition_st_exit_intent(state, None)
         else:
+            if execution_urgency is None:
+                raise ValueError("terminal ST replay decision requires execution urgency")
             intent_state = transition_st_exit_intent(
                 state,
                 economic_family,
@@ -353,7 +359,8 @@ def transition_position_exit_lifecycle(
                 source_lineage=economic_lineage,
             )
 
-    policy_mandated = decision.execution_urgency in _POLICY_MANDATED_URGENCIES
+    policy_mandated = execution_urgency in _POLICY_MANDATED_URGENCIES
+    execution_state = getattr(getattr(decision, "execution", None), "state", None)
     transition = transition_trade_lifecycle(
         intent_state,
         decision,
@@ -361,7 +368,7 @@ def transition_position_exit_lifecycle(
         exit_stage=decision.stage,
         exit_execution_confirmed=(
             decision.action is DecisionAction.SELL
-            and decision.execution.state is ExitExecutionState.CONFIRMED
+            and execution_state is ExitExecutionState.CONFIRMED
         ),
         exit_policy_mandated=(decision.action is DecisionAction.SELL and policy_mandated),
     )
