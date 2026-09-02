@@ -12,6 +12,7 @@ from financial_dashboard.context.envelope import (
 )
 from financial_dashboard.decision.engine import DecisionEngineConfig
 from financial_dashboard.decision.lifecycle_persistence import decision_config_digest
+from financial_dashboard.decision.lifecycle_replay import _compose_open_exit
 from financial_dashboard.decision.st_calibration import (
     STExitCalibration,
     STHealthyBaseReactionConfidence,
@@ -107,6 +108,34 @@ def test_calibration_change_changes_checkpoint_decision_config_digest():
     )
 
     assert decision_config_digest(baseline) != decision_config_digest(candidate)
+
+
+def test_explicit_calibration_is_forwarded_to_open_exit_composition():
+    candidate = DecisionEngineConfig(
+        st_exit_calibration=STExitCalibration(
+            healthy_base_reaction_confidence=STHealthyBaseReactionConfidence.CONFIRMED_ONLY
+        )
+    )
+    sentinel = object()
+
+    class _ConfigAwareSnapshot:
+        def __init__(self):
+            self.seen_config = None
+
+        def position_exit_decision(self, state, *, config=None, execution_event=None):
+            self.seen_config = config
+            return sentinel
+
+    snapshot = _ConfigAwareSnapshot()
+    result = _compose_open_exit(
+        snapshot,
+        SimpleNamespace(),
+        config=candidate,
+        execution_event=None,
+    )
+
+    assert result is sentinel
+    assert snapshot.seen_config is candidate
 
 
 def _report(**overrides):
