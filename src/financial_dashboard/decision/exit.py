@@ -83,6 +83,8 @@ class PositionExitDecision:
             raise ValueError("exit execution event may be consumed only while EXIT_READY")
 
         if self.entry_horizon is DecisionHorizon.SHORT_TERM:
+            if self.economic_exit_family is None and self.stage is not ExitStage.MONITOR:
+                raise ValueError("canonical nonterminal ST exit must remain MONITOR")
             if self.stage is ExitStage.EXIT_READY and self.economic_exit_family is None:
                 raise ValueError("canonical ST EXIT_READY requires terminal economic exit family")
             if self.stage is not ExitStage.EXIT_READY and self.economic_exit_family is not None:
@@ -269,13 +271,12 @@ def transition_position_exit_lifecycle(
 
     intent_state = state
     if decision.entry_horizon is DecisionHorizon.SHORT_TERM:
-        try:
-            economic_family = decision.economic_exit_family
-            economic_reasons = decision.economic_reasons
-            economic_lineage = decision.economic_source_lineage
-        except AttributeError as exc:
-            raise ValueError("canonical ST exit transition requires Step-8 economic fields") from exc
+        economic_family = getattr(decision, "economic_exit_family", None)
+        economic_reasons = getattr(decision, "economic_reasons", ())
+        economic_lineage = getattr(decision, "economic_source_lineage", ())
 
+        if economic_family is None and decision.stage is not ExitStage.MONITOR:
+            raise ValueError("canonical nonterminal ST exit must remain MONITOR")
         if decision.stage is ExitStage.EXIT_READY and economic_family is None:
             raise ValueError("canonical ST EXIT_READY requires terminal economic exit family")
         if decision.action is DecisionAction.SELL and economic_family is None:
