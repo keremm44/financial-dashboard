@@ -104,8 +104,8 @@ def test_freeze_without_real_cross_regime_evidence_fails_closed():
 
     assert assessment.status is STImplementationFreezeStatus.VALIDATION_REQUIRED
     assert assessment.production_candidate is False
-    assert "freeze/multiple-market-regimes-required" in assessment.blockers
-    assert "freeze/cross-regime-review-required" in assessment.blockers
+    assert "freeze/multiple-market-regimes-required" in assessment.release_issues
+    assert "freeze/cross-regime-review-required" in assessment.release_issues
 
 
 def test_one_regime_is_not_enough_even_with_positive_review():
@@ -116,7 +116,7 @@ def test_one_regime_is_not_enough_even_with_positive_review():
 
     assert assessment.status is STImplementationFreezeStatus.VALIDATION_REQUIRED
     assert assessment.regime_count == 1
-    assert "freeze/multiple-market-regimes-required" in assessment.blockers
+    assert "freeze/multiple-market-regimes-required" in assessment.release_issues
 
 
 def test_duplicate_regime_identity_or_period_cannot_fake_cross_regime_coverage():
@@ -127,8 +127,8 @@ def test_duplicate_regime_identity_or_period_cannot_fake_cross_regime_coverage()
     by_id = assess_st_implementation_freeze((trend, duplicate_id), review=_accepted_review())
     by_period = assess_st_implementation_freeze((trend, duplicate_period), review=_accepted_review())
 
-    assert "freeze/regime-ids-must-be-distinct" in by_id.blockers
-    assert "freeze/regime-periods-must-be-distinct" in by_period.blockers
+    assert "freeze/regime-ids-must-be-distinct" in by_id.release_issues
+    assert "freeze/regime-periods-must-be-distinct" in by_period.release_issues
 
 
 def test_proxy_and_empty_behavior_cannot_be_used_as_freeze_evidence():
@@ -163,7 +163,7 @@ def test_cross_regime_review_must_accept_both_early_and_late_behavior_axes():
     assessment = assess_st_implementation_freeze(evidence, review=review)
 
     assert assessment.status is STImplementationFreezeStatus.VALIDATION_REQUIRED
-    assert "freeze/cross-regime-behavior-not-accepted" in assessment.blockers
+    assert "freeze/cross-regime-behavior-not-accepted" in assessment.release_issues
 
 
 def test_distinct_canonical_regimes_and_explicit_acceptance_can_mark_candidate():
@@ -177,6 +177,6 @@ def test_distinct_canonical_regimes_and_explicit_acceptance_can_mark_candidate()
 
     assert assessment.status is STImplementationFreezeStatus.PRODUCTION_CANDIDATE
     assert assessment.production_candidate is True
-    assert assessment.blockers == ()
+    assert assessment.release_issues == ()
     assert assessment.regime_count == 3
     assert assessment.evidence_regime_ids == ("RANGE", "REVERSAL_VOLATILE", "TREND")
