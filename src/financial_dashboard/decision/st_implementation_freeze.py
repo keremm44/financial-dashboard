@@ -35,13 +35,7 @@ class STImplementationFreezeStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class STRegimeValidationEvidence:
-    """One real canonical historical validation slice used for release review.
-
-    `regime_id` is a human-owned market-regime label. The freeze gate does not infer
-    regimes from PnL or tune thresholds from history; it only prevents one slice,
-    duplicate periods, readiness proxies, or legacy streams from being promoted as
-    cross-regime evidence.
-    """
+    """One real canonical historical validation slice used for release review."""
 
     regime_id: str
     period_start: pd.Timestamp
@@ -69,12 +63,7 @@ class STRegimeValidationEvidence:
 
 @dataclass(frozen=True, slots=True)
 class STCrossRegimeAcceptanceReview:
-    """Explicit release review for roadmap claims that are not safe numeric tunables.
-
-    These fields are governance attestations after inspecting canonical Step-11
-    metrics across distinct real market regimes. They deliberately avoid inventing
-    fixed profit, time, or bar thresholds.
-    """
+    """Explicit release review for roadmap claims that are not safe numeric tunables."""
 
     strong_trends_not_systematically_cut_early: bool
     mature_dead_ranges_not_systematically_held_too_long: bool
@@ -109,7 +98,7 @@ class STImplementationFreezeAssessment:
     schema_version: int
     lifecycle_contract_version: int
     regime_count: int
-    blockers: tuple[str, ...]
+    release_issues: tuple[str, ...]
     evidence_regime_ids: tuple[str, ...]
 
     @property
@@ -117,25 +106,25 @@ class STImplementationFreezeAssessment:
         return self.status is STImplementationFreezeStatus.PRODUCTION_CANDIDATE
 
 
-def _mechanical_freeze_blockers() -> list[str]:
-    blockers: list[str] = []
+def _mechanical_freeze_issues() -> list[str]:
+    issues: list[str] = []
     if TRADE_LIFECYCLE_STATE_SCHEMA_VERSION != _FROZEN_SCHEMA_VERSION:
-        blockers.append("freeze/schema-version-changed")
+        issues.append("freeze/schema-version-changed")
     if CANONICAL_LIFECYCLE_CONTRACT_VERSION != _FROZEN_LIFECYCLE_CONTRACT_VERSION:
-        blockers.append("freeze/lifecycle-contract-changed")
+        issues.append("freeze/lifecycle-contract-changed")
 
     resolved = frozenset(family for family in STThesisFamily if family is not STThesisFamily.UNRESOLVED)
     if resolved != _FROZEN_RESOLVED_THESIS_FAMILIES:
-        blockers.append("freeze/thesis-families-changed")
+        issues.append("freeze/thesis-families-changed")
     if STThesisFamily.UNRESOLVED not in set(STThesisFamily):
-        blockers.append("freeze/unresolved-identity-missing")
+        issues.append("freeze/unresolved-identity-missing")
 
     if (
         STExitCalibration().healthy_base_reaction_confidence
         is not _FROZEN_DEFAULT_REACTION_CONFIDENCE
     ):
-        blockers.append("freeze/default-exit-calibration-changed")
-    return blockers
+        issues.append("freeze/default-exit-calibration-changed")
+    return issues
 
 
 def assess_st_implementation_freeze(
@@ -143,37 +132,31 @@ def assess_st_implementation_freeze(
     *,
     review: STCrossRegimeAcceptanceReview | None = None,
 ) -> STImplementationFreezeAssessment:
-    """Assess Step-13 release readiness without changing trading behavior.
-
-    Production-candidate status requires frozen mechanical contracts, at least two
-    distinct canonical historical regime slices, and an explicit cross-regime review.
-    Missing empirical evidence is a blocker rather than something inferred from unit
-    tests, readiness proxies, legacy events, or a single historical example.
-    """
+    """Assess Step-13 release readiness without changing trading behavior."""
 
     values = tuple(evidence)
-    blockers = _mechanical_freeze_blockers()
+    issues = _mechanical_freeze_issues()
 
     regime_ids = tuple(item.regime_id.strip() for item in values)
     unique_regimes = set(regime_ids)
     period_keys = tuple(item.period_key for item in values)
 
     if len(values) < 2:
-        blockers.append("freeze/multiple-market-regimes-required")
+        issues.append("freeze/multiple-market-regimes-required")
     if len(unique_regimes) != len(values):
-        blockers.append("freeze/regime-ids-must-be-distinct")
+        issues.append("freeze/regime-ids-must-be-distinct")
     if len(set(period_keys)) != len(values):
-        blockers.append("freeze/regime-periods-must-be-distinct")
+        issues.append("freeze/regime-periods-must-be-distinct")
 
     if review is None:
-        blockers.append("freeze/cross-regime-review-required")
+        issues.append("freeze/cross-regime-review-required")
     elif not review.accepted:
-        blockers.append("freeze/cross-regime-behavior-not-accepted")
+        issues.append("freeze/cross-regime-behavior-not-accepted")
 
-    canonical_blockers = tuple(dict.fromkeys(blockers))
+    release_issues = tuple(dict.fromkeys(issues))
     status = (
         STImplementationFreezeStatus.PRODUCTION_CANDIDATE
-        if not canonical_blockers
+        if not release_issues
         else STImplementationFreezeStatus.VALIDATION_REQUIRED
     )
     return STImplementationFreezeAssessment(
@@ -182,7 +165,7 @@ def assess_st_implementation_freeze(
         schema_version=TRADE_LIFECYCLE_STATE_SCHEMA_VERSION,
         lifecycle_contract_version=CANONICAL_LIFECYCLE_CONTRACT_VERSION,
         regime_count=len(unique_regimes),
-        blockers=canonical_blockers,
+        release_issues=release_issues,
         evidence_regime_ids=tuple(sorted(unique_regimes)),
     )
 
