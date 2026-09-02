@@ -14,7 +14,7 @@ from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES
 from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.decision.calibration import load_opportunity_calibration
-from financial_dashboard.decision.engine import DecisionEngineConfig, assess_horizon_decision
+from financial_dashboard.decision.engine import DecisionEngineConfig, prepare_horizon_assessment
 from financial_dashboard.decision.execution_detect import detect_30m_execution_events
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
 from financial_dashboard.decision.opportunity import OpportunityState
@@ -168,13 +168,12 @@ def main() -> None:
 
     rows: list[OpportunityRow] = []
     for snapshot in snapshots:
-        assessment = assess_horizon_decision(
+        prepared = prepare_horizon_assessment(
             snapshot,
             DecisionHorizon.SHORT_TERM,
             config=config,
-            execution_event=entry_events.get(snapshot.as_of),
         )
-        opportunity = assessment.opportunity
+        opportunity = prepared.opportunity
         rows.append(
             OpportunityRow(
                 as_of=snapshot.as_of,
