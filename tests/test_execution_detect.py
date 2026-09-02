@@ -13,6 +13,11 @@ from financial_dashboard.context.pattern_behavior_projection import PatternBehav
 from financial_dashboard.decision.execution import ExecutionTriggerState, assess_execution_trigger
 from financial_dashboard.decision.execution_detect import detect_30m_execution_events
 from financial_dashboard.decision.structural import StructuralDirection
+from financial_dashboard.engines.pattern_compression_core import (
+    ST_BREAK_CANDIDATE,
+    ST_BREAK_CONFIRMED,
+    ST_RETEST_OK,
+)
 
 
 def _ref(as_of, *, quality=ContextDataQuality.VALID, available_at=None):
@@ -63,9 +68,9 @@ def test_detector_emits_only_fresh_transition_not_sticky_confirmation():
     t2 = pd.Timestamp("2026-01-05 11:00")
     t3 = pd.Timestamp("2026-01-05 12:00")
     snapshots = (
-        _snapshot(t1, phase=PatternBehaviorPhase.BREAK_CONFIRMING, native_state="BREAK_CANDIDATE", direction=1),
-        _snapshot(t2, phase=PatternBehaviorPhase.BREAK_CONFIRMED, native_state="BREAK_CONFIRMED", direction=1),
-        _snapshot(t3, phase=PatternBehaviorPhase.BREAK_CONFIRMED, native_state="BREAK_CONFIRMED", direction=1),
+        _snapshot(t1, phase=PatternBehaviorPhase.BREAK_CONFIRMING, native_state=ST_BREAK_CANDIDATE, direction=1),
+        _snapshot(t2, phase=PatternBehaviorPhase.BREAK_CONFIRMED, native_state=ST_BREAK_CONFIRMED, direction=1),
+        _snapshot(t3, phase=PatternBehaviorPhase.BREAK_CONFIRMED, native_state=ST_BREAK_CONFIRMED, direction=1),
     )
 
     entry, exit_ = detect_30m_execution_events(snapshots)
@@ -80,8 +85,8 @@ def test_detector_routes_bearish_confirmation_to_long_exit_channel():
     t1 = pd.Timestamp("2026-01-05 10:00")
     t2 = pd.Timestamp("2026-01-05 11:00")
     snapshots = (
-        _snapshot(t1, phase=PatternBehaviorPhase.BREAK_CONFIRMING, native_state="BREAK_CANDIDATE", direction=-1),
-        _snapshot(t2, phase=PatternBehaviorPhase.RETEST_HELD, native_state="RETEST_OK", direction=-1),
+        _snapshot(t1, phase=PatternBehaviorPhase.BREAK_CONFIRMING, native_state=ST_BREAK_CANDIDATE, direction=-1),
+        _snapshot(t2, phase=PatternBehaviorPhase.RETEST_HELD, native_state=ST_RETEST_OK, direction=-1),
     )
 
     entry, exit_ = detect_30m_execution_events(snapshots)
@@ -98,14 +103,14 @@ def test_price_only_native_state_recovers_generic_data_limited_event_causally():
         _snapshot(
             t1,
             phase=PatternBehaviorPhase.UNAVAILABLE,
-            native_state="BREAK_CANDIDATE",
+            native_state=ST_BREAK_CANDIDATE,
             direction=1,
             quality=ContextDataQuality.DATA_LIMITED,
         ),
         _snapshot(
             t2,
             phase=PatternBehaviorPhase.UNAVAILABLE,
-            native_state="BREAK_CONFIRMED",
+            native_state=ST_BREAK_CONFIRMED,
             direction=1,
             quality=ContextDataQuality.DATA_LIMITED,
         ),
@@ -129,11 +134,11 @@ def test_future_unavailable_pattern_ref_never_creates_event():
     t1 = pd.Timestamp("2026-01-05 10:00")
     t2 = pd.Timestamp("2026-01-05 11:00")
     snapshots = (
-        _snapshot(t1, phase=PatternBehaviorPhase.BREAK_CONFIRMING, native_state="BREAK_CANDIDATE", direction=1),
+        _snapshot(t1, phase=PatternBehaviorPhase.BREAK_CONFIRMING, native_state=ST_BREAK_CANDIDATE, direction=1),
         _snapshot(
             t2,
             phase=PatternBehaviorPhase.BREAK_CONFIRMED,
-            native_state="BREAK_CONFIRMED",
+            native_state=ST_BREAK_CONFIRMED,
             direction=1,
             available_at=t2 + pd.Timedelta(minutes=30),
         ),
