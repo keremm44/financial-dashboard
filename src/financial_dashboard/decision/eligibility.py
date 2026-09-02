@@ -12,8 +12,8 @@ from .environment import EnvironmentAssessment, EnvironmentRisk
 from .gate_authority import GateAuthority, deferred_permission_blocker_owner
 from .opportunity import OpportunityAssessment, OpportunityState
 from .stabil_policy import StabilEntryPolicyAssessment, StabilPolicyEffect
-from .structural import StructuralAssessment, StructuralDirection, ThesisState
-from .timing import TimingAssessment, TimingState
+from .structural import DecisionHorizon, StructuralAssessment, StructuralDirection, ThesisState
+from .timing import TimingAssessment, TimingEntryEffect, TimingState
 
 
 class EligibilityState(StrEnum):
@@ -36,6 +36,20 @@ def _permission_side(side: StructuralDirection) -> PermittedSide:
     if side is StructuralDirection.SHORT:
         return PermittedSide.SHORT
     return PermittedSide.NONE
+
+
+def _st_timing_defers_entry(timing: TimingAssessment) -> bool:
+    """Return whether ST Timing carries explicit adverse entry authority.
+
+    Production ``TimingAssessment`` values expose ``entry_effect``. The fallback keeps
+    older/simple test or plugin doubles compatible while remaining conservative for a
+    genuine FAILED timing state.
+    """
+
+    effect = getattr(timing, "entry_effect", None)
+    if effect is None:
+        return timing.state is TimingState.FAILED
+    return effect in {TimingEntryEffect.ADVERSE, TimingEntryEffect.FAILED}
 
 
 def assess_eligibility(
@@ -151,7 +165,14 @@ def assess_eligibility(
     # CONDITIONAL is intentionally not a WAIT by itself. Its historical placeholder
     # FUTURE_ACTION_LAYER_TIMING is satisfied here by the explicit timing layer.
 
-    if timing.state is not TimingState.READY:
+    # LT keeps the existing maturity contract. ST Timing has deliberately smaller
+    # authority: neutral/no-confirmation, aligned forming, and unavailable evidence do
+    # not veto economic eligibility. Only explicit adverse/failed short-term evidence
+    # defers the current entry attempt. Fresh execution is still required downstream.
+    if structural.horizon is DecisionHorizon.SHORT_TERM:
+        if _st_timing_defers_entry(timing):
+            waiting.extend(timing.waiting_for or (f"TIMING_{timing.state.value}",))
+    elif timing.state is not TimingState.READY:
         waiting.extend(timing.waiting_for or (f"TIMING_{timing.state.value}",))
 
     if opportunity.state is OpportunityState.COMPRESSED:
