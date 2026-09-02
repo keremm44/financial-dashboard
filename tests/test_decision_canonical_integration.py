@@ -9,6 +9,7 @@ from financial_dashboard.decision.execution import ExecutionTriggerState
 from financial_dashboard.decision.lifecycle import ExitStage, PositionState
 from financial_dashboard.decision.lifecycle_replay import replay_canonical_trade_lifecycle
 from financial_dashboard.decision.scenario import ScenarioKind, ScenarioPresence, ScenarioStage
+from financial_dashboard.decision.st_exit_execution import STExitExecutionUrgency
 from financial_dashboard.decision.st_exit_intent import STExitFamily
 from financial_dashboard.decision.structural import DecisionHorizon, StructuralDirection
 from financial_dashboard.decision.trade_exit import ExitExecutionState, PositionHealth
@@ -60,32 +61,37 @@ class _Snapshot:
         assert state.position is PositionState.OPEN
         assert state.entry_metadata is not None
         ready = self.exit_ready
-        confirmed = ready and execution_event is not None
         stage = ExitStage.EXIT_READY if ready else ExitStage.MONITOR
         execution = SimpleNamespace(
-            state=ExitExecutionState.CONFIRMED if confirmed else ExitExecutionState.ABSENT,
+            state=ExitExecutionState.ABSENT,
             source_refs=(),
+            waiting_for=(),
         )
         return SimpleNamespace(
-            action=DecisionAction.SELL if confirmed else DecisionAction.HOLD,
+            action=DecisionAction.SELL if ready else DecisionAction.HOLD,
             as_of=self.as_of,
             entry_horizon=state.entry_metadata.entry_horizon,
             stage=stage,
             position_health=PositionHealth.PRESSURED if ready else PositionHealth.HEALTHY,
             structural=SimpleNamespace(),
             execution=execution,
-            execution_event_consumed=confirmed,
+            execution_event_consumed=False,
             reasons=("EXIT_READY",) if ready else ("MONITOR",),
-            waiting_for=() if confirmed else (("FRESH_LONG_EXIT_EXECUTION_EVENT",) if ready else ()),
+            waiting_for=(),
             source_refs=(),
             source_lineage=("exit:lineage",),
             economic_exit_family=STExitFamily.PROTECTIVE_EXIT if ready else None,
             economic_reasons=("READINESS_PROXY_TERMINAL_EXIT",) if ready else (),
             economic_source_lineage=("exit:lineage",) if ready else (),
+            execution_urgency=(
+                STExitExecutionUrgency.PROTECTIVE_IMMEDIATE
+                if ready
+                else STExitExecutionUrgency.NOT_ARMED
+            ),
         )
 
 
-def test_canonical_readiness_proxy_opens_and_closes_only_at_canonical_boundaries():
+def test_canonical_readiness_proxy_opens_but_protective_exit_does_not_need_proxy():
     t1 = pd.Timestamp("2026-01-05 10:00")
     t2 = pd.Timestamp("2026-01-05 10:30")
     t3 = pd.Timestamp("2026-01-05 11:00")
@@ -103,7 +109,7 @@ def test_canonical_readiness_proxy_opens_and_closes_only_at_canonical_boundaries
         DecisionAction.HOLD,
         DecisionAction.SELL,
     ]
-    assert [row.execution_proxy_used for row in replay.rows] == [True, False, True]
+    assert [row.execution_proxy_used for row in replay.rows] == [True, False, False]
     assert replay.rows[0].current_state.entry_metadata is not None
     assert replay.rows[0].current_state.entry_metadata.entry_horizon is DecisionHorizon.SHORT_TERM
     assert replay.final_state.position is PositionState.FLAT
@@ -120,7 +126,7 @@ def test_canonical_readiness_proxy_opens_and_closes_only_at_canonical_boundaries
     assert events[0].snapshot["scenario_kind"] == "SHORT_TERM_STANDALONE"
     assert events[0].snapshot["audit_markers"]["scenario_qualified_at"] == t1
     assert events[0].snapshot["audit_markers"]["ready_for_execution_at"] == t1
-    assert events[2].snapshot["canonical_readiness_proxy"] is True
+    assert events[2].snapshot["canonical_readiness_proxy"] is False
     assert events[2].snapshot["position_exit"]["stage"] == "EXIT_READY"
 
 
