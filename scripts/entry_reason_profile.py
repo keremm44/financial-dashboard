@@ -14,6 +14,7 @@ from financial_dashboard.decision.arbiter import assess_entry_arbitration
 from financial_dashboard.decision.calibration import load_opportunity_calibration
 from financial_dashboard.decision.engine import DecisionEngineConfig, assess_horizon_decision
 from financial_dashboard.decision.entry import assess_entry_decision
+from financial_dashboard.decision.execution_detect import detect_30m_execution_events
 from financial_dashboard.decision.history_replay import HistoricalDecisionInputReplayRunner
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
 from financial_dashboard.decision.opportunity import OpportunityCalibration
@@ -226,6 +227,7 @@ def main() -> None:
     frozen = load_frozen_decision_timeline(store, clean_symbol, config=config)
     load_seconds = perf_counter() - started
     snapshots = frozen.replay.snapshots
+    entry_execution_events, exit_execution_events = detect_30m_execution_events(snapshots)
 
     horizon_state: dict[str, Counter[str]] = {
         "LT presence": Counter(),
@@ -298,7 +300,11 @@ def main() -> None:
         _add_many(arbiter_reasons, arbitration.reasons)
         _add_many(arbiter_waiting, arbitration.waiting_for)
 
-        entry = assess_entry_decision(snapshot, config=engine_config, execution_event=None)
+        entry = assess_entry_decision(
+            snapshot,
+            config=engine_config,
+            execution_event=entry_execution_events.get(snapshot.as_of),
+        )
         entry_action[_value(entry.action)] += 1
         entry_stage["NONE" if entry.scenario_stage is None else _value(entry.scenario_stage)] += 1
         entry_horizon["NONE" if entry.selected_horizon is None else _value(entry.selected_horizon)] += 1
@@ -316,6 +322,8 @@ def main() -> None:
     print(f"FROZEN_CACHE_STATUS\t{frozen.cache_status}")
     print(f"FROZEN_CACHE_FILE_MB\t{cache_mb:.3f}")
     print(f"OPPORTUNITY_CALIBRATION\t{calibration_source}")
+    print(f"ENTRY_EXECUTION_EVENTS\t{len(entry_execution_events)}")
+    print(f"EXIT_EXECUTION_EVENTS\t{len(exit_execution_events)}")
     print(f"FROZEN_TIMELINE_LOAD_SECONDS\t{load_seconds:.3f}")
     print(f"REASON_PROFILE_SECONDS\t{decision_seconds:.3f}")
     print("DOMAIN_REPLAY_SECONDS\t0.000")
