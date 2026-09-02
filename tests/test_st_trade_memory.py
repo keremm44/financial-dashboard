@@ -342,9 +342,9 @@ def _checkpoint_for_open_state(state):
     )
 
 
-def test_v4_checkpoint_requires_st_trade_memory_and_v3_cannot_be_silently_migrated(tmp_path):
-    assert TRADE_LIFECYCLE_STATE_SCHEMA_VERSION == 4
-    assert CANONICAL_LIFECYCLE_CONTRACT_VERSION == 5
+def test_v5_checkpoint_requires_st_trade_memory_and_v3_cannot_be_silently_migrated(tmp_path):
+    assert TRADE_LIFECYCLE_STATE_SCHEMA_VERSION == 5
+    assert CANONICAL_LIFECYCLE_CONTRACT_VERSION == 6
 
     as_of = pd.Timestamp("2026-01-05 10:00")
     legacy_metadata = PositionEntryMetadata(
