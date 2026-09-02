@@ -18,6 +18,7 @@ from financial_dashboard.decision.lifecycle_replay import replay_canonical_trade
 from financial_dashboard.decision.persistent_lifecycle_replay import PersistentCanonicalLifecycleReplayRunner
 from financial_dashboard.decision.position_metadata import PositionEntryMetadata
 from financial_dashboard.decision.scenario import ScenarioKind, ScenarioPresence, ScenarioStage
+from financial_dashboard.decision.st_exit_intent import STExitFamily
 from financial_dashboard.decision.structural import DecisionHorizon, StructuralDirection
 from financial_dashboard.decision.trade_exit import (
     ExitExecutionState,
@@ -85,10 +86,11 @@ class _Snapshot:
         return _entry_result(self.entry_action)
 
     def position_exit_decision(self, state, *, execution_event=None):
+        terminal = self.exit_stage is ExitStage.EXIT_READY
         action = self.exit_action
         if action is DecisionAction.SELL and execution_event is None:
             action = DecisionAction.HOLD
-        if self.exit_stage is not ExitStage.EXIT_READY:
+        if not terminal:
             execution_state = ExitExecutionState.NOT_ARMED
         elif action is DecisionAction.SELL:
             execution_state = ExitExecutionState.CONFIRMED
@@ -116,6 +118,9 @@ class _Snapshot:
             blockers=(),
             waiting_for=(),
             source_lineage=("exit:restart",),
+            economic_exit_family=STExitFamily.PROTECTIVE_EXIT if terminal else None,
+            economic_reasons=("RESTART_FIXTURE_TERMINAL_EXIT",) if terminal else (),
+            economic_source_lineage=("exit:restart",) if terminal else (),
         )
 
 
@@ -126,8 +131,8 @@ def test_persistent_resume_matches_full_canonical_event_payload_and_markers(tmp_
     t4 = pd.Timestamp("2026-01-05 11:30")
     snapshots = (
         _Snapshot("TEST", t1, 100.0, entry_action=DecisionAction.BUY),
-        _Snapshot("TEST", t2, 101.0, exit_stage=ExitStage.EXIT_WATCH),
-        _Snapshot("TEST", t3, 100.5, exit_stage=ExitStage.EXIT_WATCH),
+        _Snapshot("TEST", t2, 101.0),
+        _Snapshot("TEST", t3, 100.5),
         _Snapshot(
             "TEST",
             t4,
@@ -157,8 +162,8 @@ def test_persistent_resume_matches_full_canonical_event_payload_and_markers(tmp_
         exit_execution_events=exit_events,
     )
     assert prefix.checkpoint.state.entry_metadata.execution_available_at == available_at
-    assert prefix.checkpoint.audit_markers.exit_watch_at == t2
-    assert prefix.checkpoint.audit_markers.exit_watch_price == 101.0
+    assert prefix.checkpoint.audit_markers.exit_watch_at is None
+    assert prefix.checkpoint.audit_markers.exit_watch_price is None
 
     resumed = runner.run(
         "TEST",
@@ -167,7 +172,9 @@ def test_persistent_resume_matches_full_canonical_event_payload_and_markers(tmp_
         exit_execution_events=exit_events,
     )
     assert resumed.replay.initial_audit_markers == prefix.checkpoint.audit_markers
-    assert resumed.replay.rows[0].audit_markers.exit_watch_at == t2
+    assert resumed.replay.rows[0].audit_markers.exit_watch_at is None
+    assert resumed.replay.final_audit_markers.exit_ready_at is None
+    assert resumed.replay.final_audit_markers.exit_ready_price is None
 
     reconstructed_events = (
         *canonical_decision_events_from_replay(prefix.replay),

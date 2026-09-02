@@ -41,6 +41,7 @@ from financial_dashboard.decision.st_economic_history import (
     STMissionCompletionMilestone,
     STProgressEvent,
 )
+from financial_dashboard.decision.st_exit_intent import STExitFamily
 from financial_dashboard.decision.st_harvest import (
     STHarvestShadowState,
     STHealthyBaseState,
@@ -428,7 +429,7 @@ def test_post_mission_real_progress_is_not_consumed_without_later_failed_continu
     assert any(item.startswith("POST_MISSION_PROGRESS:") for item in result.primary_evidence)
 
 
-def test_full_consumed_story_shadows_profit_harvest_but_canonical_action_stays_hold():
+def test_full_consumed_story_becomes_canonical_profit_harvest_but_waits_for_execution():
     failed = _failed_episode(identity="failed:consumed")
     history = _mature_history(episodes=(failed,))
     state = _state(history)
@@ -449,7 +450,9 @@ def test_full_consumed_story_shadows_profit_harvest_but_canonical_action_stays_h
     assert shadow.mature is True
     assert shadow.healthy_base is False
     assert canonical.action is DecisionAction.HOLD
-    assert canonical.stage is ExitStage.MONITOR
+    assert canonical.stage is ExitStage.EXIT_READY
+    assert canonical.economic_exit_family is STExitFamily.PROFIT_HARVEST
+    assert canonical.execution_event_consumed is False
 
 
 def test_live_post_progress_continuation_cannot_be_harvested_before_it_resolves():
