@@ -96,7 +96,8 @@ GATE_REGISTRY: tuple[GateDefinition, ...] = (
     GateDefinition("CRITICAL_STRUCTURE_COVERAGE_MISSING", GateAuthority.COVERAGE, GateSemantic.HARD_BLOCK, "coverage"),
     GateDefinition("CRITICAL_COVERAGE:{}", GateAuthority.COVERAGE, GateSemantic.WAIT, "coverage"),
 
-    # Setup timing and target-path maturity.
+    # Setup timing and target-path maturity. Timing NEW_SETUP_PATH means the current
+    # native timing path failed and must reform; it is not economic re-entry novelty.
     GateDefinition("TIMING_{}", GateAuthority.TIMING, GateSemantic.WAIT, "timing"),
     GateDefinition("{}:SETUP_TRIGGER_DATA", GateAuthority.TIMING, GateSemantic.WAIT, "timing"),
     GateDefinition("NEW_SETUP_PATH", GateAuthority.TIMING, GateSemantic.WAIT, "timing"),
@@ -109,6 +110,9 @@ GATE_REGISTRY: tuple[GateDefinition, ...] = (
     GateDefinition("SCENARIO_TO_QUALIFY", GateAuthority.SCENARIO, GateSemantic.WAIT, "scenario"),
     GateDefinition("LONG_TERM_SCENARIO_PRESENCE_TO_RESOLVE", GateAuthority.ARBITER, GateSemantic.WAIT, "scenario"),
     GateDefinition("SHORT_TERM_SCENARIO_PRESENCE_TO_RESOLVE", GateAuthority.ARBITER, GateSemantic.WAIT, "scenario"),
+
+    # Economic setup continuity is distinct from both timing and execution freshness.
+    GateDefinition("ST_REENTRY_NOVELTY_TO_ESTABLISH", GateAuthority.SETUP_CONTINUITY, GateSemantic.WAIT, "setup_continuity"),
 
     # Fresh execution/action capability. Harvest quality patience is an execution
     # lifecycle wait, not a new market/timing confirmation gate.
