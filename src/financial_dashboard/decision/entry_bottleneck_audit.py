@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from .gate_authority import GateAuthority
+from .gate_registry import gate_owner
 from .scenario import EntryScenarioAssessment, ScenarioPresence, ScenarioStage
 
 
@@ -42,67 +44,26 @@ class EntryBottleneckAttribution:
         return len(self.families) == 1
 
 
+_AUTHORITY_TO_FAMILY: dict[GateAuthority, EntryBottleneckFamily] = {
+    GateAuthority.STRUCTURE: EntryBottleneckFamily.STRUCTURE,
+    GateAuthority.PERMISSION: EntryBottleneckFamily.PERMISSION,
+    GateAuthority.TIMING: EntryBottleneckFamily.TIMING,
+    GateAuthority.OPPORTUNITY: EntryBottleneckFamily.OPPORTUNITY,
+    GateAuthority.CONFLICT: EntryBottleneckFamily.CONFLICT,
+    GateAuthority.TARGET_PATH: EntryBottleneckFamily.TARGET_PATH,
+    GateAuthority.STABIL: EntryBottleneckFamily.STABIL,
+    GateAuthority.COVERAGE: EntryBottleneckFamily.COVERAGE,
+    GateAuthority.ENVIRONMENT: EntryBottleneckFamily.ENVIRONMENT,
+}
+
+
 def _family_for_token(token: str) -> EntryBottleneckFamily:
-    value = str(token).strip().upper()
+    """Use the canonical gate registry instead of a second ownership table."""
 
-    if (
-        value in {
-            "SETUP_TRIGGER",
-            "SETUP_TRIGGER_CONFIRMATION",
-            "NEW_SETUP_PATH",
-            "LOWER_HORIZON_COUNTER_MOVE_TO_RESOLVE",
-        }
-        or value.endswith(":SETUP_TRIGGER_DATA")
-        or value.endswith(":STRUCTURAL_TIMING_CONTEXT")
-    ):
-        return EntryBottleneckFamily.TIMING
-
-    if (
-        value.startswith("PERMISSION_")
-        or value in {
-            "CONTEXT_CONFLICT_TO_RECONCILE",
-            "CANONICAL_STRUCTURAL_FOLLOW_THROUGH",
-            "QUALIFIED_CONTINUATION_REACTION_OR_TRANSITION_CONTEXT",
-            "REACTION_INTERACTION_TO_BECOME_ACTIVE",
-        }
-    ):
-        return EntryBottleneckFamily.PERMISSION
-
-    if value in {
-        "MORE_DIRECTIONAL_ROOM",
-        "OPPORTUNITY_EVIDENCE_OR_CALIBRATION",
-        "OBSERVED_DIRECTIONAL_OPPORTUNITY",
-        "OPPORTUNITY_NONE",
-    }:
-        return EntryBottleneckFamily.OPPORTUNITY
-
-    if value in {
-        "MATERIAL_CONFLICT_TO_RESOLVE",
-        "CONFLICT_EVIDENCE_TO_RESOLVE",
-        "INDEPENDENT_FAMILY_CONFLICT_HIGH",
-    }:
-        return EntryBottleneckFamily.CONFLICT
-
-    if value.startswith("TARGET_PATH_") or value == "ACTIVE_TARGET_PATH_NODE_DEFENDED":
-        return EntryBottleneckFamily.TARGET_PATH
-
-    if value.startswith("STABIL_"):
-        return EntryBottleneckFamily.STABIL
-
-    if value.startswith("CRITICAL_COVERAGE:") or value == "CRITICAL_STRUCTURE_COVERAGE_MISSING":
-        return EntryBottleneckFamily.COVERAGE
-
-    if value == "VOLATILITY_SHOCK":
-        return EntryBottleneckFamily.ENVIRONMENT
-
-    if (
-        value.startswith("STRUCTURE_DATA_")
-        or value.startswith("STRUCTURAL_")
-        or value == "VALID_STRUCTURAL_AUTHORITY"
-    ):
-        return EntryBottleneckFamily.STRUCTURE
-
-    return EntryBottleneckFamily.OTHER
+    owner = gate_owner(str(token).strip())
+    if owner is None:
+        return EntryBottleneckFamily.OTHER
+    return _AUTHORITY_TO_FAMILY.get(owner, EntryBottleneckFamily.OTHER)
 
 
 def attribute_entry_bottlenecks(
