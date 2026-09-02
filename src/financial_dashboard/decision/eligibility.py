@@ -52,6 +52,17 @@ def _st_timing_defers_entry(timing: TimingAssessment) -> bool:
     return effect in {TimingEntryEffect.ADVERSE, TimingEntryEffect.FAILED}
 
 
+def _structural_horizon(structural: StructuralAssessment) -> DecisionHorizon:
+    """Read the production horizon while preserving legacy/simple assessment doubles.
+
+    Older tests and external callers may provide structural-like objects without a
+    ``horizon`` attribute. Those callers predate the ST-specific Timing authority
+    split, so retaining the historical/LT READY contract is the safe fallback.
+    """
+
+    return getattr(structural, "horizon", DecisionHorizon.LONG_TERM)
+
+
 def assess_eligibility(
     structural: StructuralAssessment,
     *,
@@ -169,7 +180,7 @@ def assess_eligibility(
     # authority: neutral/no-confirmation, aligned forming, and unavailable evidence do
     # not veto economic eligibility. Only explicit adverse/failed short-term evidence
     # defers the current entry attempt. Fresh execution is still required downstream.
-    if structural.horizon is DecisionHorizon.SHORT_TERM:
+    if _structural_horizon(structural) is DecisionHorizon.SHORT_TERM:
         if _st_timing_defers_entry(timing):
             waiting.extend(timing.waiting_for or (f"TIMING_{timing.state.value}",))
     elif timing.state is not TimingState.READY:
