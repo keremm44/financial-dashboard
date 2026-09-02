@@ -120,21 +120,21 @@ class STImplementationFreezeAssessment:
 def _mechanical_freeze_blockers() -> list[str]:
     blockers: list[str] = []
     if TRADE_LIFECYCLE_STATE_SCHEMA_VERSION != _FROZEN_SCHEMA_VERSION:
-        blockers.append("ST_FREEZE_SCHEMA_VERSION_CHANGED")
+        blockers.append("freeze/schema-version-changed")
     if CANONICAL_LIFECYCLE_CONTRACT_VERSION != _FROZEN_LIFECYCLE_CONTRACT_VERSION:
-        blockers.append("ST_FREEZE_LIFECYCLE_CONTRACT_CHANGED")
+        blockers.append("freeze/lifecycle-contract-changed")
 
     resolved = frozenset(family for family in STThesisFamily if family is not STThesisFamily.UNRESOLVED)
     if resolved != _FROZEN_RESOLVED_THESIS_FAMILIES:
-        blockers.append("ST_FREEZE_THESIS_FAMILIES_CHANGED")
+        blockers.append("freeze/thesis-families-changed")
     if STThesisFamily.UNRESOLVED not in set(STThesisFamily):
-        blockers.append("ST_FREEZE_UNRESOLVED_IDENTITY_MISSING")
+        blockers.append("freeze/unresolved-identity-missing")
 
     if (
         STExitCalibration().healthy_base_reaction_confidence
         is not _FROZEN_DEFAULT_REACTION_CONFIDENCE
     ):
-        blockers.append("ST_FREEZE_DEFAULT_EXIT_CALIBRATION_CHANGED")
+        blockers.append("freeze/default-exit-calibration-changed")
     return blockers
 
 
@@ -159,16 +159,16 @@ def assess_st_implementation_freeze(
     period_keys = tuple(item.period_key for item in values)
 
     if len(values) < 2:
-        blockers.append("ST_FREEZE_MULTIPLE_MARKET_REGIMES_REQUIRED")
+        blockers.append("freeze/multiple-market-regimes-required")
     if len(unique_regimes) != len(values):
-        blockers.append("ST_FREEZE_REGIME_IDS_MUST_BE_DISTINCT")
+        blockers.append("freeze/regime-ids-must-be-distinct")
     if len(set(period_keys)) != len(values):
-        blockers.append("ST_FREEZE_REGIME_PERIODS_MUST_BE_DISTINCT")
+        blockers.append("freeze/regime-periods-must-be-distinct")
 
     if review is None:
-        blockers.append("ST_FREEZE_CROSS_REGIME_REVIEW_REQUIRED")
+        blockers.append("freeze/cross-regime-review-required")
     elif not review.accepted:
-        blockers.append("ST_FREEZE_CROSS_REGIME_BEHAVIOR_NOT_ACCEPTED")
+        blockers.append("freeze/cross-regime-behavior-not-accepted")
 
     canonical_blockers = tuple(dict.fromkeys(blockers))
     status = (
