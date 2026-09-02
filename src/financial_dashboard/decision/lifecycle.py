@@ -76,6 +76,17 @@ class TradeLifecycleState:
                 raise ValueError("terminal ST exit intent requires frozen entry metadata")
             if self.entry_metadata.entry_horizon is not DecisionHorizon.SHORT_TERM:
                 raise ValueError("terminal ST exit intent may belong only to a short-term position")
+            try:
+                if self.st_exit_intent.committed_at < self.entry_as_of:
+                    raise ValueError("terminal ST exit intent cannot predate trade entry")
+            except TypeError as exc:
+                raise TypeError("terminal ST exit intent and entry timestamps must be comparable") from exc
+        if self.last_closed_st_exit is not None:
+            try:
+                if self.last_closed_st_exit.exit_as_of > self.entry_as_of:
+                    raise ValueError("previous closed ST exit cannot occur after current trade entry")
+            except TypeError as exc:
+                raise TypeError("closed ST exit and current entry timestamps must be comparable") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,8 +153,17 @@ def transition_st_exit_intent(
     existing = state.st_exit_intent
     if requested_family is None:
         return state
+    if not isinstance(requested_family, STExitFamily):
+        raise ValueError("terminal ST exit intent request family is invalid")
     if as_of is None:
         raise ValueError("terminal ST exit intent request requires as_of")
+    try:
+        if as_of < metadata.entry_as_of:
+            raise ValueError("terminal ST exit intent request cannot predate trade entry")
+        if existing is not None and as_of < existing.committed_at:
+            raise ValueError("terminal ST exit intent transition cannot move backward in time")
+    except TypeError as exc:
+        raise TypeError("terminal ST exit intent timestamps must be comparable") from exc
 
     canonical_reasons = canonical_exit_reasons(reasons)
     canonical_lineage = canonical_exit_lineage(source_lineage)
