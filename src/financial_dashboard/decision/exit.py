@@ -81,13 +81,19 @@ class PositionExitDecision:
             raise ValueError("CONFIRMED exit execution must resolve to SELL")
         if self.execution_event_consumed and self.stage is not ExitStage.EXIT_READY:
             raise ValueError("exit execution event may be consumed only while EXIT_READY")
-        if self.economic_exit_family is not None:
-            if self.entry_horizon is not DecisionHorizon.SHORT_TERM:
-                raise ValueError("terminal economic exit family may belong only to an ST position")
-            if self.stage is not ExitStage.EXIT_READY:
+
+        if self.entry_horizon is DecisionHorizon.SHORT_TERM:
+            if self.stage is ExitStage.EXIT_READY and self.economic_exit_family is None:
+                raise ValueError("canonical ST EXIT_READY requires terminal economic exit family")
+            if self.stage is not ExitStage.EXIT_READY and self.economic_exit_family is not None:
                 raise ValueError("terminal ST economic exit must arm EXIT_READY")
-            if not self.economic_reasons:
-                raise ValueError("terminal ST economic exit requires economic reasons")
+            if self.action is DecisionAction.SELL and self.economic_exit_family is None:
+                raise ValueError("canonical ST SELL requires terminal economic exit family")
+        elif self.economic_exit_family is not None:
+            raise ValueError("terminal economic exit family may belong only to an ST position")
+
+        if self.economic_exit_family is not None and not self.economic_reasons:
+            raise ValueError("terminal ST economic exit requires economic reasons")
         if self.entry_horizon is not DecisionHorizon.SHORT_TERM and (
             self.economic_reasons or self.economic_source_lineage
         ):
@@ -263,15 +269,27 @@ def transition_position_exit_lifecycle(
 
     intent_state = state
     if decision.entry_horizon is DecisionHorizon.SHORT_TERM:
-        if decision.economic_exit_family is None:
+        try:
+            economic_family = decision.economic_exit_family
+            economic_reasons = decision.economic_reasons
+            economic_lineage = decision.economic_source_lineage
+        except AttributeError as exc:
+            raise ValueError("canonical ST exit transition requires Step-8 economic fields") from exc
+
+        if decision.stage is ExitStage.EXIT_READY and economic_family is None:
+            raise ValueError("canonical ST EXIT_READY requires terminal economic exit family")
+        if decision.action is DecisionAction.SELL and economic_family is None:
+            raise ValueError("canonical ST SELL requires terminal economic exit family")
+
+        if economic_family is None:
             intent_state = transition_st_exit_intent(state, None)
         else:
             intent_state = transition_st_exit_intent(
                 state,
-                decision.economic_exit_family,
+                economic_family,
                 as_of=decision.as_of,
-                reasons=decision.economic_reasons,
-                source_lineage=decision.economic_source_lineage,
+                reasons=economic_reasons,
+                source_lineage=economic_lineage,
             )
 
     transition = transition_trade_lifecycle(
