@@ -14,6 +14,7 @@ from .st_exit_intent import (
     canonical_exit_lineage,
     canonical_exit_reasons,
 )
+from .st_setup_continuity import STClosedMovementRecord, build_closed_st_movement_record
 from .structural import DecisionHorizon
 
 if TYPE_CHECKING:
@@ -47,8 +48,19 @@ class TradeLifecycleState:
     st_economic_history: STEconomicHistory | None = None
     st_exit_intent: STExitIntent | None = None
     last_closed_st_exit: STClosedExitRecord | None = None
+    last_closed_st_movement: STClosedMovementRecord | None = None
 
     def __post_init__(self) -> None:
+        if self.last_closed_st_movement is not None:
+            if self.last_closed_st_exit is None:
+                raise ValueError("closed ST movement continuity requires closed ST exit record")
+            if self.last_closed_st_movement.trade_id != self.last_closed_st_exit.trade_id:
+                raise ValueError("closed ST movement and exit must share trade_id")
+            if self.last_closed_st_movement.exit_as_of != self.last_closed_st_exit.exit_as_of:
+                raise ValueError("closed ST movement and exit must share exit_as_of")
+            if self.last_closed_st_movement.exit_family is not self.last_closed_st_exit.family:
+                raise ValueError("closed ST movement and exit must share exit family")
+
         if self.position is PositionState.FLAT:
             if (
                 self.exit_stage is not None
@@ -87,6 +99,12 @@ class TradeLifecycleState:
                     raise ValueError("previous closed ST exit cannot occur after current trade entry")
             except TypeError as exc:
                 raise TypeError("closed ST exit and current entry timestamps must be comparable") from exc
+        if self.last_closed_st_movement is not None:
+            try:
+                if self.last_closed_st_movement.exit_as_of > self.entry_as_of:
+                    raise ValueError("previous closed ST movement cannot occur after current trade entry")
+            except TypeError as exc:
+                raise TypeError("closed ST movement and current entry timestamps must be comparable") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +136,7 @@ def _open_state_with_stage(state: TradeLifecycleState, stage: ExitStage) -> Trad
         st_economic_history=state.st_economic_history,
         st_exit_intent=state.st_exit_intent,
         last_closed_st_exit=state.last_closed_st_exit,
+        last_closed_st_movement=state.last_closed_st_movement,
     )
 
 
@@ -201,6 +220,23 @@ def _closed_st_exit_record(state: TradeLifecycleState, *, exit_as_of: Any) -> ST
     )
 
 
+def _flat_state_after_exit(state: TradeLifecycleState, *, exit_as_of: Any) -> TradeLifecycleState:
+    closed_exit = _closed_st_exit_record(state, exit_as_of=exit_as_of)
+    closed_movement = None
+    if closed_exit is not None:
+        closed_movement = build_closed_st_movement_record(
+            state,
+            exit_as_of=exit_as_of,
+            exit_family=closed_exit.family,
+        )
+    return TradeLifecycleState(
+        last_closed_st_exit=state.last_closed_st_exit if closed_exit is None else closed_exit,
+        last_closed_st_movement=(
+            state.last_closed_st_movement if closed_movement is None else closed_movement
+        ),
+    )
+
+
 def transition_trade_lifecycle(
     state: TradeLifecycleState,
     final: FinalDecision,
@@ -242,6 +278,7 @@ def transition_trade_lifecycle(
                 entry_metadata=entry_metadata,
                 st_economic_history=initial_st_economic_history(entry_metadata),
                 last_closed_st_exit=state.last_closed_st_exit,
+                last_closed_st_movement=state.last_closed_st_movement,
             )
             return TradeLifecycleTransition(
                 state,
@@ -286,9 +323,7 @@ def transition_trade_lifecycle(
             raise ValueError("policy-mandated ST exit requires terminal intent")
         return TradeLifecycleTransition(
             state,
-            TradeLifecycleState(
-                last_closed_st_exit=_closed_st_exit_record(state, exit_as_of=as_of)
-            ),
+            _flat_state_after_exit(state, exit_as_of=as_of),
             requested,
             DecisionAction.SELL,
             "LIFECYCLE_OPEN_EXIT_EXECUTED_POLICY_MANDATE",
@@ -300,9 +335,7 @@ def transition_trade_lifecycle(
             raise ValueError("long exit execution requires EXIT_READY stage")
         return TradeLifecycleTransition(
             state,
-            TradeLifecycleState(
-                last_closed_st_exit=_closed_st_exit_record(state, exit_as_of=as_of)
-            ),
+            _flat_state_after_exit(state, exit_as_of=as_of),
             requested,
             DecisionAction.SELL,
             "LIFECYCLE_OPEN_EXIT_EXECUTED_CONFIRMED_EVENT",
