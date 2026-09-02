@@ -288,15 +288,16 @@ def test_open_intent_and_closed_reason_round_trip_restart_exactly(tmp_path):
 
 
 def test_schema_and_contract_boundary_are_explicit_and_old_checkpoint_fails_closed(tmp_path):
-    assert TRADE_LIFECYCLE_STATE_SCHEMA_VERSION == 5
-    assert CANONICAL_LIFECYCLE_CONTRACT_VERSION == 8
+    assert TRADE_LIFECYCLE_STATE_SCHEMA_VERSION == 6
+    assert CANONICAL_LIFECYCLE_CONTRACT_VERSION == 9
 
     payload = serialize_trade_lifecycle_checkpoint(_checkpoint(_open_state()))
     assert "st_exit_intent" in payload["state"]
     assert "last_closed_st_exit" in payload["state"]
+    assert "last_closed_st_movement" in payload["state"]
 
-    payload["schema_version"] = 4
-    payload["contract_version"] = 5
+    payload["schema_version"] = 5
+    payload["contract_version"] = 8
     store = PersistentTradeLifecycleStore(tmp_path)
     store.path_for("TEST").write_text(json.dumps(payload), encoding="utf-8")
     loaded = store.load("TEST")
@@ -345,6 +346,7 @@ def test_state_payload_round_trip_preserves_previous_closed_reason_across_new_op
         ),
         st_economic_history=STEconomicHistory(),
         last_closed_st_exit=flat.last_closed_st_exit,
+        last_closed_st_movement=flat.last_closed_st_movement,
     )
 
     assert deserialize_trade_lifecycle_state(serialize_trade_lifecycle_state(reopened)) == reopened
