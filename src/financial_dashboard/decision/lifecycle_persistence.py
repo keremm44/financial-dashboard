@@ -24,13 +24,14 @@ from .st_economic_history import (
     deserialize_st_economic_history,
     serialize_st_economic_history,
 )
+from .st_exit_intent import STClosedExitRecord, STExitFamily, STExitIntent
 from .st_thesis_identity import STDefendedAnchorKind, STEconomicMission, STThesisFamily
 from .structural import DecisionHorizon
 from .target_path import TargetPathRole
 
 
-TRADE_LIFECYCLE_STATE_SCHEMA_VERSION = 4
-CANONICAL_LIFECYCLE_CONTRACT_VERSION = 5
+TRADE_LIFECYCLE_STATE_SCHEMA_VERSION = 5
+CANONICAL_LIFECYCLE_CONTRACT_VERSION = 6
 
 
 class LifecycleCheckpointStatus(StrEnum):
@@ -72,6 +73,8 @@ class TradeLifecycleCheckpoint:
                 raise ValueError("empty lifecycle prefix cannot carry last_as_of")
             if self.state.position is not PositionState.FLAT:
                 raise ValueError("empty lifecycle prefix must remain FLAT")
+            if self.state.last_closed_st_exit is not None:
+                raise ValueError("empty lifecycle prefix cannot carry closed-trade exit history")
             if not self.audit_markers.is_empty:
                 raise ValueError("empty lifecycle prefix cannot carry audit markers")
         elif self.last_as_of is None:
@@ -296,8 +299,104 @@ def _deserialize_st_trade_memory(payload: Any) -> STTradeMemory | None:
     )
 
 
+def _serialize_st_exit_intent(intent: STExitIntent | None) -> dict[str, Any] | None:
+    if intent is None:
+        return None
+    return {
+        "family": intent.family.value,
+        "committed_at": _timestamp_payload(intent.committed_at),
+        "reasons": list(intent.reasons),
+        "source_lineage": list(intent.source_lineage),
+    }
+
+
+def _string_list(payload: Mapping[str, Any], key: str, *, field: str) -> tuple[str, ...]:
+    raw = payload.get(key)
+    if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+        raise ValueError(f"{field} must be a string list")
+    return tuple(raw)
+
+
+def _deserialize_st_exit_intent(payload: Any) -> STExitIntent | None:
+    if payload is None:
+        return None
+    if not isinstance(payload, Mapping):
+        raise ValueError("persisted ST exit intent must be a mapping")
+    try:
+        family = STExitFamily(str(payload["family"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("persisted ST exit intent family is invalid") from exc
+    return STExitIntent(
+        family=family,
+        committed_at=_timestamp_from_payload(
+            payload.get("committed_at"),
+            field="st_exit_intent.committed_at",
+            required=True,
+        ),
+        reasons=_string_list(payload, "reasons", field="st_exit_intent.reasons"),
+        source_lineage=_string_list(
+            payload,
+            "source_lineage",
+            field="st_exit_intent.source_lineage",
+        ),
+    )
+
+
+def _serialize_st_closed_exit(record: STClosedExitRecord | None) -> dict[str, Any] | None:
+    if record is None:
+        return None
+    return {
+        "trade_id": record.trade_id,
+        "entry_as_of": _timestamp_payload(record.entry_as_of),
+        "exit_as_of": _timestamp_payload(record.exit_as_of),
+        "family": record.family.value,
+        "intent_committed_at": _timestamp_payload(record.intent_committed_at),
+        "reasons": list(record.reasons),
+        "source_lineage": list(record.source_lineage),
+    }
+
+
+def _deserialize_st_closed_exit(payload: Any) -> STClosedExitRecord | None:
+    if payload is None:
+        return None
+    if not isinstance(payload, Mapping):
+        raise ValueError("persisted closed ST exit must be a mapping")
+    raw_trade_id = payload.get("trade_id")
+    if not isinstance(raw_trade_id, str):
+        raise ValueError("persisted closed ST exit trade_id must be a string")
+    try:
+        family = STExitFamily(str(payload["family"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("persisted closed ST exit family is invalid") from exc
+    return STClosedExitRecord(
+        trade_id=raw_trade_id,
+        entry_as_of=_timestamp_from_payload(
+            payload.get("entry_as_of"),
+            field="last_closed_st_exit.entry_as_of",
+            required=True,
+        ),
+        exit_as_of=_timestamp_from_payload(
+            payload.get("exit_as_of"),
+            field="last_closed_st_exit.exit_as_of",
+            required=True,
+        ),
+        family=family,
+        intent_committed_at=_timestamp_from_payload(
+            payload.get("intent_committed_at"),
+            field="last_closed_st_exit.intent_committed_at",
+            required=True,
+        ),
+        reasons=_string_list(payload, "reasons", field="last_closed_st_exit.reasons"),
+        source_lineage=_string_list(
+            payload,
+            "source_lineage",
+            field="last_closed_st_exit.source_lineage",
+        ),
+    )
+
+
 def _require_canonical_st_state(state: TradeLifecycleState) -> None:
-    """Fail closed when a v4 canonical OPEN ST position lacks causal state."""
+    """Fail closed when a v5 canonical ST position lacks required causal state."""
 
     metadata = state.entry_metadata
     is_open_st = (
@@ -316,6 +415,8 @@ def _require_canonical_st_state(state: TradeLifecycleState) -> None:
         and state.st_economic_history is not None
     ):
         raise ValueError("non-ST persisted lifecycle cannot carry ST economic history")
+    if state.st_exit_intent is not None and not is_open_st:
+        raise ValueError("terminal ST exit intent requires canonical OPEN ST lifecycle")
 
 
 def serialize_trade_lifecycle_state(state: TradeLifecycleState) -> dict[str, Any]:
@@ -347,6 +448,8 @@ def serialize_trade_lifecycle_state(state: TradeLifecycleState) -> dict[str, Any
         "entry_as_of": _timestamp_payload(state.entry_as_of),
         "entry_metadata": metadata_payload,
         "st_economic_history": serialize_st_economic_history(state.st_economic_history),
+        "st_exit_intent": _serialize_st_exit_intent(state.st_exit_intent),
+        "last_closed_st_exit": _serialize_st_closed_exit(state.last_closed_st_exit),
     }
 
 
@@ -358,6 +461,8 @@ def deserialize_trade_lifecycle_state(payload: Mapping[str, Any]) -> TradeLifecy
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("trade lifecycle state position is invalid") from exc
 
+    last_closed_st_exit = _deserialize_st_closed_exit(payload.get("last_closed_st_exit"))
+
     if position is PositionState.FLAT:
         if any(
             payload.get(key) is not None
@@ -367,10 +472,11 @@ def deserialize_trade_lifecycle_state(payload: Mapping[str, Any]) -> TradeLifecy
                 "entry_as_of",
                 "entry_metadata",
                 "st_economic_history",
+                "st_exit_intent",
             )
         ):
             raise ValueError("persisted FLAT lifecycle cannot carry open-position fields")
-        return TradeLifecycleState()
+        return TradeLifecycleState(last_closed_st_exit=last_closed_st_exit)
 
     try:
         exit_stage = ExitStage(str(payload["exit_stage"]))
@@ -414,6 +520,8 @@ def deserialize_trade_lifecycle_state(payload: Mapping[str, Any]) -> TradeLifecy
         entry_as_of=entry_as_of,
         entry_metadata=metadata,
         st_economic_history=deserialize_st_economic_history(payload.get("st_economic_history")),
+        st_exit_intent=_deserialize_st_exit_intent(payload.get("st_exit_intent")),
+        last_closed_st_exit=last_closed_st_exit,
     )
 
 

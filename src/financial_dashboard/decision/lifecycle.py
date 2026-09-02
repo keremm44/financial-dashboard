@@ -1,12 +1,20 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Iterable
 
 from .composer import DecisionAction, FinalDecision
 from .position_metadata import PositionEntryMetadata, build_position_entry_metadata
 from .st_economic_history import STEconomicHistory, initial_st_economic_history
+from .st_exit_intent import (
+    STClosedExitRecord,
+    STExitFamily,
+    STExitIntent,
+    canonical_exit_lineage,
+    canonical_exit_reasons,
+)
+from .structural import DecisionHorizon
 
 if TYPE_CHECKING:
     from financial_dashboard.decision_input import DecisionInputSnapshot
@@ -37,6 +45,8 @@ class TradeLifecycleState:
     entry_as_of: Any | None = None
     entry_metadata: PositionEntryMetadata | None = None
     st_economic_history: STEconomicHistory | None = None
+    st_exit_intent: STExitIntent | None = None
+    last_closed_st_exit: STClosedExitRecord | None = None
 
     def __post_init__(self) -> None:
         if self.position is PositionState.FLAT:
@@ -46,18 +56,37 @@ class TradeLifecycleState:
                 or self.entry_as_of is not None
                 or self.entry_metadata is not None
                 or self.st_economic_history is not None
+                or self.st_exit_intent is not None
             ):
                 raise ValueError("FLAT lifecycle state cannot carry open-trade metadata")
-        elif self.exit_stage is None or self.trade_id is None or self.entry_as_of is None:
+            return
+
+        if self.exit_stage is None or self.trade_id is None or self.entry_as_of is None:
             raise ValueError("OPEN lifecycle state requires exit stage and entry metadata")
-        elif self.entry_metadata is not None and self.entry_metadata.entry_as_of != self.entry_as_of:
+        if self.entry_metadata is not None and self.entry_metadata.entry_as_of != self.entry_as_of:
             raise ValueError("position entry metadata must share lifecycle entry_as_of")
-        elif (
+        if (
             self.st_economic_history is not None
             and self.entry_metadata is not None
-            and self.entry_metadata.entry_horizon.value != "SHORT_TERM"
+            and self.entry_metadata.entry_horizon is not DecisionHorizon.SHORT_TERM
         ):
             raise ValueError("ST economic history may belong only to a short-term position")
+        if self.st_exit_intent is not None:
+            if self.entry_metadata is None:
+                raise ValueError("terminal ST exit intent requires frozen entry metadata")
+            if self.entry_metadata.entry_horizon is not DecisionHorizon.SHORT_TERM:
+                raise ValueError("terminal ST exit intent may belong only to a short-term position")
+            try:
+                if self.st_exit_intent.committed_at < self.entry_as_of:
+                    raise ValueError("terminal ST exit intent cannot predate trade entry")
+            except TypeError as exc:
+                raise TypeError("terminal ST exit intent and entry timestamps must be comparable") from exc
+        if self.last_closed_st_exit is not None:
+            try:
+                if self.last_closed_st_exit.exit_as_of > self.entry_as_of:
+                    raise ValueError("previous closed ST exit cannot occur after current trade entry")
+            except TypeError as exc:
+                raise TypeError("closed ST exit and current entry timestamps must be comparable") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +116,88 @@ def _open_state_with_stage(state: TradeLifecycleState, stage: ExitStage) -> Trad
         entry_as_of=state.entry_as_of,
         entry_metadata=state.entry_metadata,
         st_economic_history=state.st_economic_history,
+        st_exit_intent=state.st_exit_intent,
+        last_closed_st_exit=state.last_closed_st_exit,
+    )
+
+
+def transition_st_exit_intent(
+    state: TradeLifecycleState,
+    requested_family: STExitFamily | None,
+    *,
+    as_of: Any | None = None,
+    reasons: Iterable[str] = (),
+    source_lineage: Iterable[str] = (),
+) -> TradeLifecycleState:
+    """Fold one final ST economic-exit request into monotonic lifecycle intent.
+
+    ``None`` means the current policy evaluation did not commit a new terminal exit.
+    Once intent exists it survives later HOLD/uncertain evaluations. HARVEST may
+    escalate to PROTECTIVE, while PROTECTIVE can never be downgraded to HARVEST.
+
+    This function changes lifecycle state only. It deliberately does not alter the
+    canonical exit stage, execution gating, or BUY/SELL action.
+    """
+
+    if state.position is not PositionState.OPEN:
+        if requested_family is None:
+            return state
+        raise ValueError("terminal ST exit intent requires OPEN lifecycle ownership")
+
+    metadata = state.entry_metadata
+    if metadata is None or metadata.entry_horizon is not DecisionHorizon.SHORT_TERM:
+        if requested_family is None:
+            return state
+        raise ValueError("terminal ST exit intent requires short-term entry ownership")
+
+    existing = state.st_exit_intent
+    if requested_family is None:
+        return state
+    if not isinstance(requested_family, STExitFamily):
+        raise ValueError("terminal ST exit intent request family is invalid")
+    if as_of is None:
+        raise ValueError("terminal ST exit intent request requires as_of")
+    try:
+        if as_of < metadata.entry_as_of:
+            raise ValueError("terminal ST exit intent request cannot predate trade entry")
+        if existing is not None and as_of < existing.committed_at:
+            raise ValueError("terminal ST exit intent transition cannot move backward in time")
+    except TypeError as exc:
+        raise TypeError("terminal ST exit intent timestamps must be comparable") from exc
+
+    canonical_reasons = canonical_exit_reasons(reasons)
+    canonical_lineage = canonical_exit_lineage(source_lineage)
+
+    if existing is not None:
+        if existing.family is STExitFamily.PROTECTIVE_EXIT:
+            return state
+        if requested_family is STExitFamily.PROFIT_HARVEST:
+            return state
+        # The only remaining monotonic transition is HARVEST -> PROTECTIVE.
+
+    intent = STExitIntent(
+        family=requested_family,
+        committed_at=as_of,
+        reasons=canonical_reasons,
+        source_lineage=canonical_lineage,
+    )
+    return replace(state, st_exit_intent=intent)
+
+
+def _closed_st_exit_record(state: TradeLifecycleState, *, exit_as_of: Any) -> STClosedExitRecord | None:
+    intent = state.st_exit_intent
+    if intent is None:
+        return None
+    if state.trade_id is None or state.entry_as_of is None:
+        raise ValueError("terminal ST exit execution requires trade identity")
+    return STClosedExitRecord(
+        trade_id=state.trade_id,
+        entry_as_of=state.entry_as_of,
+        exit_as_of=exit_as_of,
+        family=intent.family,
+        intent_committed_at=intent.committed_at,
+        reasons=intent.reasons,
+        source_lineage=intent.source_lineage,
     )
 
 
@@ -101,10 +212,12 @@ def transition_trade_lifecycle(
 ) -> TradeLifecycleTransition:
     """Fold one market decision through persistent long-only ownership.
 
-    The optional ``entry_metadata`` is a compatibility bridge for the new Turn 7
-    entry path. Legacy replay callers may omit it until Turn 9 migration. When
-    supplied on the opening BUY it is frozen into the position and is never replaced
-    by later repeated BUY decisions.
+    The optional ``entry_metadata`` is a compatibility bridge for the dedicated
+    entry path. When supplied on the opening BUY it is frozen into the position and
+    is never replaced by later repeated BUY decisions.
+
+    Step 7 terminal ST exit intent is orthogonal to execution. Existing exit-stage
+    and fresh-event requirements remain unchanged in this transition.
     """
 
     requested = final.action
@@ -124,6 +237,7 @@ def transition_trade_lifecycle(
                 entry_as_of=as_of,
                 entry_metadata=entry_metadata,
                 st_economic_history=initial_st_economic_history(entry_metadata),
+                last_closed_st_exit=state.last_closed_st_exit,
             )
             return TradeLifecycleTransition(
                 state,
@@ -162,7 +276,9 @@ def transition_trade_lifecycle(
             raise ValueError("long exit execution requires EXIT_READY stage")
         return TradeLifecycleTransition(
             state,
-            TradeLifecycleState(),
+            TradeLifecycleState(
+                last_closed_st_exit=_closed_st_exit_record(state, exit_as_of=as_of)
+            ),
             requested,
             DecisionAction.SELL,
             "LIFECYCLE_OPEN_EXIT_EXECUTED_CONFIRMED_EVENT",
@@ -200,7 +316,7 @@ def transition_entry_lifecycle(
     *,
     execution_event: "ExecutionTriggerEvent | None" = None,
 ) -> TradeLifecycleTransition:
-    """Apply one Turn 6 entry result without reinterpreting its market semantics.
+    """Apply one entry result without reinterpreting its market semantics.
 
     Only a FLAT->BUY transition creates metadata. Repeated BUY while OPEN is handled
     by the existing suppression rule and cannot overwrite the original entry record.
@@ -233,5 +349,6 @@ __all__ = [
     "TradeLifecycleState",
     "TradeLifecycleTransition",
     "transition_entry_lifecycle",
+    "transition_st_exit_intent",
     "transition_trade_lifecycle",
 ]
