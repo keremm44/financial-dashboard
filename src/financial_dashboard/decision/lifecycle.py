@@ -208,6 +208,7 @@ def transition_trade_lifecycle(
     as_of: Any,
     exit_stage: ExitStage | None = None,
     exit_execution_confirmed: bool = False,
+    exit_policy_mandated: bool = False,
     entry_metadata: PositionEntryMetadata | None = None,
 ) -> TradeLifecycleTransition:
     """Fold one market decision through persistent long-only ownership.
@@ -216,15 +217,18 @@ def transition_trade_lifecycle(
     entry path. When supplied on the opening BUY it is frozen into the position and
     is never replaced by later repeated BUY decisions.
 
-    Step 7 terminal ST exit intent is orthogonal to execution. Existing exit-stage
-    and fresh-event requirements remain unchanged in this transition.
+    Step-9 policy-mandated exit is distinct from fresh execution-event confirmation.
+    It is allowed only for an already-terminal ST exit intent and never masquerades
+    as a market/timing confirmation event.
     """
 
     requested = final.action
+    if exit_execution_confirmed and exit_policy_mandated:
+        raise ValueError("exit cannot be both event-confirmed and policy-mandated")
 
     if state.position is PositionState.FLAT:
-        if exit_execution_confirmed:
-            raise ValueError("exit execution cannot be confirmed while lifecycle is FLAT")
+        if exit_execution_confirmed or exit_policy_mandated:
+            raise ValueError("exit execution cannot be authorized while lifecycle is FLAT")
         if entry_metadata is not None and requested is not DecisionAction.BUY:
             raise ValueError("entry metadata may be attached only to an opening BUY")
         if requested is DecisionAction.BUY:
@@ -271,6 +275,26 @@ def transition_trade_lifecycle(
     # decision is deliberately ignored rather than backfilling or promoting the
     # original entry horizon from later market information.
     target_stage = exit_stage or state.exit_stage or ExitStage.MONITOR
+    if exit_policy_mandated:
+        if target_stage is not ExitStage.EXIT_READY:
+            raise ValueError("policy-mandated ST exit requires EXIT_READY stage")
+        if requested is not DecisionAction.SELL:
+            raise ValueError("policy-mandated ST exit requires SELL action")
+        if state.entry_metadata is None or state.entry_metadata.entry_horizon is not DecisionHorizon.SHORT_TERM:
+            raise ValueError("policy-mandated exit requires ST ownership")
+        if state.st_exit_intent is None:
+            raise ValueError("policy-mandated ST exit requires terminal intent")
+        return TradeLifecycleTransition(
+            state,
+            TradeLifecycleState(
+                last_closed_st_exit=_closed_st_exit_record(state, exit_as_of=as_of)
+            ),
+            requested,
+            DecisionAction.SELL,
+            "LIFECYCLE_OPEN_EXIT_EXECUTED_POLICY_MANDATE",
+            as_of,
+        )
+
     if exit_execution_confirmed:
         if target_stage is not ExitStage.EXIT_READY:
             raise ValueError("long exit execution requires EXIT_READY stage")
@@ -292,6 +316,12 @@ def transition_trade_lifecycle(
         reason = "LIFECYCLE_LEGACY_SELL_IGNORED_BY_LONG_EXIT_CONTRACT"
     elif state.exit_stage is not target_stage:
         reason = f"LIFECYCLE_EXIT_STAGE_{state.exit_stage.value}_TO_{target_stage.value}"
+    elif (
+        target_stage is ExitStage.EXIT_READY
+        and state.st_exit_intent is not None
+        and state.st_exit_intent.family is STExitFamily.PROFIT_HARVEST
+    ):
+        reason = "LIFECYCLE_HARVEST_EXIT_QUALITY_WINDOW"
     elif target_stage is ExitStage.EXIT_READY:
         reason = "LIFECYCLE_EXIT_READY_AWAITING_FRESH_EVENT"
     elif target_stage is ExitStage.EXIT_WATCH:
