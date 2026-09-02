@@ -289,7 +289,7 @@ def test_open_intent_and_closed_reason_round_trip_restart_exactly(tmp_path):
 
 def test_schema_and_contract_boundary_are_explicit_and_old_checkpoint_fails_closed(tmp_path):
     assert TRADE_LIFECYCLE_STATE_SCHEMA_VERSION == 5
-    assert CANONICAL_LIFECYCLE_CONTRACT_VERSION == 6
+    assert CANONICAL_LIFECYCLE_CONTRACT_VERSION == 7
 
     payload = serialize_trade_lifecycle_checkpoint(_checkpoint(_open_state()))
     assert "st_exit_intent" in payload["state"]
