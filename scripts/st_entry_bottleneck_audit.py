@@ -7,10 +7,15 @@ from pathlib import Path
 from time import perf_counter
 
 from entry_reason_profile import _calibration, _causal_warmup_start
+from financial_dashboard.context.axes import evaluate_context_axes
 from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.decision.arbiter import assess_entry_arbitration
-from financial_dashboard.decision.engine import DecisionEngineConfig
+from financial_dashboard.decision.engine import (
+    DecisionEngineConfig,
+    _decision_structure_projection,
+    _permission_policy,
+)
 from financial_dashboard.decision.entry import assess_entry_decision
 from financial_dashboard.decision.entry_bottleneck_audit import (
     attribute_entry_bottlenecks,
@@ -43,6 +48,185 @@ def _print_counter(title: str, counter: Counter[str], *, top: int | None = None)
 
 def _value(value) -> str:
     return getattr(value, "value", str(value))
+
+
+def _refs(values) -> list[dict[str, str | None]]:
+    rows: list[dict[str, str | None]] = []
+    for ref in values:
+        rows.append(
+            {
+                "domain": _value(getattr(ref, "domain", None)),
+                "timeframe": str(getattr(ref, "timeframe", "")),
+                "native_id": str(getattr(ref, "native_id", "")),
+                "native_state": str(getattr(ref, "native_state", "")),
+                "available_at": str(getattr(ref, "available_at", "")),
+                "lineage_id": getattr(ref, "lineage_id", None),
+                "data_quality": _value(getattr(ref, "data_quality", None)),
+            }
+        )
+    return rows
+
+
+def _st_permission_axes(snapshot):
+    anchor_timeframe, trigger_timeframes = _permission_policy(DecisionHorizon.SHORT_TERM)
+    return evaluate_context_axes(
+        structural=_decision_structure_projection(snapshot.structure),
+        zones=snapshot.qualified_zones,
+        anchor_timeframe=anchor_timeframe,
+        liquidity=snapshot.liquidity,
+        participation=snapshot.participation,
+        pattern=snapshot.pattern,
+        volatility=snapshot.volatility,
+        ham=snapshot.ham,
+        trigger_timeframes=trigger_timeframes,
+    )
+
+
+def _event_detail(
+    snapshot,
+    *,
+    event,
+    prepared,
+    attribution,
+    arbitration,
+    entry,
+) -> dict[str, object]:
+    scenario = prepared.scenario
+    assessment = prepared.assessment
+    axes = _st_permission_axes(snapshot)
+    target_path = snapshot.target_path(assessment.structural.direction)
+    active = target_path.active_node
+    return {
+        "as_of": str(snapshot.as_of),
+        "event": {
+            "state": _value(event.state),
+            "side": _value(event.side),
+            "timeframe": event.timeframe,
+            "observed_at": str(event.observed_at),
+            "available_at": str(event.available_at),
+            "reason": event.reason,
+            "source_refs": _refs(event.source_refs),
+        },
+        "st_scenario": {
+            "presence": _value(scenario.presence),
+            "stage": _value(scenario.stage),
+            "kind": _value(scenario.kind),
+            "reasons": list(scenario.reasons),
+            "blockers": list(scenario.blockers),
+            "waiting_for": list(scenario.waiting_for),
+            "active_target_identity": scenario.active_target_identity,
+            "bottleneck_families": [item.value for item in attribution.families],
+            "bottleneck_tokens": list(attribution.tokens),
+        },
+        "structure": {
+            "direction": _value(assessment.structural.direction),
+            "thesis_state": _value(assessment.structural.thesis_state),
+            "native_state": assessment.structural.native_state,
+            "reasons": list(assessment.structural.reasons),
+            "source_refs": _refs(assessment.structural.source_refs),
+        },
+        "permission": {
+            "scope": _value(assessment.permission.scope),
+            "permitted_side": _value(assessment.permission.permitted_side),
+            "gate_state": _value(assessment.permission.gate_state),
+            "allowed_reasons": list(assessment.permission.allowed_reasons),
+            "blocking_reasons": list(assessment.permission.blocking_reasons),
+            "waiting_for": list(assessment.permission.waiting_for),
+            "source_refs": list(assessment.permission.source_refs),
+            "axes": {
+                "structural_thesis": _value(axes.structural_thesis),
+                "structural_direction": _value(axes.structural_direction),
+                "continuation": _value(axes.continuation),
+                "reaction": _value(axes.reaction),
+                "reaction_direction": _value(axes.reaction_direction),
+                "reversal": _value(axes.reversal),
+                "reversal_direction": _value(axes.reversal_direction),
+                "participation": _value(axes.participation),
+                "volatility": _value(axes.volatility),
+                "pattern_readiness": _value(axes.pattern_readiness),
+                "mtf": _value(axes.mtf),
+                "ham_readiness": _value(axes.ham_readiness),
+                "conflict": _value(axes.conflict),
+                "reasons": [
+                    {
+                        "code": reason.code,
+                        "detail": reason.detail,
+                        "source_refs": list(reason.source_refs),
+                    }
+                    for reason in axes.reasons
+                ],
+            },
+        },
+        "timing": {
+            "state": _value(assessment.timing.state),
+            "setup_trigger_state": _value(assessment.timing.setup_trigger.state),
+            "reasons": list(assessment.timing.reasons),
+            "setup_reasons": list(assessment.timing.setup_trigger.reasons),
+            "waiting_for": list(assessment.timing.waiting_for),
+            "source_refs": _refs(assessment.timing.source_refs),
+        },
+        "opportunity": {
+            "state": _value(assessment.opportunity.state),
+            "room_atr": assessment.opportunity.room_atr,
+            "target_identity": assessment.opportunity.target_identity,
+            "target_quality": assessment.opportunity.target_quality,
+            "reasons": list(assessment.opportunity.reasons),
+            "source_lineage": list(assessment.opportunity.source_lineage),
+        },
+        "conflict": {
+            "state": _value(assessment.conflict.state),
+            "reasons": list(assessment.conflict.reasons),
+            "families": [
+                {
+                    "family": item.family,
+                    "severity": _value(item.severity),
+                    "reasons": list(item.reasons),
+                    "lineage_ids": list(item.lineage_ids),
+                }
+                for item in assessment.conflict.families
+            ],
+        },
+        "target_path": {
+            "status": _value(target_path.status),
+            "reasons": list(target_path.reasons),
+            "active_node": None
+            if active is None
+            else {
+                "identity": active.identity,
+                "state": _value(active.state),
+                "distance_atr": active.distance_atr,
+                "roles": [_value(item) for item in active.roles],
+                "sources": [_value(item) for item in active.sources],
+                "timeframes": list(active.timeframes),
+                "lineage_ids": list(active.lineage_ids),
+            },
+        },
+        "arbitration": {
+            "state": _value(arbitration.state),
+            "selection": _value(arbitration.selection),
+            "selected_horizon": None
+            if arbitration.selected_horizon is None
+            else _value(arbitration.selected_horizon),
+            "reasons": list(arbitration.reasons),
+            "waiting_for": list(arbitration.waiting_for),
+        },
+        "entry": {
+            "action": _value(entry.action),
+            "selected_horizon": None
+            if entry.selected_horizon is None
+            else _value(entry.selected_horizon),
+            "scenario_stage": None
+            if entry.scenario_stage is None
+            else _value(entry.scenario_stage),
+            "execution_state": None
+            if entry.execution_state is None
+            else _value(entry.execution_state),
+            "execution_event_consumed": bool(entry.execution_event_consumed),
+            "reasons": list(entry.reasons),
+            "blockers": list(entry.blockers),
+            "waiting_for": list(entry.waiting_for),
+        },
+    }
 
 
 def main() -> None:
@@ -104,7 +288,9 @@ def main() -> None:
     token_counts: Counter[str] = Counter()
     event_gate_sets: Counter[str] = Counter()
     event_outcomes: Counter[str] = Counter()
+    event_non_present_reasons: Counter[str] = Counter()
     arbiter_when_event: Counter[str] = Counter()
+    fresh_event_details: list[dict[str, object]] = []
 
     episode_counts: Counter[str] = Counter()
     current_episode_key: tuple[str, str] | None = None
@@ -172,17 +358,7 @@ def main() -> None:
         if event is None:
             continue
 
-        if scenario.presence is not ScenarioPresence.PRESENT:
-            event_outcomes["EVENT_WHILE_ST_NOT_PRESENT"] += 1
-            continue
-
         attribution = attribute_entry_bottlenecks(scenario)
-        if scenario.stage is ScenarioStage.QUALIFIED:
-            event_outcomes["EVENT_WHILE_ST_QUALIFIED"] += 1
-        else:
-            event_outcomes["EVENT_WHILE_ST_NOT_QUALIFIED"] += 1
-            event_gate_sets[attribution.label] += 1
-
         arbitration = assess_entry_arbitration(snapshot, config=engine_config)
         arbiter_when_event[_value(arbitration.selection)] += 1
         entry = assess_entry_decision(
@@ -192,9 +368,39 @@ def main() -> None:
         )
         if bool(entry.execution_event_consumed):
             event_outcomes["EVENT_CONSUMED"] += 1
+            selected = (
+                "UNRESOLVED"
+                if entry.selected_horizon is None
+                else _value(entry.selected_horizon)
+            )
+            event_outcomes[f"EVENT_CONSUMED_BY:{selected}"] += 1
         else:
             event_outcomes["EVENT_NOT_CONSUMED"] += 1
             event_outcomes[f"NOT_CONSUMED_ENTRY_ACTION:{_value(entry.action)}"] += 1
+
+        if scenario.presence is not ScenarioPresence.PRESENT:
+            event_outcomes["EVENT_WHILE_ST_NOT_PRESENT"] += 1
+            event_non_present_reasons.update(
+                scenario.reasons
+                or scenario.presence_waiting_for
+                or ("UNCLASSIFIED_ST_NON_PRESENCE",)
+            )
+        elif scenario.stage is ScenarioStage.QUALIFIED:
+            event_outcomes["EVENT_WHILE_ST_QUALIFIED"] += 1
+        else:
+            event_outcomes["EVENT_WHILE_ST_NOT_QUALIFIED"] += 1
+            event_gate_sets[attribution.label] += 1
+
+        fresh_event_details.append(
+            _event_detail(
+                snapshot,
+                event=event,
+                prepared=prepared,
+                attribution=attribution,
+                arbitration=arbitration,
+                entry=entry,
+            )
+        )
 
     close_episode()
     decision_seconds = perf_counter() - decision_started
@@ -221,6 +427,7 @@ def main() -> None:
     _print_counter("SINGLE-FAMILY BOTTLENECKS", single_family, top=args.top)
     _print_counter("CANONICAL WAIT/BLOCK TOKENS", token_counts, top=args.top)
     _print_counter("FRESH ENTRY EVENT OUTCOMES", event_outcomes, top=args.top)
+    _print_counter("FRESH EVENT ST NON-PRESENCE REASONS", event_non_present_reasons, top=args.top)
     _print_counter("FRESH EVENT GATE SET WHEN NOT QUALIFIED", event_gate_sets, top=args.top)
     _print_counter("ARBITER SELECTION WHEN FRESH EVENT EXISTS", arbiter_when_event, top=args.top)
     _print_counter("TARGET-CONTEXT EPISODE PROXY", episode_counts, top=args.top)
@@ -240,7 +447,9 @@ def main() -> None:
             "single_family_bottlenecks": dict(single_family),
             "canonical_tokens": dict(token_counts),
             "fresh_event_outcomes": dict(event_outcomes),
+            "fresh_event_st_non_presence_reasons": dict(event_non_present_reasons),
             "fresh_event_gate_sets": dict(event_gate_sets),
+            "fresh_event_details": fresh_event_details,
             "arbiter_when_event": dict(arbiter_when_event),
             "target_context_episode_proxy": dict(episode_counts),
             "diagnostic_only": True,
