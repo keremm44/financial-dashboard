@@ -18,12 +18,13 @@ from financial_dashboard.decision.eligibility import EligibilityState, assess_el
 from financial_dashboard.decision.engine import _decision_structure_projection
 from financial_dashboard.decision.environment import EnvironmentRisk
 from financial_dashboard.decision.opportunity import OpportunityState
-from financial_dashboard.decision.structural import StructuralDirection, ThesisState
+from financial_dashboard.decision.structural import DecisionHorizon, StructuralDirection, ThesisState
 from financial_dashboard.decision.timing import TimingState
 
 
 def _structural():
     return SimpleNamespace(
+        horizon=DecisionHorizon.LONG_TERM,
         data_quality=ContextDataQuality.VALID,
         direction=StructuralDirection.LONG,
         thesis_state=ThesisState.INTACT,
