@@ -16,7 +16,12 @@ from .lifecycle import (
 )
 from .scenario import ScenarioStage
 from .st_economic_history import observe_st_economic_history
-from .structural import StructuralDirection
+from .st_setup_continuity import (
+    STSetupContinuityAssessment,
+    apply_st_reentry_novelty_policy,
+    assess_st_setup_continuity,
+)
+from .structural import DecisionHorizon, StructuralDirection
 
 if TYPE_CHECKING:
     from financial_dashboard.decision_input import DecisionInputSnapshot
@@ -149,6 +154,54 @@ def _proxy_event(as_of: Any, *, side: StructuralDirection, reason: str) -> Execu
     )
 
 
+def _qualified_st_entry(entry: Any) -> bool:
+    return (
+        getattr(entry, "selected_horizon", None) is DecisionHorizon.SHORT_TERM
+        and getattr(entry, "scenario_stage", None) is ScenarioStage.QUALIFIED
+        and getattr(getattr(entry, "arbitration", None), "selected_scenario", None) is not None
+    )
+
+
+def _compose_flat_entry(
+    snapshot: "DecisionInputSnapshot",
+    state: TradeLifecycleState,
+    *,
+    config: "DecisionEngineConfig | None",
+    raw_event: ExecutionTriggerEvent | None,
+) -> tuple[Any, ExecutionTriggerEvent | None, STSetupContinuityAssessment | None]:
+    """Apply Step-10 novelty before a fresh execution event can be consumed."""
+
+    previous = state.last_closed_st_movement
+    if previous is None:
+        return (
+            snapshot.entry_decision(config=config, execution_event=raw_event),
+            raw_event,
+            None,
+        )
+
+    pre_entry = snapshot.entry_decision(config=config, execution_event=None)
+    if not _qualified_st_entry(pre_entry):
+        if raw_event is None:
+            return pre_entry, None, None
+        return (
+            snapshot.entry_decision(config=config, execution_event=raw_event),
+            raw_event,
+            None,
+        )
+
+    continuity = assess_st_setup_continuity(snapshot, pre_entry, previous)
+    gated_pre = apply_st_reentry_novelty_policy(pre_entry, continuity)
+    if not continuity.reentry_allowed:
+        # A fresh timing event is deliberately ignored rather than consumed because
+        # execution freshness is not economic setup novelty.
+        return gated_pre, None, continuity
+    if raw_event is None:
+        return gated_pre, None, continuity
+
+    final_entry = snapshot.entry_decision(config=config, execution_event=raw_event)
+    return apply_st_reentry_novelty_policy(final_entry, continuity), raw_event, continuity
+
+
 def _markers_for_row(
     markers: ReplayAuditMarkerState,
     *,
@@ -256,14 +309,14 @@ def replay_canonical_trade_lifecycle(
 
     FLAT bars evaluate only the entry path and OPEN bars evaluate only the exit path.
     Execution events are looked up only on their current bar and never cached.
-    Audit marker state is carried independently from trading ownership so restart does
-    not alter downstream audit payloads.
+    Step-10 re-entry novelty is evaluated before a fresh entry event can be consumed;
+    first entries and LT entries retain their existing entry contracts. Audit marker
+    state remains independent from trading ownership so restart does not alter output.
 
     ``readiness_execution_proxy`` is hindsight-audit infrastructure only. When no raw
     execution event exists, it substitutes a same-bar confirmed 30m event exactly at
-    an already-computed READY or EXIT_READY boundary. It does not change scenario,
-    structure, eligibility, target, or exit-stage semantics and is explicitly marked
-    on the replay row so audit output cannot be confused with production execution.
+    an already-computed READY or EXIT_READY boundary. It cannot bypass the Step-10
+    economic novelty gate and is explicitly marked on the replay row.
     """
 
     state = initial_state or TradeLifecycleState()
@@ -301,36 +354,43 @@ def replay_canonical_trade_lifecycle(
 
         if state.position is PositionState.FLAT:
             raw_entry_event = entry_events.get(snapshot.as_of)
-            entry = snapshot.entry_decision(
+            entry, transition_entry_event, continuity = _compose_flat_entry(
+                snapshot,
+                state,
                 config=config,
-                execution_event=raw_entry_event,
+                raw_event=raw_entry_event,
             )
             if (
                 readiness_execution_proxy
+                and transition_entry_event is None
                 and raw_entry_event is None
                 and entry.action is DecisionAction.READY
             ):
-                raw_entry_event = _proxy_event(
+                proxy_event = _proxy_event(
                     snapshot.as_of,
                     side=StructuralDirection.LONG,
                     reason="AUDIT_PROXY_CANONICAL_ENTRY_READY",
                 )
-                entry = snapshot.entry_decision(
+                proxied = snapshot.entry_decision(
                     config=config,
-                    execution_event=raw_entry_event,
+                    execution_event=proxy_event,
                 )
-                proxy_used = entry.action is DecisionAction.BUY
+                entry = (
+                    proxied
+                    if continuity is None
+                    else apply_st_reentry_novelty_policy(proxied, continuity)
+                )
+                if entry.action is DecisionAction.BUY:
+                    transition_entry_event = proxy_event
+                    proxy_used = True
             transition = transition_entry_lifecycle(
                 state,
                 entry,
                 snapshot,
-                execution_event=raw_entry_event,
+                execution_event=transition_entry_event,
             )
         else:
             raw_exit_event = exit_events.get(snapshot.as_of)
-            # Economic history is shadow Class-A state. The canonical exit decision
-            # deliberately receives the pre-observation state so Step 3 cannot alter
-            # HOLD/SELL, exit stage, or execution consumption.
             exit_decision = snapshot.position_exit_decision(
                 state,
                 execution_event=raw_exit_event,
