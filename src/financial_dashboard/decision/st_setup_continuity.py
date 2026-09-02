@@ -358,21 +358,14 @@ def _new_risk_boundary(
         return False
     if previous is None:
         return has_new_information
-    candidate_kind = candidate.kind.value
     return (
-        candidate.identity != previous.identity
-        and (
-            candidate_kind,
-            candidate.timeframe,
-            float(candidate.low),
-            float(candidate.high),
-        )
-        != (
-            previous.kind,
-            previous.timeframe,
-            float(previous.low),
-            float(previous.high),
-        )
+        candidate.timeframe.strip().lower(),
+        float(candidate.low),
+        float(candidate.high),
+    ) != (
+        previous.timeframe.strip().lower(),
+        float(previous.low),
+        float(previous.high),
     )
 
 
@@ -383,9 +376,7 @@ def _movement_signature_candidate(candidate: STSetupCandidate) -> tuple[Any, ...
     return (
         candidate.family.value,
         candidate.economic_mission.value,
-        anchor.kind.value,
-        anchor.identity,
-        anchor.timeframe,
+        anchor.timeframe.strip().lower(),
         float(anchor.low),
         float(anchor.high),
         candidate.target_identity,
@@ -399,9 +390,7 @@ def _movement_signature_closed(previous: STClosedMovementRecord) -> tuple[Any, .
     return (
         previous.thesis_family.value,
         previous.economic_mission.value,
-        risk.kind,
-        risk.identity,
-        risk.timeframe,
+        risk.timeframe.strip().lower(),
         float(risk.low),
         float(risk.high),
         previous.initial_target_identity,
