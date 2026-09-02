@@ -15,6 +15,7 @@ from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.decision.calibration import load_opportunity_calibration
 from financial_dashboard.decision.canonical_events import canonical_decision_events_from_replay
 from financial_dashboard.decision.engine import DecisionEngineConfig
+from financial_dashboard.decision.execution_detect import detect_30m_execution_events
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
 from financial_dashboard.decision.lifecycle_replay import replay_canonical_trade_lifecycle
 from financial_dashboard.decision.opportunity import OpportunityCalibration
@@ -237,10 +238,15 @@ def main() -> None:
         cache_root=args.cache_root,
         symbol=clean_symbol,
     )
+    entry_execution_events, exit_execution_events = detect_30m_execution_events(
+        input_replay.snapshots
+    )
     started = perf_counter()
     lifecycle = replay_canonical_trade_lifecycle(
         input_replay.snapshots,
         config=DecisionEngineConfig(opportunity_calibration=calibration),
+        entry_execution_events=entry_execution_events,
+        exit_execution_events=exit_execution_events,
         readiness_execution_proxy=bool(args.canonical_readiness_proxy),
     )
     decisions = canonical_decision_events_from_replay(lifecycle)
@@ -290,6 +296,8 @@ def main() -> None:
     print("INPUT_REPLAY_PATH\tFROZEN_DECISION_TIMELINE_CACHE_ONLY")
     print(f"FROZEN_CACHE_STATUS\t{frozen.cache_status}")
     print(f"OPPORTUNITY_CALIBRATION\t{calibration_source}")
+    print(f"ENTRY_EXECUTION_EVENTS\t{len(entry_execution_events)}")
+    print(f"EXIT_EXECUTION_EVENTS\t{len(exit_execution_events)}")
     print(f"FROZEN_TIMELINE_LOAD_SECONDS\t{frozen_load_seconds:.3f}")
     print("DOMAIN_REPLAY_AND_SNAPSHOT_SECONDS\t0.00")
     print(f"DECISION_LAYER_SECONDS\t{decision_seconds:.3f}")
