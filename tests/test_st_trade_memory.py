@@ -193,6 +193,7 @@ def test_resolved_st_entry_freezes_minimal_breakout_trade_memory():
     assert metadata.entry_as_of == as_of
     assert metadata.initial_target_identity == "target:st:1"
 
+    # Persistent memory is deliberately compact: no domain snapshot or FactRef copy.
     assert {item.name for item in fields(STTradeMemory)} == {
         "thesis_family",
         "economic_mission",
