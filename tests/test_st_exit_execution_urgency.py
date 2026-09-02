@@ -119,9 +119,9 @@ def _compose(state, family, *, as_of=T1, event=None, channel_available=True):
     )
 
 
-def test_step9_changes_behavior_contract_not_persistent_state_schema():
-    assert TRADE_LIFECYCLE_STATE_SCHEMA_VERSION == 5
-    assert CANONICAL_LIFECYCLE_CONTRACT_VERSION == 8
+def test_step10_adds_continuity_state_schema_and_behavior_contract():
+    assert TRADE_LIFECYCLE_STATE_SCHEMA_VERSION == 6
+    assert CANONICAL_LIFECYCLE_CONTRACT_VERSION == 9
 
 
 def test_protective_exit_is_policy_mandated_without_timing_confirmation():
