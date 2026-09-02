@@ -25,13 +25,14 @@ from .st_economic_history import (
     serialize_st_economic_history,
 )
 from .st_exit_intent import STClosedExitRecord, STExitFamily, STExitIntent
+from .st_setup_continuity import STClosedMovementRecord, STMovementRiskBoundary
 from .st_thesis_identity import STDefendedAnchorKind, STEconomicMission, STThesisFamily
 from .structural import DecisionHorizon
 from .target_path import TargetPathRole
 
 
-TRADE_LIFECYCLE_STATE_SCHEMA_VERSION = 5
-CANONICAL_LIFECYCLE_CONTRACT_VERSION = 8
+TRADE_LIFECYCLE_STATE_SCHEMA_VERSION = 6
+CANONICAL_LIFECYCLE_CONTRACT_VERSION = 9
 
 
 class LifecycleCheckpointStatus(StrEnum):
@@ -75,6 +76,8 @@ class TradeLifecycleCheckpoint:
                 raise ValueError("empty lifecycle prefix must remain FLAT")
             if self.state.last_closed_st_exit is not None:
                 raise ValueError("empty lifecycle prefix cannot carry closed-trade exit history")
+            if self.state.last_closed_st_movement is not None:
+                raise ValueError("empty lifecycle prefix cannot carry closed movement history")
             if not self.audit_markers.is_empty:
                 raise ValueError("empty lifecycle prefix cannot carry audit markers")
         elif self.last_as_of is None:
@@ -395,8 +398,113 @@ def _deserialize_st_closed_exit(payload: Any) -> STClosedExitRecord | None:
     )
 
 
+def _serialize_movement_risk(boundary: STMovementRiskBoundary | None) -> dict[str, Any] | None:
+    if boundary is None:
+        return None
+    return {
+        "kind": boundary.kind,
+        "identity": boundary.identity,
+        "timeframe": boundary.timeframe,
+        "low": float(boundary.low),
+        "high": float(boundary.high),
+    }
+
+
+def _deserialize_movement_risk(payload: Any, *, field: str) -> STMovementRiskBoundary | None:
+    if payload is None:
+        return None
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"{field} must be a mapping")
+    try:
+        return STMovementRiskBoundary(
+            kind=str(payload["kind"]),
+            identity=str(payload["identity"]),
+            timeframe=str(payload["timeframe"]),
+            low=float(payload["low"]),
+            high=float(payload["high"]),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"{field} is invalid") from exc
+
+
+def _serialize_st_closed_movement(record: STClosedMovementRecord | None) -> dict[str, Any] | None:
+    if record is None:
+        return None
+    return {
+        "trade_id": record.trade_id,
+        "entry_as_of": _timestamp_payload(record.entry_as_of),
+        "exit_as_of": _timestamp_payload(record.exit_as_of),
+        "exit_family": record.exit_family.value,
+        "thesis_family": record.thesis_family.value,
+        "economic_mission": record.economic_mission.value,
+        "initial_risk": _serialize_movement_risk(record.initial_risk),
+        "terminal_risk": _serialize_movement_risk(record.terminal_risk),
+        "initial_target_identity": record.initial_target_identity,
+        "last_progress_area_id": record.last_progress_area_id,
+        "last_progress_observed_at": _timestamp_payload(record.last_progress_observed_at),
+        "mission_completed_target_identity": record.mission_completed_target_identity,
+    }
+
+
+def _deserialize_st_closed_movement(payload: Any) -> STClosedMovementRecord | None:
+    if payload is None:
+        return None
+    if not isinstance(payload, Mapping):
+        raise ValueError("persisted closed ST movement must be a mapping")
+    raw_trade_id = payload.get("trade_id")
+    raw_target = payload.get("initial_target_identity")
+    raw_progress = payload.get("last_progress_area_id")
+    raw_completed = payload.get("mission_completed_target_identity")
+    if not isinstance(raw_trade_id, str):
+        raise ValueError("persisted closed ST movement trade_id must be a string")
+    if raw_target is not None and not isinstance(raw_target, str):
+        raise ValueError("persisted closed ST movement target identity must be a string")
+    if raw_progress is not None and not isinstance(raw_progress, str):
+        raise ValueError("persisted closed ST movement progress identity must be a string")
+    if raw_completed is not None and not isinstance(raw_completed, str):
+        raise ValueError("persisted closed ST movement completed target must be a string")
+    try:
+        exit_family = STExitFamily(str(payload["exit_family"]))
+        thesis_family = STThesisFamily(str(payload["thesis_family"]))
+        mission = STEconomicMission(str(payload["economic_mission"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("persisted closed ST movement family/mission is invalid") from exc
+    return STClosedMovementRecord(
+        trade_id=raw_trade_id,
+        entry_as_of=_timestamp_from_payload(
+            payload.get("entry_as_of"),
+            field="last_closed_st_movement.entry_as_of",
+            required=True,
+        ),
+        exit_as_of=_timestamp_from_payload(
+            payload.get("exit_as_of"),
+            field="last_closed_st_movement.exit_as_of",
+            required=True,
+        ),
+        exit_family=exit_family,
+        thesis_family=thesis_family,
+        economic_mission=mission,
+        initial_risk=_deserialize_movement_risk(
+            payload.get("initial_risk"),
+            field="last_closed_st_movement.initial_risk",
+        ),
+        terminal_risk=_deserialize_movement_risk(
+            payload.get("terminal_risk"),
+            field="last_closed_st_movement.terminal_risk",
+        ),
+        initial_target_identity=raw_target,
+        last_progress_area_id=raw_progress,
+        last_progress_observed_at=_timestamp_from_payload(
+            payload.get("last_progress_observed_at"),
+            field="last_closed_st_movement.last_progress_observed_at",
+            required=raw_progress is not None,
+        ),
+        mission_completed_target_identity=raw_completed,
+    )
+
+
 def _require_canonical_st_state(state: TradeLifecycleState) -> None:
-    """Fail closed when a v5 canonical ST position lacks required causal state."""
+    """Fail closed when a v6 canonical ST position lacks required causal state."""
 
     metadata = state.entry_metadata
     is_open_st = (
@@ -450,6 +558,7 @@ def serialize_trade_lifecycle_state(state: TradeLifecycleState) -> dict[str, Any
         "st_economic_history": serialize_st_economic_history(state.st_economic_history),
         "st_exit_intent": _serialize_st_exit_intent(state.st_exit_intent),
         "last_closed_st_exit": _serialize_st_closed_exit(state.last_closed_st_exit),
+        "last_closed_st_movement": _serialize_st_closed_movement(state.last_closed_st_movement),
     }
 
 
@@ -462,6 +571,7 @@ def deserialize_trade_lifecycle_state(payload: Mapping[str, Any]) -> TradeLifecy
         raise ValueError("trade lifecycle state position is invalid") from exc
 
     last_closed_st_exit = _deserialize_st_closed_exit(payload.get("last_closed_st_exit"))
+    last_closed_st_movement = _deserialize_st_closed_movement(payload.get("last_closed_st_movement"))
 
     if position is PositionState.FLAT:
         if any(
@@ -476,7 +586,10 @@ def deserialize_trade_lifecycle_state(payload: Mapping[str, Any]) -> TradeLifecy
             )
         ):
             raise ValueError("persisted FLAT lifecycle cannot carry open-position fields")
-        return TradeLifecycleState(last_closed_st_exit=last_closed_st_exit)
+        return TradeLifecycleState(
+            last_closed_st_exit=last_closed_st_exit,
+            last_closed_st_movement=last_closed_st_movement,
+        )
 
     try:
         exit_stage = ExitStage(str(payload["exit_stage"]))
@@ -522,6 +635,7 @@ def deserialize_trade_lifecycle_state(payload: Mapping[str, Any]) -> TradeLifecy
         st_economic_history=deserialize_st_economic_history(payload.get("st_economic_history")),
         st_exit_intent=_deserialize_st_exit_intent(payload.get("st_exit_intent")),
         last_closed_st_exit=last_closed_st_exit,
+        last_closed_st_movement=last_closed_st_movement,
     )
 
 

@@ -665,9 +665,9 @@ def test_cold_warm_restart_history_equivalence_and_zero_action_diff(tmp_path):
     assert reconstructed_actions == tuple(row.action for row in cold.rows)
 
 
-def test_v5_checkpoint_requires_history_and_v3_is_not_silently_migrated(tmp_path):
-    assert TRADE_LIFECYCLE_STATE_SCHEMA_VERSION == 5
-    assert CANONICAL_LIFECYCLE_CONTRACT_VERSION == 8
+def test_v6_checkpoint_requires_history_and_older_schema_is_not_silently_migrated(tmp_path):
+    assert TRADE_LIFECYCLE_STATE_SCHEMA_VERSION == 6
+    assert CANONICAL_LIFECYCLE_CONTRACT_VERSION == 9
 
     entry = pd.Timestamp("2026-01-05 10:00")
     state = _open_state(entry)
@@ -688,8 +688,8 @@ def test_v5_checkpoint_requires_history_and_v3_is_not_silently_migrated(tmp_path
         "continuation_episodes": [],
     }
 
-    payload["schema_version"] = 3
-    payload["contract_version"] = 3
+    payload["schema_version"] = 5
+    payload["contract_version"] = 8
     store = PersistentTradeLifecycleStore(tmp_path)
     store.path_for("TEST").write_text(__import__("json").dumps(payload), encoding="utf-8")
     loaded = store.load("TEST")
