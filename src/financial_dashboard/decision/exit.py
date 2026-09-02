@@ -15,6 +15,10 @@ from .lifecycle import (
     transition_st_exit_intent,
     transition_trade_lifecycle,
 )
+from .st_exit_execution import (
+    STExitExecutionUrgency,
+    assess_st_exit_execution,
+)
 from .st_exit_intent import STExitFamily
 from .st_exit_policy import (
     STCanonicalExitAssessment,
@@ -39,14 +43,22 @@ if TYPE_CHECKING:
     from financial_dashboard.decision_input import DecisionInputSnapshot
 
 
+_POLICY_MANDATED_URGENCIES = frozenset(
+    {
+        STExitExecutionUrgency.HARVEST_RELEASE_DUE,
+        STExitExecutionUrgency.PROTECTIVE_IMMEDIATE,
+    }
+)
+
+
 @dataclass(frozen=True, slots=True)
 class PositionExitDecision:
     """Final action layer for one already-open long position.
 
-    LT ownership continues to use its existing structural exit authority. ST ownership
-    uses the Step-8 thesis-aware economic policy. A terminal ST economic outcome arms
-    the existing EXIT_READY execution path; Step 9 has not yet changed how urgently
-    that path executes, so SELL still requires the current fresh 30m exit event.
+    LT ownership keeps its existing structural + fresh-event exit contract. ST
+    ownership first uses the thesis-aware economic policy and then applies Step-9
+    execution urgency. Protective exits and expired harvest patience are policy
+    mandates; a newly committed harvest may use one bounded exit-quality window.
     """
 
     action: DecisionAction
@@ -64,35 +76,65 @@ class PositionExitDecision:
     economic_exit_family: STExitFamily | None = None
     economic_reasons: tuple[str, ...] = ()
     economic_source_lineage: tuple[str, ...] = ()
+    execution_urgency: STExitExecutionUrgency | None = None
 
     def __post_init__(self) -> None:
         if self.action not in {DecisionAction.HOLD, DecisionAction.SELL}:
             raise ValueError("position exit decision may emit only HOLD or SELL")
         if self.as_of is None:
             raise ValueError("position exit decision as_of must be known")
+
+        policy_mandated = self.execution_urgency in _POLICY_MANDATED_URGENCIES
         if self.action is DecisionAction.SELL:
             if self.stage is not ExitStage.EXIT_READY:
                 raise ValueError("SELL requires EXIT_READY")
-            if self.execution.state is not ExitExecutionState.CONFIRMED:
-                raise ValueError("SELL requires CONFIRMED exit execution")
-            if not self.execution_event_consumed:
-                raise ValueError("SELL requires a consumed fresh exit execution event")
-        elif self.execution.state is ExitExecutionState.CONFIRMED:
-            raise ValueError("CONFIRMED exit execution must resolve to SELL")
+            if policy_mandated:
+                if self.entry_horizon is not DecisionHorizon.SHORT_TERM:
+                    raise ValueError("policy-mandated exit may belong only to ST ownership")
+                if self.execution_event_consumed:
+                    raise ValueError("policy-mandated ST SELL cannot consume a timing event")
+                if self.execution.waiting_for:
+                    raise ValueError("policy-mandated ST SELL cannot wait for timing confirmation")
+            else:
+                if self.execution.state is not ExitExecutionState.CONFIRMED:
+                    raise ValueError("non-mandated SELL requires CONFIRMED exit execution")
+                if not self.execution_event_consumed:
+                    raise ValueError("confirmed-event SELL requires consumed fresh execution event")
+        else:
+            if self.execution.state is ExitExecutionState.CONFIRMED:
+                raise ValueError("CONFIRMED exit execution must resolve to SELL")
+            if policy_mandated:
+                raise ValueError("policy-mandated ST exit must resolve to SELL")
+
         if self.execution_event_consumed and self.stage is not ExitStage.EXIT_READY:
             raise ValueError("exit execution event may be consumed only while EXIT_READY")
 
         if self.entry_horizon is DecisionHorizon.SHORT_TERM:
-            if self.economic_exit_family is None and self.stage is not ExitStage.MONITOR:
-                raise ValueError("canonical nonterminal ST exit must remain MONITOR")
-            if self.stage is ExitStage.EXIT_READY and self.economic_exit_family is None:
-                raise ValueError("canonical ST EXIT_READY requires terminal economic exit family")
-            if self.stage is not ExitStage.EXIT_READY and self.economic_exit_family is not None:
-                raise ValueError("terminal ST economic exit must arm EXIT_READY")
+            if self.execution_urgency is None:
+                raise ValueError("canonical ST exit requires execution urgency classification")
+            if self.economic_exit_family is None:
+                if self.stage is not ExitStage.MONITOR:
+                    raise ValueError("canonical nonterminal ST exit must remain MONITOR")
+                if self.execution_urgency is not STExitExecutionUrgency.NOT_ARMED:
+                    raise ValueError("nonterminal ST exit must keep execution urgency NOT_ARMED")
+            else:
+                if self.stage is not ExitStage.EXIT_READY:
+                    raise ValueError("terminal ST economic exit must arm EXIT_READY")
+                if self.economic_exit_family is STExitFamily.PROTECTIVE_EXIT:
+                    if self.execution_urgency is not STExitExecutionUrgency.PROTECTIVE_IMMEDIATE:
+                        raise ValueError("protective ST exit requires immediate execution urgency")
+                elif self.execution_urgency not in {
+                    STExitExecutionUrgency.HARVEST_QUALITY_WINDOW,
+                    STExitExecutionUrgency.HARVEST_RELEASE_DUE,
+                }:
+                    raise ValueError("harvest ST exit requires bounded harvest execution urgency")
             if self.action is DecisionAction.SELL and self.economic_exit_family is None:
                 raise ValueError("canonical ST SELL requires terminal economic exit family")
-        elif self.economic_exit_family is not None:
-            raise ValueError("terminal economic exit family may belong only to an ST position")
+        else:
+            if self.execution_urgency is not None:
+                raise ValueError("non-ST position cannot carry ST execution urgency")
+            if self.economic_exit_family is not None:
+                raise ValueError("terminal economic exit family may belong only to an ST position")
 
         if self.economic_exit_family is not None and not self.economic_reasons:
             raise ValueError("terminal ST economic exit requires economic reasons")
@@ -150,10 +192,10 @@ def compose_position_exit_decision(
 ) -> PositionExitDecision:
     """Compose HOLD/SELL for one OPEN position from frozen ownership metadata.
 
-    Premature 30m events are deliberately not passed into the execution validator.
-    They are therefore not consumed and cannot be cached for a later EXIT_READY bar.
-    ST callers must supply the canonical economic assessment; there is no fallback
-    path to the pre-Step-8 Structure-only ST exit engine.
+    Premature events remain unconsumed. LT continues to validate its existing fresh
+    execution event. ST terminal exits are routed through the Step-9 urgency adapter,
+    which may intentionally ignore a supplied timing event when policy already
+    mandates exposure termination.
     """
 
     if state.position is not PositionState.OPEN:
@@ -165,6 +207,8 @@ def compose_position_exit_decision(
     economic_exit_family: STExitFamily | None = None
     economic_reasons: tuple[str, ...] = ()
     economic_lineage: tuple[str, ...] = ()
+    execution_urgency: STExitExecutionUrgency | None = None
+    policy_mandated = False
 
     if metadata is None:
         entry_horizon = None
@@ -178,7 +222,7 @@ def compose_position_exit_decision(
         authority_reason = "POSITION_EXIT_AUTHORITY_LONG_TERM_ENTRY"
     elif metadata.entry_horizon is DecisionHorizon.SHORT_TERM:
         if st_economic_exit is None:
-            raise ValueError("canonical ST exit requires Step-8 economic assessment")
+            raise ValueError("canonical ST exit requires economic assessment")
         entry_horizon = DecisionHorizon.SHORT_TERM
         structural = as_long_exit_assessment(st_economic_exit)
         authority_reason = "POSITION_EXIT_AUTHORITY_SHORT_TERM_ECONOMIC_POLICY"
@@ -188,18 +232,33 @@ def compose_position_exit_decision(
     else:
         raise ValueError("unsupported position entry horizon")
 
-    armed = structural.stage is ExitStage.EXIT_READY
-    event_for_execution = execution_event if armed else None
-    execution = assess_long_exit_execution(
-        structural,
-        as_of=as_of,
-        event=event_for_execution,
-        channel_available=channel_available,
-    )
-    consumed = armed and execution_event is not None
+    if entry_horizon is DecisionHorizon.SHORT_TERM:
+        assert st_economic_exit is not None
+        st_execution = assess_st_exit_execution(
+            state,
+            st_economic_exit,
+            as_of=as_of,
+            event=execution_event,
+            channel_available=channel_available,
+        )
+        execution = st_execution.execution
+        consumed = st_execution.execution_event_consumed
+        execution_urgency = st_execution.urgency
+        policy_mandated = st_execution.policy_mandated
+    else:
+        armed = structural.stage is ExitStage.EXIT_READY
+        event_for_execution = execution_event if armed else None
+        execution = assess_long_exit_execution(
+            structural,
+            as_of=as_of,
+            event=event_for_execution,
+            channel_available=channel_available,
+        )
+        consumed = armed and execution_event is not None
+
     action = (
         DecisionAction.SELL
-        if execution.state is ExitExecutionState.CONFIRMED
+        if policy_mandated or execution.state is ExitExecutionState.CONFIRMED
         else DecisionAction.HOLD
     )
 
@@ -221,6 +280,7 @@ def compose_position_exit_decision(
         economic_exit_family=economic_exit_family,
         economic_reasons=economic_reasons,
         economic_source_lineage=economic_lineage,
+        execution_urgency=execution_urgency,
     )
 
 
@@ -260,7 +320,7 @@ def transition_position_exit_lifecycle(
     state: TradeLifecycleState,
     decision: PositionExitDecision,
 ) -> TradeLifecycleTransition:
-    """Atomically fold Step-8 economic intent and the existing execution result."""
+    """Atomically fold terminal ST intent and Step-9 execution outcome."""
 
     if state.position is not PositionState.OPEN:
         raise ValueError("position exit lifecycle transition requires OPEN state")
@@ -271,9 +331,9 @@ def transition_position_exit_lifecycle(
 
     intent_state = state
     if decision.entry_horizon is DecisionHorizon.SHORT_TERM:
-        economic_family = getattr(decision, "economic_exit_family", None)
-        economic_reasons = getattr(decision, "economic_reasons", ())
-        economic_lineage = getattr(decision, "economic_source_lineage", ())
+        economic_family = decision.economic_exit_family
+        economic_reasons = decision.economic_reasons
+        economic_lineage = decision.economic_source_lineage
 
         if economic_family is None and decision.stage is not ExitStage.MONITOR:
             raise ValueError("canonical nonterminal ST exit must remain MONITOR")
@@ -293,12 +353,17 @@ def transition_position_exit_lifecycle(
                 source_lineage=economic_lineage,
             )
 
+    policy_mandated = decision.execution_urgency in _POLICY_MANDATED_URGENCIES
     transition = transition_trade_lifecycle(
         intent_state,
         decision,
         as_of=decision.as_of,
         exit_stage=decision.stage,
-        exit_execution_confirmed=decision.action is DecisionAction.SELL,
+        exit_execution_confirmed=(
+            decision.action is DecisionAction.SELL
+            and decision.execution.state is ExitExecutionState.CONFIRMED
+        ),
+        exit_policy_mandated=(decision.action is DecisionAction.SELL and policy_mandated),
     )
     if intent_state is state:
         return transition
