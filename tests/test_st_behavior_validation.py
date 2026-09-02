@@ -162,7 +162,6 @@ def test_progress_on_same_row_as_harvest_is_reported_as_premature_harvest_candid
         flat0,
         flat1,
     )
-    # The current state contains the same-bar causal history fold.
     replay.rows[1].current_state.st_economic_history = open1.st_economic_history
 
     report = validate_st_canonical_behavior(replay)
@@ -325,7 +324,7 @@ def test_noncontiguous_restart_segments_fail_closed():
     replay, rows = _harvest_replay()
     prefix = _replay(rows[:2], replay.initial_state, rows[1].current_state)
     wrong_initial = _open(trade_id="other")
-    resumed = _replay(rows[2:], wrong_initial, replay.final_state)
+    resumed = _replay((), wrong_initial, wrong_initial)
 
     with pytest.raises(ValueError, match="contiguous lifecycle chain"):
         validate_st_canonical_behavior((prefix, resumed))
