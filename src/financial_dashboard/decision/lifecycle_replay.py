@@ -63,7 +63,7 @@ class ReplayAuditMarkerState:
             if len(self.scenario_key) != 2 or any(not str(item).strip() for item in self.scenario_key):
                 raise ValueError("scenario audit marker key must contain horizon and scenario kind")
             if self.scenario_qualified_at is None:
-                raise ValueError("scenario audit marker key requires qualified timestamp")
+                raise ValueError("qualified audit marker key requires qualified timestamp")
         elif self.scenario_qualified_at is not None:
             raise ValueError("qualified audit marker requires scenario key")
         if self.ready_for_execution_at is not None and self.scenario_qualified_at is None:
@@ -200,6 +200,27 @@ def _compose_flat_entry(
     return apply_st_reentry_novelty_policy(final_entry, continuity), raw_event, continuity
 
 
+def _compose_open_exit(
+    snapshot: "DecisionInputSnapshot",
+    state: TradeLifecycleState,
+    *,
+    config: "DecisionEngineConfig | None",
+    execution_event: ExecutionTriggerEvent | None,
+) -> PositionExitDecision:
+    """Use explicit calibration when supplied without weakening the default contract."""
+
+    if config is None:
+        return snapshot.position_exit_decision(
+            state,
+            execution_event=execution_event,
+        )
+    return snapshot.position_exit_decision(
+        state,
+        config=config,
+        execution_event=execution_event,
+    )
+
+
 def _markers_for_row(
     markers: ReplayAuditMarkerState,
     *,
@@ -306,9 +327,10 @@ def replay_canonical_trade_lifecycle(
     """Replay the canonical long-only ownership path over frozen snapshots.
 
     FLAT bars evaluate only the entry path and OPEN bars evaluate only the exit path.
-    The same explicit decision config is used for entry and exit policy, so Step-12
-    calibration cannot diverge across a replay or restart boundary. Execution events
-    are looked up only on their current bar and never cached.
+    An explicitly supplied decision config is used for both entry and exit policy, so
+    Step-12 calibration cannot diverge across a replay or restart boundary. Omitting
+    config preserves the pre-Step-12 default call contract. Execution events are
+    looked up only on their current bar and never cached.
     """
 
     state = initial_state or TradeLifecycleState()
@@ -383,7 +405,8 @@ def replay_canonical_trade_lifecycle(
             )
         else:
             raw_exit_event = exit_events.get(snapshot.as_of)
-            exit_decision = snapshot.position_exit_decision(
+            exit_decision = _compose_open_exit(
+                snapshot,
                 state,
                 config=config,
                 execution_event=raw_exit_event,
@@ -399,7 +422,8 @@ def replay_canonical_trade_lifecycle(
                     side=StructuralDirection.SHORT,
                     reason="AUDIT_PROXY_CANONICAL_EXIT_READY",
                 )
-                exit_decision = snapshot.position_exit_decision(
+                exit_decision = _compose_open_exit(
+                    snapshot,
                     state,
                     config=config,
                     execution_event=raw_exit_event,
