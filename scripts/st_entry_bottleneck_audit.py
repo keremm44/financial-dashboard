@@ -293,7 +293,15 @@ def main() -> None:
     fresh_event_details: list[dict[str, object]] = []
 
     episode_counts: Counter[str] = Counter()
+    present_run_counts: Counter[str] = Counter()
+    present_run_transitions: list[dict[str, object]] = []
     current_episode_key: tuple[str, str] | None = None
+    present_run_id = 0
+    in_present_run = False
+    previous_present_gate: str | None = None
+    previous_present_target: str | None = None
+    present_run_had_early_event = False
+    present_run_later_qualified_without_event = False
     episode_had_early_event = False
     episode_later_qualified_without_event = False
 
@@ -311,6 +319,25 @@ def main() -> None:
         episode_had_early_event = False
         episode_later_qualified_without_event = False
 
+    def close_present_run() -> None:
+        nonlocal in_present_run
+        nonlocal previous_present_gate, previous_present_target
+        nonlocal present_run_had_early_event, present_run_later_qualified_without_event
+        if not in_present_run:
+            return
+        present_run_counts["CONTIGUOUS_PRESENT_RUNS"] += 1
+        if present_run_had_early_event:
+            present_run_counts["RUNS_WITH_EARLY_EVENT"] += 1
+        if present_run_later_qualified_without_event:
+            present_run_counts["RUNS_LATER_QUALIFIED_WITHOUT_NEW_EVENT"] += 1
+        if present_run_had_early_event and present_run_later_qualified_without_event:
+            present_run_counts["POTENTIAL_MOVING_GOALPOST_RUNS"] += 1
+        in_present_run = False
+        previous_present_gate = None
+        previous_present_target = None
+        present_run_had_early_event = False
+        present_run_later_qualified_without_event = False
+
     decision_started = perf_counter()
     st_present = 0
     st_qualified = 0
@@ -327,6 +354,7 @@ def main() -> None:
             st_present += 1
             stage_counts[_value(scenario.stage)] += 1
             attribution = attribute_entry_bottlenecks(scenario)
+            gate_label = "NONE" if scenario.stage is ScenarioStage.QUALIFIED else attribution.label
             if scenario.stage is ScenarioStage.QUALIFIED:
                 st_qualified += 1
                 gate_sets["NONE"] += 1
@@ -336,6 +364,52 @@ def main() -> None:
                     single_family[attribution.label] += 1
                 for token in attribution.tokens:
                     token_counts[token] += 1
+
+            if not in_present_run:
+                present_run_id += 1
+                in_present_run = True
+                present_run_counts["PRESENT_RUN_STARTS"] += 1
+            target_identity = scenario.active_target_identity
+            target_changed = (
+                previous_present_target is not None
+                and target_identity != previous_present_target
+            )
+            gate_changed = (
+                previous_present_gate is not None
+                and gate_label != previous_present_gate
+            )
+            if target_changed:
+                present_run_counts["TARGET_IDENTITY_CHANGES_INSIDE_PRESENT_RUN"] += 1
+            if gate_changed:
+                present_run_counts["GATE_SET_CHANGES_INSIDE_PRESENT_RUN"] += 1
+            if (
+                previous_present_gate is None
+                or gate_changed
+                or target_changed
+                or event is not None
+                or scenario.stage is ScenarioStage.QUALIFIED
+            ):
+                present_run_transitions.append(
+                    {
+                        "run_id": present_run_id,
+                        "as_of": str(snapshot.as_of),
+                        "stage": _value(scenario.stage),
+                        "gate_set": gate_label,
+                        "tokens": list(attribution.tokens),
+                        "target_identity": target_identity,
+                        "fresh_entry_event": event is not None,
+                    }
+                )
+            if event is not None and scenario.stage is not ScenarioStage.QUALIFIED:
+                present_run_had_early_event = True
+            if (
+                present_run_had_early_event
+                and scenario.stage is ScenarioStage.QUALIFIED
+                and event is None
+            ):
+                present_run_later_qualified_without_event = True
+            previous_present_gate = gate_label
+            previous_present_target = target_identity
 
             key = diagnostic_episode_key(scenario)
             if key != current_episode_key:
@@ -351,6 +425,7 @@ def main() -> None:
             ):
                 episode_later_qualified_without_event = True
         else:
+            close_present_run()
             if current_episode_key is not None:
                 close_episode()
                 current_episode_key = None
@@ -403,6 +478,7 @@ def main() -> None:
         )
 
     close_episode()
+    close_present_run()
     decision_seconds = perf_counter() - decision_started
 
     print("=" * 76)
@@ -431,6 +507,7 @@ def main() -> None:
     _print_counter("FRESH EVENT GATE SET WHEN NOT QUALIFIED", event_gate_sets, top=args.top)
     _print_counter("ARBITER SELECTION WHEN FRESH EVENT EXISTS", arbiter_when_event, top=args.top)
     _print_counter("TARGET-CONTEXT EPISODE PROXY", episode_counts, top=args.top)
+    _print_counter("CONTIGUOUS ST-PRESENT RUN PROXY", present_run_counts, top=args.top)
 
     if args.json_out is not None:
         payload = {
@@ -452,6 +529,8 @@ def main() -> None:
             "fresh_event_details": fresh_event_details,
             "arbiter_when_event": dict(arbiter_when_event),
             "target_context_episode_proxy": dict(episode_counts),
+            "contiguous_present_run_proxy": dict(present_run_counts),
+            "contiguous_present_run_transitions": present_run_transitions,
             "diagnostic_only": True,
         }
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
