@@ -267,7 +267,7 @@ def test_pullback_invalidation_becomes_canonical_exit_ready_before_full_bearish_
         canonical_stage=canonical.stage,
     )
 
-    assert canonical.action is DecisionAction.HOLD
+    assert canonical.action is DecisionAction.SELL
     assert canonical.stage is ExitStage.EXIT_READY
     assert canonical.economic_exit_family is STExitFamily.PROTECTIVE_EXIT
     assert canonical.execution_event_consumed is False
