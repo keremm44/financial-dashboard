@@ -148,6 +148,30 @@ def test_harvest_can_escalate_to_protective_but_protective_cannot_downgrade():
     assert attempted_downgrade.st_exit_intent == protective.st_exit_intent
 
 
+def test_terminal_intent_cannot_predate_entry_or_move_backward_in_time():
+    with pytest.raises(ValueError, match="cannot predate trade entry"):
+        transition_st_exit_intent(
+            _open_state(),
+            STExitFamily.PROFIT_HARVEST,
+            as_of=ENTRY - pd.Timedelta(minutes=1),
+            reasons=("INVALID_PRE_ENTRY_INTENT",),
+        )
+
+    harvested = transition_st_exit_intent(
+        _open_state(),
+        STExitFamily.PROFIT_HARVEST,
+        as_of=T2,
+        reasons=("ST_CONSUMED_POLICY_COMMITTED",),
+    )
+    with pytest.raises(ValueError, match="cannot move backward in time"):
+        transition_st_exit_intent(
+            harvested,
+            STExitFamily.PROTECTIVE_EXIT,
+            as_of=T1,
+            reasons=("STALE_INVALIDATION",),
+        )
+
+
 def test_terminal_intent_does_not_change_exit_stage_or_execution_timing():
     committed = transition_st_exit_intent(
         _open_state(stage=ExitStage.MONITOR),
@@ -210,6 +234,24 @@ def test_confirmed_sell_copies_terminal_reason_to_closed_record_without_pnl_infe
         "MISSION_COMPLETE_NO_NEW_EXPANSION",
     )
     assert not hasattr(closed, "pnl")
+
+
+def test_confirmed_sell_cannot_time_travel_before_terminal_intent():
+    ready = transition_st_exit_intent(
+        _open_state(stage=ExitStage.EXIT_READY),
+        STExitFamily.PROTECTIVE_EXIT,
+        as_of=T2,
+        reasons=("ST_THESIS_INVALIDATED",),
+    )
+
+    with pytest.raises(ValueError, match="execution cannot predate terminal intent"):
+        transition_trade_lifecycle(
+            ready,
+            _decision(DecisionAction.SELL),
+            as_of=T1,
+            exit_stage=ExitStage.EXIT_READY,
+            exit_execution_confirmed=True,
+        )
 
 
 def test_open_intent_and_closed_reason_round_trip_restart_exactly(tmp_path):
