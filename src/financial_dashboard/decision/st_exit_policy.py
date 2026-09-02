@@ -162,7 +162,6 @@ def assess_st_canonical_exit(
                 family=STExitFamily.PROTECTIVE_EXIT,
                 reasons=shadow.reasons,
                 shadow=shadow,
-                persisted_lineage=existing.source_lineage,
             )
         return _terminal_result(
             family=STExitFamily.PROFIT_HARVEST,
