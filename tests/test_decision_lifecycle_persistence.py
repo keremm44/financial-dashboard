@@ -22,6 +22,7 @@ from financial_dashboard.decision.persistent_lifecycle_replay import PersistentC
 from financial_dashboard.decision.position_metadata import PositionEntryMetadata, STTradeMemory
 from financial_dashboard.decision.scenario import ScenarioKind, ScenarioPresence, ScenarioStage
 from financial_dashboard.decision.st_economic_history import STEconomicHistory
+from financial_dashboard.decision.st_exit_intent import STExitFamily
 from financial_dashboard.decision.st_thesis_identity import STEconomicMission, STThesisFamily
 from financial_dashboard.decision.structural import DecisionHorizon, StructuralDirection
 
@@ -82,19 +83,23 @@ class _Snapshot:
 
     def position_exit_decision(self, state, *, execution_event=None):
         CALLS.append(("exit", self.as_of))
+        terminal = self.exit_action is DecisionAction.SELL
         action = self.exit_action
-        if action is DecisionAction.SELL and execution_event is None:
+        if terminal and execution_event is None:
             action = DecisionAction.HOLD
         return SimpleNamespace(
             action=action,
             entry_horizon=state.entry_metadata.entry_horizon,
             as_of=self.as_of,
-            stage=ExitStage.EXIT_READY if self.exit_action is DecisionAction.SELL else ExitStage.MONITOR,
+            stage=ExitStage.EXIT_READY if terminal else ExitStage.MONITOR,
             execution_event_consumed=action is DecisionAction.SELL,
             reasons=("EXIT",),
             blockers=(),
             waiting_for=(),
             source_lineage=("exit:lineage",),
+            economic_exit_family=STExitFamily.PROTECTIVE_EXIT if terminal else None,
+            economic_reasons=("PERSISTENCE_FIXTURE_TERMINAL_EXIT",) if terminal else (),
+            economic_source_lineage=("exit:lineage",) if terminal else (),
         )
 
 
