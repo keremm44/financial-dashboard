@@ -110,7 +110,8 @@ GATE_REGISTRY: tuple[GateDefinition, ...] = (
     GateDefinition("LONG_TERM_SCENARIO_PRESENCE_TO_RESOLVE", GateAuthority.ARBITER, GateSemantic.WAIT, "scenario"),
     GateDefinition("SHORT_TERM_SCENARIO_PRESENCE_TO_RESOLVE", GateAuthority.ARBITER, GateSemantic.WAIT, "scenario"),
 
-    # Fresh execution/action capability.
+    # Fresh execution/action capability. Harvest quality patience is an execution
+    # lifecycle wait, not a new market/timing confirmation gate.
     GateDefinition("ACTION_SIDE_NOT_PERMITTED:{}", GateAuthority.ACTION_CAPABILITY, GateSemantic.HARD_BLOCK, "action_capability"),
     GateDefinition("{}:EXECUTION_TRIGGER_DATA", GateAuthority.EXECUTION, GateSemantic.WAIT, "execution"),
     GateDefinition("NEW_EXECUTION_EVENT", GateAuthority.EXECUTION, GateSemantic.WAIT, "execution"),
@@ -118,6 +119,7 @@ GATE_REGISTRY: tuple[GateDefinition, ...] = (
     GateDefinition("FRESH_LONG_EXIT_EXECUTION_EVENT", GateAuthority.EXECUTION, GateSemantic.WAIT, "execution"),
     GateDefinition("{}:LONG_EXIT_EXECUTION_DATA", GateAuthority.EXECUTION, GateSemantic.WAIT, "execution"),
     GateDefinition("NEW_LONG_EXIT_EXECUTION_EVENT", GateAuthority.EXECUTION, GateSemantic.WAIT, "execution"),
+    GateDefinition("HARVEST_EXIT_QUALITY_WINDOW", GateAuthority.EXECUTION, GateSemantic.WAIT, "execution"),
 
     # Persistent position ownership recovery is not a market-direction gate.
     GateDefinition("POSITION_ENTRY_METADATA_TO_RECOVER", GateAuthority.POSITION_LIFECYCLE, GateSemantic.WAIT, "position_lifecycle"),
