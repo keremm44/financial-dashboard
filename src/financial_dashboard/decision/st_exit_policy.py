@@ -143,7 +143,11 @@ def assess_st_canonical_exit(
     if metadata is None or metadata.entry_horizon is not DecisionHorizon.SHORT_TERM:
         raise ValueError("canonical ST exit policy requires short-term entry ownership")
 
-    shadow = assess_st_harvest_shadow(snapshot, state, calibration=calibration)
+    shadow = (
+        assess_st_harvest_shadow(snapshot, state)
+        if calibration is None
+        else assess_st_harvest_shadow(snapshot, state, calibration=calibration)
+    )
     existing = state.st_exit_intent
 
     if existing is not None and existing.family is STExitFamily.PROTECTIVE_EXIT:
