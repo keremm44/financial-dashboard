@@ -25,6 +25,7 @@ from financial_dashboard.decision.position_metadata import (
     STTradeMemory,
 )
 from financial_dashboard.decision.scenario import ScenarioKind
+from financial_dashboard.decision.st_exit_intent import STExitFamily
 from financial_dashboard.decision.st_protective import (
     STProtectiveShadowState,
     STProtectiveTimingRelation,
@@ -249,7 +250,7 @@ def _snapshot(
     )
 
 
-def test_pullback_invalidation_can_shadow_before_full_bearish_structure_without_changing_canonical_action():
+def test_pullback_invalidation_becomes_canonical_exit_ready_before_full_bearish_structure():
     state = _state(
         STThesisFamily.PULLBACK_CONTINUATION,
         anchor_identity="FVG:pullback-zone",
@@ -267,10 +268,11 @@ def test_pullback_invalidation_can_shadow_before_full_bearish_structure_without_
     )
 
     assert canonical.action is DecisionAction.HOLD
-    assert canonical.stage is ExitStage.MONITOR
+    assert canonical.stage is ExitStage.EXIT_READY
+    assert canonical.economic_exit_family is STExitFamily.PROTECTIVE_EXIT
     assert canonical.execution_event_consumed is False
     assert shadow.state is STProtectiveShadowState.PROTECTIVE_INTENT
-    assert shadow.timing_relation is STProtectiveTimingRelation.SHADOW_EARLIER
+    assert shadow.timing_relation is STProtectiveTimingRelation.ALIGNED
     assert shadow.reasons == ("ST_PULLBACK_CONTINUATION_INVALIDATED",)
     assert set(shadow.primary_evidence) >= {
         "DEFENDED_GROUND_LOST",
@@ -407,7 +409,7 @@ def test_environment_shock_alone_has_no_protective_authority():
     assert shadow.primary_evidence == ()
 
 
-def test_timing_report_can_show_canonical_exit_ready_before_shadow_without_changing_canonical_hold_gate():
+def test_structure_only_bearish_state_no_longer_overrides_thesis_specific_st_policy():
     state = _state(
         STThesisFamily.FAILED_SELL_RECLAIM,
         anchor_identity="SR_FAILED_SELL:7",
@@ -422,8 +424,9 @@ def test_timing_report_can_show_canonical_exit_ready_before_shadow_without_chang
     canonical = assess_position_exit_decision(snapshot, state)
     shadow = assess_st_protective_shadow(snapshot, state, canonical_stage=canonical.stage)
 
-    assert canonical.stage is ExitStage.EXIT_READY
+    assert canonical.stage is ExitStage.MONITOR
     assert canonical.action is DecisionAction.HOLD
+    assert canonical.economic_exit_family is None
     assert canonical.execution_event_consumed is False
     assert shadow.state is STProtectiveShadowState.NO_INTENT
-    assert shadow.timing_relation is STProtectiveTimingRelation.CANONICAL_EARLIER
+    assert shadow.timing_relation is STProtectiveTimingRelation.BOTH_INACTIVE
