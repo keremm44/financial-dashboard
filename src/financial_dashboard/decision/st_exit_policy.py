@@ -21,12 +21,10 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class STCanonicalExitAssessment:
-    """Canonical Step-8 economic exit result for one already-open ST trade.
+    """Canonical economic exit result for one already-open ST trade.
 
     The assessment answers *why* the current ST trade should be held or terminated.
-    It deliberately does not change the Step-9 execution contract: terminal outcomes
-    only arm the existing EXIT_READY path, which still requires the current fresh
-    execution event until execution urgency is changed in a later step.
+    Execution urgency belongs to Step 9 and is deliberately evaluated separately.
     """
 
     exit_family: STExitFamily | None
@@ -91,7 +89,7 @@ def _terminal_result(
             else PositionHealth.PROTECTED
         ),
         reasons=tuple(dict.fromkeys(reason for reason in reasons if reason)),
-        waiting_for=("FRESH_LONG_EXIT_EXECUTION_EVENT",),
+        waiting_for=(),
         source_refs=refs,
         source_lineage=lineage,
         shadow=shadow,
@@ -190,7 +188,7 @@ def assess_st_canonical_exit(
 def as_long_exit_assessment(
     assessment: STCanonicalExitAssessment,
 ) -> LongExitAssessment:
-    """Adapt economic ST policy to the existing execution-stage contract."""
+    """Adapt the economic ST stage to the generic execution-stage shape."""
 
     return LongExitAssessment(
         stage=assessment.stage,

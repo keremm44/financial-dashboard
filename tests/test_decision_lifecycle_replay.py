@@ -9,6 +9,7 @@ from financial_dashboard.decision.execution import ExecutionTriggerEvent, Execut
 from financial_dashboard.decision.lifecycle import ExitStage, PositionState, TradeLifecycleState
 from financial_dashboard.decision.lifecycle_replay import replay_canonical_trade_lifecycle
 from financial_dashboard.decision.scenario import ScenarioKind, ScenarioPresence, ScenarioStage
+from financial_dashboard.decision.st_exit_execution import STExitExecutionUrgency
 from financial_dashboard.decision.st_exit_intent import STExitFamily
 from financial_dashboard.decision.structural import DecisionHorizon, StructuralDirection
 
@@ -85,23 +86,25 @@ class _Snapshot:
         assert state.position is PositionState.OPEN
         assert state.entry_metadata is not None
         terminal = self.exit_action is DecisionAction.SELL
-        action = self.exit_action
-        if terminal and execution_event is None:
-            action = DecisionAction.HOLD
         stage = ExitStage.EXIT_READY if terminal else ExitStage.MONITOR
         return SimpleNamespace(
-            action=action,
+            action=DecisionAction.SELL if terminal else DecisionAction.HOLD,
             entry_horizon=state.entry_metadata.entry_horizon,
             as_of=self.as_of,
             stage=stage,
-            execution_event_consumed=action is DecisionAction.SELL,
+            execution_event_consumed=False,
             reasons=("EXIT_TEST",),
             blockers=(),
-            waiting_for=() if action is DecisionAction.SELL else ("EXIT_CONDITION",),
+            waiting_for=() if terminal else ("EXIT_CONDITION",),
             source_lineage=("exit:test",),
             economic_exit_family=STExitFamily.PROTECTIVE_EXIT if terminal else None,
             economic_reasons=("REPLAY_FIXTURE_TERMINAL_EXIT",) if terminal else (),
             economic_source_lineage=("exit:test",) if terminal else (),
+            execution_urgency=(
+                STExitExecutionUrgency.PROTECTIVE_IMMEDIATE
+                if terminal
+                else STExitExecutionUrgency.NOT_ARMED
+            ),
         )
 
 
@@ -139,6 +142,7 @@ def test_canonical_replay_routes_flat_only_to_entry_and_open_only_to_exit():
     assert result.rows[0].current_state.entry_metadata is not None
     assert result.rows[0].current_state.entry_metadata.entry_horizon is DecisionHorizon.SHORT_TERM
     assert result.rows[1].current_state.entry_metadata == result.rows[0].current_state.entry_metadata
+    assert result.rows[2].exit_decision.execution_event_consumed is False
     assert result.rows[2].current_state.position is PositionState.FLAT
     assert result.rows[2].current_state.last_closed_st_exit is not None
     assert result.rows[2].current_state.last_closed_st_exit.family is STExitFamily.PROTECTIVE_EXIT

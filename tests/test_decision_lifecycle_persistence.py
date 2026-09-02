@@ -22,6 +22,7 @@ from financial_dashboard.decision.persistent_lifecycle_replay import PersistentC
 from financial_dashboard.decision.position_metadata import PositionEntryMetadata, STTradeMemory
 from financial_dashboard.decision.scenario import ScenarioKind, ScenarioPresence, ScenarioStage
 from financial_dashboard.decision.st_economic_history import STEconomicHistory
+from financial_dashboard.decision.st_exit_execution import STExitExecutionUrgency
 from financial_dashboard.decision.st_exit_intent import STExitFamily
 from financial_dashboard.decision.st_thesis_identity import STEconomicMission, STThesisFamily
 from financial_dashboard.decision.structural import DecisionHorizon, StructuralDirection
@@ -84,15 +85,12 @@ class _Snapshot:
     def position_exit_decision(self, state, *, execution_event=None):
         CALLS.append(("exit", self.as_of))
         terminal = self.exit_action is DecisionAction.SELL
-        action = self.exit_action
-        if terminal and execution_event is None:
-            action = DecisionAction.HOLD
         return SimpleNamespace(
-            action=action,
+            action=DecisionAction.SELL if terminal else DecisionAction.HOLD,
             entry_horizon=state.entry_metadata.entry_horizon,
             as_of=self.as_of,
             stage=ExitStage.EXIT_READY if terminal else ExitStage.MONITOR,
-            execution_event_consumed=action is DecisionAction.SELL,
+            execution_event_consumed=False,
             reasons=("EXIT",),
             blockers=(),
             waiting_for=(),
@@ -100,6 +98,11 @@ class _Snapshot:
             economic_exit_family=STExitFamily.PROTECTIVE_EXIT if terminal else None,
             economic_reasons=("PERSISTENCE_FIXTURE_TERMINAL_EXIT",) if terminal else (),
             economic_source_lineage=("exit:lineage",) if terminal else (),
+            execution_urgency=(
+                STExitExecutionUrgency.PROTECTIVE_IMMEDIATE
+                if terminal
+                else STExitExecutionUrgency.NOT_ARMED
+            ),
         )
 
 
@@ -193,6 +196,7 @@ def test_persistent_runner_processes_only_new_tail_and_preserves_ownership(tmp_p
     assert second.resumed is True
     assert second.processed_count == 1
     assert [row.action for row in second.replay.rows] == [DecisionAction.SELL]
+    assert second.replay.rows[0].exit_decision.execution_event_consumed is False
     assert second.replay.initial_state.entry_metadata == frozen
     assert second.replay.final_state.position is PositionState.FLAT
     assert CALLS == [("exit", t3)]
@@ -246,6 +250,9 @@ def test_persistent_resume_reconstructs_same_action_and_state_chain_as_cold_repl
     reconstructed_rows = (*prefix.replay.rows, *resumed.replay.rows)
     assert [row.action for row in reconstructed_rows] == [row.action for row in cold.rows]
     assert [row.current_state for row in reconstructed_rows] == [row.current_state for row in cold.rows]
+    assert [row.exit_decision.execution_event_consumed for row in reconstructed_rows if row.exit_decision is not None] == [
+        row.exit_decision.execution_event_consumed for row in cold.rows if row.exit_decision is not None
+    ]
     assert resumed.replay.final_state == cold.final_state
 
 

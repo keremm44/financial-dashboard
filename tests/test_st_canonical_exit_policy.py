@@ -13,6 +13,7 @@ from financial_dashboard.decision.lifecycle import ExitStage, PositionState, Tra
 from financial_dashboard.decision.position_metadata import PositionEntryMetadata, STTradeMemory
 from financial_dashboard.decision.scenario import ScenarioKind
 from financial_dashboard.decision.st_economic_history import STEconomicHistory
+from financial_dashboard.decision.st_exit_execution import STExitExecutionUrgency
 from financial_dashboard.decision.st_exit_intent import STExitFamily
 from financial_dashboard.decision.st_exit_policy import assess_st_canonical_exit
 from financial_dashboard.decision.st_harvest import (
@@ -117,7 +118,7 @@ def test_thesis_specific_protective_precedence_becomes_canonical_terminal_exit(m
     assert result.stage is ExitStage.EXIT_READY
     assert result.position_health is PositionHealth.PRESSURED
     assert result.reasons == ("ST_BREAKOUT_ACCEPTANCE_INVALIDATED",)
-    assert result.waiting_for == ("FRESH_LONG_EXIT_EXECUTION_EVENT",)
+    assert result.waiting_for == ()
 
 
 def test_full_consumed_story_becomes_profit_harvest(monkeypatch):
@@ -132,6 +133,7 @@ def test_full_consumed_story_becomes_profit_harvest(monkeypatch):
     assert result.exit_family is STExitFamily.PROFIT_HARVEST
     assert result.stage is ExitStage.EXIT_READY
     assert result.position_health is PositionHealth.PROTECTED
+    assert result.waiting_for == ()
 
 
 def test_real_healthy_base_remains_hold_and_preserves_nonterminal_stage(monkeypatch):
@@ -215,7 +217,7 @@ def test_committed_protective_cannot_downgrade_to_harvest(monkeypatch):
 
 
 def test_st_compose_has_no_structure_only_fallback():
-    with pytest.raises(ValueError, match="requires Step-8 economic assessment"):
+    with pytest.raises(ValueError, match="requires economic assessment"):
         compose_position_exit_decision(
             _open_state(),
             SimpleNamespace(),
@@ -224,7 +226,7 @@ def test_st_compose_has_no_structure_only_fallback():
         )
 
 
-def test_terminal_economic_exit_arms_existing_execution_gate_without_step9_bypass(monkeypatch):
+def test_protective_terminal_exit_bypasses_timing_confirmation(monkeypatch):
     _patch_shadow(
         monkeypatch,
         _shadow(
@@ -234,19 +236,22 @@ def test_terminal_economic_exit_arms_existing_execution_gate_without_step9_bypas
     )
     economic = assess_st_canonical_exit(_snapshot(), _open_state())
 
-    waiting = compose_position_exit_decision(
+    direct = compose_position_exit_decision(
         _open_state(),
         SimpleNamespace(),
         as_of=NOW,
-        channel_available=True,
+        channel_available=False,
         st_economic_exit=economic,
     )
-    assert waiting.action is DecisionAction.HOLD
-    assert waiting.stage is ExitStage.EXIT_READY
-    assert waiting.execution.state is ExitExecutionState.ABSENT
-    assert waiting.economic_exit_family is STExitFamily.PROTECTIVE_EXIT
+    assert direct.action is DecisionAction.SELL
+    assert direct.stage is ExitStage.EXIT_READY
+    assert direct.execution.state is ExitExecutionState.ABSENT
+    assert direct.execution_urgency is STExitExecutionUrgency.PROTECTIVE_IMMEDIATE
+    assert direct.execution_event_consumed is False
+    assert direct.waiting_for == ()
+    assert direct.economic_exit_family is STExitFamily.PROTECTIVE_EXIT
 
-    sold = compose_position_exit_decision(
+    with_event = compose_position_exit_decision(
         _open_state(),
         SimpleNamespace(),
         as_of=NOW,
@@ -254,9 +259,9 @@ def test_terminal_economic_exit_arms_existing_execution_gate_without_step9_bypas
         channel_available=True,
         st_economic_exit=economic,
     )
-    assert sold.action is DecisionAction.SELL
-    assert sold.execution.state is ExitExecutionState.CONFIRMED
-    assert sold.execution_event_consumed is True
+    assert with_event.action is DecisionAction.SELL
+    assert with_event.execution.state is ExitExecutionState.ABSENT
+    assert with_event.execution_event_consumed is False
 
 
 def test_hold_policy_does_not_consume_premature_exit_event(monkeypatch):
@@ -277,9 +282,10 @@ def test_hold_policy_does_not_consume_premature_exit_event(monkeypatch):
     assert decision.execution.state is ExitExecutionState.NOT_ARMED
     assert decision.execution_event_consumed is False
     assert decision.economic_exit_family is None
+    assert decision.execution_urgency is STExitExecutionUrgency.NOT_ARMED
 
 
-def test_lifecycle_commits_terminal_reason_before_execution_and_copies_it_on_sell(monkeypatch):
+def test_lifecycle_commits_harvest_reason_then_releases_without_new_confirmation(monkeypatch):
     _patch_shadow(
         monkeypatch,
         _shadow(
@@ -319,7 +325,7 @@ def test_lifecycle_commits_terminal_reason_before_execution_and_copies_it_on_sel
         stage=ExitStage.EXIT_READY,
         position_health=PositionHealth.PROTECTED,
         reasons=armed.current.st_exit_intent.reasons,
-        waiting_for=("FRESH_LONG_EXIT_EXECUTION_EVENT",),
+        waiting_for=(),
         source_refs=(),
         source_lineage=armed.current.st_exit_intent.source_lineage,
     )
@@ -331,6 +337,8 @@ def test_lifecycle_commits_terminal_reason_before_execution_and_copies_it_on_sel
         channel_available=True,
         st_economic_exit=sticky_economic,
     )
+    assert sold.execution_urgency is STExitExecutionUrgency.HARVEST_RELEASE_DUE
+    assert sold.execution_event_consumed is False
     closed = transition_position_exit_lifecycle(armed.current, sold).current
 
     assert closed.position is PositionState.FLAT

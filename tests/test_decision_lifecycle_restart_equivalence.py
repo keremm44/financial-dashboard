@@ -18,6 +18,7 @@ from financial_dashboard.decision.lifecycle_replay import replay_canonical_trade
 from financial_dashboard.decision.persistent_lifecycle_replay import PersistentCanonicalLifecycleReplayRunner
 from financial_dashboard.decision.position_metadata import PositionEntryMetadata
 from financial_dashboard.decision.scenario import ScenarioKind, ScenarioPresence, ScenarioStage
+from financial_dashboard.decision.st_exit_execution import STExitExecutionUrgency
 from financial_dashboard.decision.st_exit_intent import STExitFamily
 from financial_dashboard.decision.structural import DecisionHorizon, StructuralDirection
 from financial_dashboard.decision.trade_exit import (
@@ -87,23 +88,14 @@ class _Snapshot:
 
     def position_exit_decision(self, state, *, execution_event=None):
         terminal = self.exit_stage is ExitStage.EXIT_READY
-        action = self.exit_action
-        if action is DecisionAction.SELL and execution_event is None:
-            action = DecisionAction.HOLD
-        if not terminal:
-            execution_state = ExitExecutionState.NOT_ARMED
-        elif action is DecisionAction.SELL:
-            execution_state = ExitExecutionState.CONFIRMED
-        else:
-            execution_state = ExitExecutionState.ABSENT
         execution = LongExitExecutionAssessment(
-            state=execution_state,
+            state=ExitExecutionState.ABSENT if terminal else ExitExecutionState.NOT_ARMED,
             reasons=("EXECUTION",),
             waiting_for=(),
             source_refs=(),
         )
         return SimpleNamespace(
-            action=action,
+            action=DecisionAction.SELL if terminal else DecisionAction.HOLD,
             entry_horizon=state.entry_metadata.entry_horizon,
             as_of=self.as_of,
             stage=self.exit_stage,
@@ -113,7 +105,7 @@ class _Snapshot:
                 else PositionHealth.PRESSURED
             ),
             execution=execution,
-            execution_event_consumed=action is DecisionAction.SELL,
+            execution_event_consumed=False,
             reasons=("EXIT",),
             blockers=(),
             waiting_for=(),
@@ -121,6 +113,11 @@ class _Snapshot:
             economic_exit_family=STExitFamily.PROTECTIVE_EXIT if terminal else None,
             economic_reasons=("RESTART_FIXTURE_TERMINAL_EXIT",) if terminal else (),
             economic_source_lineage=("exit:restart",) if terminal else (),
+            execution_urgency=(
+                STExitExecutionUrgency.PROTECTIVE_IMMEDIATE
+                if terminal
+                else STExitExecutionUrgency.NOT_ARMED
+            ),
         )
 
 
@@ -175,6 +172,7 @@ def test_persistent_resume_matches_full_canonical_event_payload_and_markers(tmp_
     assert resumed.replay.rows[0].audit_markers.exit_watch_at is None
     assert resumed.replay.final_audit_markers.exit_ready_at is None
     assert resumed.replay.final_audit_markers.exit_ready_price is None
+    assert resumed.replay.rows[-1].exit_decision.execution_event_consumed is False
 
     reconstructed_events = (
         *canonical_decision_events_from_replay(prefix.replay),
