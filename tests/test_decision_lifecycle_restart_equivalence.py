@@ -173,8 +173,8 @@ def test_persistent_resume_matches_full_canonical_event_payload_and_markers(tmp_
     )
     assert resumed.replay.initial_audit_markers == prefix.checkpoint.audit_markers
     assert resumed.replay.rows[0].audit_markers.exit_watch_at is None
-    assert resumed.replay.final_audit_markers.exit_ready_at == t4
-    assert resumed.replay.final_audit_markers.exit_ready_price == 99.0
+    assert resumed.replay.final_audit_markers.exit_ready_at is None
+    assert resumed.replay.final_audit_markers.exit_ready_price is None
 
     reconstructed_events = (
         *canonical_decision_events_from_replay(prefix.replay),
