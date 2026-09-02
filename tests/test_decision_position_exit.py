@@ -13,6 +13,7 @@ from financial_dashboard.decision.exit import (
 from financial_dashboard.decision.lifecycle import ExitStage, PositionState, TradeLifecycleState
 from financial_dashboard.decision.position_metadata import PositionEntryMetadata
 from financial_dashboard.decision.scenario import ScenarioKind
+from financial_dashboard.decision.st_exit_execution import STExitExecutionUrgency
 from financial_dashboard.decision.st_exit_intent import STExitFamily
 from financial_dashboard.decision.structural import (
     DecisionHorizon,
@@ -106,7 +107,7 @@ def _st_economic(family: STExitFamily | None = None):
             else PositionHealth.HEALTHY
         ),
         reasons=("ST_ECONOMIC_EXIT_TEST",) if terminal else ("ST_ECONOMIC_HOLD_TEST",),
-        waiting_for=("FRESH_LONG_EXIT_EXECUTION_EVENT",) if terminal else (),
+        waiting_for=(),
         source_refs=(),
         source_lineage=("economic:test",) if terminal else (),
     )
@@ -145,7 +146,7 @@ def test_long_term_entry_keeps_existing_lt_exit_authority():
     assert "LT_LONG_INTACT_ST_COUNTER_REACTION" in decision.reasons
 
 
-def test_short_term_terminal_economic_exit_arms_existing_execution_gate():
+def test_short_term_protective_exit_is_immediate_without_execution_gate():
     as_of = pd.Timestamp("2026-01-05 12:00")
     state = _state(DecisionHorizon.SHORT_TERM)
     structural = _structural_snapshot(
@@ -156,29 +157,31 @@ def test_short_term_terminal_economic_exit_arms_existing_execution_gate():
     )
     economic = _st_economic(STExitFamily.PROTECTIVE_EXIT)
 
-    waiting = compose_position_exit_decision(
+    decision = compose_position_exit_decision(
         state,
         structural,
         as_of=as_of,
         st_economic_exit=economic,
     )
-    assert waiting.action is DecisionAction.HOLD
-    assert waiting.entry_horizon is DecisionHorizon.SHORT_TERM
-    assert waiting.stage is ExitStage.EXIT_READY
-    assert waiting.economic_exit_family is STExitFamily.PROTECTIVE_EXIT
-    assert waiting.execution.state is ExitExecutionState.ABSENT
-    assert waiting.waiting_for == ("FRESH_LONG_EXIT_EXECUTION_EVENT",)
+    assert decision.action is DecisionAction.SELL
+    assert decision.entry_horizon is DecisionHorizon.SHORT_TERM
+    assert decision.stage is ExitStage.EXIT_READY
+    assert decision.economic_exit_family is STExitFamily.PROTECTIVE_EXIT
+    assert decision.execution_urgency is STExitExecutionUrgency.PROTECTIVE_IMMEDIATE
+    assert decision.execution.state is ExitExecutionState.ABSENT
+    assert decision.execution_event_consumed is False
+    assert decision.waiting_for == ()
 
-    confirmed = compose_position_exit_decision(
+    with_event = compose_position_exit_decision(
         state,
         structural,
         as_of=as_of,
         execution_event=_exit_event(as_of),
         st_economic_exit=economic,
     )
-    assert confirmed.action is DecisionAction.SELL
-    assert confirmed.execution.state is ExitExecutionState.CONFIRMED
-    assert confirmed.execution_event_consumed is True
+    assert with_event.action is DecisionAction.SELL
+    assert with_event.execution.state is ExitExecutionState.ABSENT
+    assert with_event.execution_event_consumed is False
 
 
 def test_short_term_structure_transition_does_not_arm_without_economic_exit():
@@ -201,6 +204,7 @@ def test_short_term_structure_transition_does_not_arm_without_economic_exit():
     assert decision.execution.state is ExitExecutionState.NOT_ARMED
     assert decision.execution_event_consumed is False
     assert decision.economic_exit_family is None
+    assert decision.execution_urgency is STExitExecutionUrgency.NOT_ARMED
     assert "ST_ECONOMIC_HOLD_TEST" in decision.reasons
 
 
@@ -242,7 +246,7 @@ def test_missing_legacy_entry_metadata_fails_closed_without_guessing_horizon():
     assert decision.waiting_for == ("POSITION_ENTRY_METADATA_TO_RECOVER",)
 
 
-def test_confirmed_step8_economic_exit_closes_position_and_preserves_reason():
+def test_confirmed_harvest_quality_event_closes_position_and_preserves_reason():
     as_of = pd.Timestamp("2026-01-05 12:00")
     state = _state(DecisionHorizon.SHORT_TERM)
     decision = compose_position_exit_decision(
@@ -262,7 +266,7 @@ def test_confirmed_step8_economic_exit_closes_position_and_preserves_reason():
     assert transition.current.last_closed_st_exit.reasons == ("ST_ECONOMIC_EXIT_TEST",)
 
 
-def test_failed_exit_event_is_consumed_but_does_not_sell():
+def test_failed_timing_event_cannot_veto_or_be_consumed_by_protective_exit():
     as_of = pd.Timestamp("2026-01-05 12:00")
     decision = compose_position_exit_decision(
         _state(DecisionHorizon.SHORT_TERM),
@@ -272,14 +276,12 @@ def test_failed_exit_event_is_consumed_but_does_not_sell():
         st_economic_exit=_st_economic(STExitFamily.PROTECTIVE_EXIT),
     )
 
-    assert decision.action is DecisionAction.HOLD
+    assert decision.action is DecisionAction.SELL
     assert decision.stage is ExitStage.EXIT_READY
-    assert decision.execution.state is ExitExecutionState.FAILED
-    assert decision.execution_event_consumed is True
-    assert decision.waiting_for == (
-        "FRESH_LONG_EXIT_EXECUTION_EVENT",
-        "NEW_LONG_EXIT_EXECUTION_EVENT",
-    )
+    assert decision.execution_urgency is STExitExecutionUrgency.PROTECTIVE_IMMEDIATE
+    assert decision.execution.state is ExitExecutionState.ABSENT
+    assert decision.execution_event_consumed is False
+    assert decision.waiting_for == ()
 
 
 def test_exit_transition_rejects_horizon_reclassification():
