@@ -13,12 +13,23 @@ from financial_dashboard.decision.eligibility import EligibilityState, assess_el
 from financial_dashboard.decision.environment import EnvironmentRisk
 from financial_dashboard.decision.opportunity import OpportunityState
 from financial_dashboard.decision.stabil_policy import StabilPolicyEffect
-from financial_dashboard.decision.structural import StructuralDirection, ThesisState
-from financial_dashboard.decision.timing import TimingState
+from financial_dashboard.decision.structural import DecisionHorizon, StructuralDirection, ThesisState
+from financial_dashboard.decision.timing import TimingEntryEffect, TimingState
 
 
-def _structural(*, direction=StructuralDirection.LONG, thesis=ThesisState.INTACT, quality=ContextDataQuality.VALID):
-    return SimpleNamespace(direction=direction, thesis_state=thesis, data_quality=quality)
+def _structural(
+    *,
+    horizon=DecisionHorizon.LONG_TERM,
+    direction=StructuralDirection.LONG,
+    thesis=ThesisState.INTACT,
+    quality=ContextDataQuality.VALID,
+):
+    return SimpleNamespace(
+        horizon=horizon,
+        direction=direction,
+        thesis_state=thesis,
+        data_quality=quality,
+    )
 
 
 def _permission(*, gate=GateState.OPEN, side=PermittedSide.LONG):
@@ -31,9 +42,16 @@ def _permission(*, gate=GateState.OPEN, side=PermittedSide.LONG):
     )
 
 
-def _timing(state=TimingState.READY):
+def _timing(state=TimingState.READY, *, effect=None):
+    if effect is None:
+        effect = (
+            TimingEntryEffect.SUPPORTIVE
+            if state is TimingState.READY
+            else TimingEntryEffect.UNKNOWN
+        )
     return SimpleNamespace(
         state=state,
+        entry_effect=effect,
         waiting_for=() if state is TimingState.READY else (f"WAIT_{state.value}",),
     )
 
@@ -131,9 +149,52 @@ def test_elevated_environment_is_soft_not_automatic_wait_or_block():
     assert "ENVIRONMENT_RISK_ELEVATED_SOFT" in result.reasons
 
 
-def test_developing_timing_is_wait():
-    result = _assess(timing=_timing(TimingState.DEVELOPING))
+def test_lt_developing_timing_remains_wait():
+    result = _assess(timing=_timing(TimingState.DEVELOPING, effect=TimingEntryEffect.NEUTRAL))
     assert result.state is EligibilityState.WAITING
+
+
+def test_st_neutral_developing_timing_does_not_veto_eligibility():
+    result = _assess(
+        structural=_structural(horizon=DecisionHorizon.SHORT_TERM),
+        timing=_timing(TimingState.DEVELOPING, effect=TimingEntryEffect.NEUTRAL),
+    )
+    assert result.state is EligibilityState.ELIGIBLE
+    assert result.waiting_for == ()
+
+
+def test_st_neutral_early_timing_does_not_veto_eligibility():
+    result = _assess(
+        structural=_structural(horizon=DecisionHorizon.SHORT_TERM),
+        timing=_timing(TimingState.EARLY, effect=TimingEntryEffect.NEUTRAL),
+    )
+    assert result.state is EligibilityState.ELIGIBLE
+
+
+def test_st_unavailable_timing_is_not_trading_evidence_or_veto():
+    result = _assess(
+        structural=_structural(horizon=DecisionHorizon.SHORT_TERM),
+        timing=_timing(TimingState.UNAVAILABLE, effect=TimingEntryEffect.UNKNOWN),
+    )
+    assert result.state is EligibilityState.ELIGIBLE
+
+
+def test_st_adverse_timing_defers_current_entry_attempt():
+    result = _assess(
+        structural=_structural(horizon=DecisionHorizon.SHORT_TERM),
+        timing=_timing(TimingState.EARLY, effect=TimingEntryEffect.ADVERSE),
+    )
+    assert result.state is EligibilityState.WAITING
+    assert "WAIT_EARLY" in result.waiting_for
+
+
+def test_st_failed_timing_defers_current_entry_attempt():
+    result = _assess(
+        structural=_structural(horizon=DecisionHorizon.SHORT_TERM),
+        timing=_timing(TimingState.FAILED, effect=TimingEntryEffect.FAILED),
+    )
+    assert result.state is EligibilityState.WAITING
+    assert "WAIT_FAILED" in result.waiting_for
 
 
 def test_transitioning_thesis_waits_without_becoming_opposite_direction():
