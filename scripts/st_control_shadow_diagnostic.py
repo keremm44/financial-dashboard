@@ -187,6 +187,7 @@ def main() -> None:
 
     episode_reports: list[dict[str, Any]] = []
     outcome_state_counts = Counter()
+    outcome_resolution_counts = Counter()
     for episode_id, episode in enumerate(episodes, start=1):
         incumbent = StructuralDirection(episode["incumbent"])
         challenger = StructuralDirection(episode["challenger"])
@@ -202,6 +203,13 @@ def main() -> None:
             challenger=challenger,
             config=engine_config,
         )
+        resolution_index = episode["end_index"] + 1
+        resolution_row = rows[resolution_index] if resolution_index < len(rows) else None
+        resolution_control_state = (
+            None if resolution_row is None else resolution_row["control_state"]
+        )
+        if resolution_control_state is not None:
+            outcome_resolution_counts[f"{outcome}:{resolution_control_state}"] += 1
         unique_states = sorted({row["control_state"] for row in episode_rows})
         for state in unique_states:
             outcome_state_counts[f"{outcome}:{state}"] += 1
@@ -218,6 +226,9 @@ def main() -> None:
                 "incumbent_path": _compress_path(episode_rows, "incumbent_condition"),
                 "challenger_path": _compress_path(episode_rows, "challenger_condition"),
                 "states_seen": unique_states,
+                "resolution_as_of": None if resolution_row is None else resolution_row["as_of"],
+                "resolution_control_state": resolution_control_state,
+                "resolution_roles": [] if resolution_row is None else resolution_row["roles"],
                 "fresh_entry_overlaps": sum(row["fresh_entry_overlap"] for row in episode_rows),
                 "fresh_exit_overlaps": sum(row["fresh_exit_overlap"] for row in episode_rows),
             }
@@ -237,6 +248,7 @@ def main() -> None:
         "entry_overlap_by_control_state": dict(sorted(entry_overlap.items())),
         "exit_overlap_by_control_state": dict(sorted(exit_overlap.items())),
         "outcome_state_presence": dict(sorted(outcome_state_counts.items())),
+        "outcome_resolution_state": dict(sorted(outcome_resolution_counts.items())),
         "episodes": episode_reports,
         "causality_violations": causality_violations,
         "invariants": {
@@ -300,15 +312,28 @@ def main() -> None:
             f"outcome={item['outcome']}"
         )
         print(f"  CONTROL {path}")
+        if item["resolution_control_state"] is None:
+            print("  RESOLUTION RIGHT_CENSORED")
+        else:
+            roles = ",".join(item["resolution_roles"]) or "NONE"
+            print(
+                f"  RESOLUTION next:{item['resolution_control_state']} @ {item['resolution_as_of']} "
+                f"roles={roles}"
+            )
         print(
             "  EXECUTION_OVERLAP "
             f"entry={item['fresh_entry_overlaps']} exit={item['fresh_exit_overlaps']} "
             "(not control evidence)"
         )
 
-    print("\nOUTCOME / CONTROL STATE PRESENCE")
-    print("--------------------------------")
+    print("\nOUTCOME / IN-TRANSITION CONTROL STATE PRESENCE")
+    print("-----------------------------------------------")
     for key, count in sorted(outcome_state_counts.items()):
+        print(f"{key:<64} {count:>4}")
+
+    print("\nOUTCOME / RESOLUTION CONTROL STATE")
+    print("----------------------------------")
+    for key, count in sorted(outcome_resolution_counts.items()):
         print(f"{key:<64} {count:>4}")
 
     print("\nSHADOW BOUNDARY")
