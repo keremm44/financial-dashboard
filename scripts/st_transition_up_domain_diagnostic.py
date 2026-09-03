@@ -31,8 +31,6 @@ CANDIDATE_FAMILIES = (
     "CONTEXT_REVERSAL_UP",
 )
 
-# These pairs are semantically related/reused evidence and should not be interpreted
-# as two independent confirmations even if both are true on the same snapshot.
 DEPENDENT_PAIRS = {
     tuple(sorted(("REACTION_LONG", "REACTION_30M_LONG"))),
     tuple(sorted(("REACTION_LONG", "CONTEXT_REACTION_UP"))),
@@ -51,10 +49,11 @@ def _forward(snapshot_prices: list[float], index: int, bars: int) -> dict[str, f
     future = [float(value) for value in snapshot_prices[index + 1 : index + 1 + bars]]
     if not future or entry <= 0:
         return None
-    ret = (future[-1] / entry - 1.0) * 100.0
-    mfe = (max(future) / entry - 1.0) * 100.0
-    mae = (min(future) / entry - 1.0) * 100.0
-    return {"ret": ret, "mfe": mfe, "mae": mae}
+    return {
+        "ret": (future[-1] / entry - 1.0) * 100.0,
+        "mfe": (max(future) / entry - 1.0) * 100.0,
+        "mae": (min(future) / entry - 1.0) * 100.0,
+    }
 
 
 def _pattern_long(snapshot) -> tuple[bool, bool, str]:
@@ -68,13 +67,8 @@ def _pattern_long(snapshot) -> tuple[bool, bool, str]:
     phase = _value(getattr(row, "phase", "UNAVAILABLE"))
     direction = int(getattr(row, "classic_direction", 0) or 0)
     long_forming = direction > 0 and phase in {
-        "FORMING",
-        "MATURE_COMPRESSION",
-        "BREAK_ATTEMPT",
-        "BREAK_CONFIRMING",
-        "POST_BREAK_RETEST",
-        "BREAK_CONFIRMED",
-        "RETEST_HELD",
+        "FORMING", "MATURE_COMPRESSION", "BREAK_ATTEMPT", "BREAK_CONFIRMING",
+        "POST_BREAK_RETEST", "BREAK_CONFIRMED", "RETEST_HELD",
     }
     long_confirmed = direction > 0 and phase in {"BREAK_CONFIRMED", "RETEST_HELD"}
     return long_forming, long_confirmed, phase
@@ -86,17 +80,19 @@ def _context_long_signals(snapshot) -> tuple[bool, bool, dict[str, str]]:
     reaction_direction = _value(axes.reaction_direction)
     reversal = _value(axes.reversal)
     reversal_direction = _value(axes.reversal_direction)
-    reaction_up = reaction in {"DEVELOPING", "ACTIVE"} and reaction_direction == "UP"
-    reversal_up = reversal in {"CANDIDATE", "STRUCTURALLY_CONFIRMED"} and reversal_direction == "UP"
-    return reaction_up, reversal_up, {
-        "reaction": reaction,
-        "reaction_direction": reaction_direction,
-        "reversal": reversal,
-        "reversal_direction": reversal_direction,
-        "participation": _value(axes.participation),
-        "pattern_readiness": _value(axes.pattern_readiness),
-        "conflict": _value(axes.conflict),
-    }
+    return (
+        reaction in {"DEVELOPING", "ACTIVE"} and reaction_direction == "UP",
+        reversal in {"CANDIDATE", "STRUCTURALLY_CONFIRMED"} and reversal_direction == "UP",
+        {
+            "reaction": reaction,
+            "reaction_direction": reaction_direction,
+            "reversal": reversal,
+            "reversal_direction": reversal_direction,
+            "participation": _value(axes.participation),
+            "pattern_readiness": _value(axes.pattern_readiness),
+            "conflict": _value(axes.conflict),
+        },
+    )
 
 
 def _aggregate(rows: list[dict], predicate) -> dict[str, float | int | None]:
@@ -111,13 +107,13 @@ def _aggregate(rows: list[dict], predicate) -> dict[str, float | int | None]:
                 f"median_mfe_{bars}": None,
                 f"median_mae_{bars}": None,
             })
-            continue
-        result.update({
-            f"positive_rate_{bars}": sum(item["ret"] > 0 for item in outcomes) / len(outcomes),
-            f"median_ret_{bars}": median(item["ret"] for item in outcomes),
-            f"median_mfe_{bars}": median(item["mfe"] for item in outcomes),
-            f"median_mae_{bars}": median(item["mae"] for item in outcomes),
-        })
+        else:
+            result.update({
+                f"positive_rate_{bars}": sum(item["ret"] > 0 for item in outcomes) / len(outcomes),
+                f"median_ret_{bars}": median(item["ret"] for item in outcomes),
+                f"median_mfe_{bars}": median(item["mfe"] for item in outcomes),
+                f"median_mae_{bars}": median(item["mae"] for item in outcomes),
+            })
     return result
 
 
@@ -125,10 +121,7 @@ def _print_stats(name: str, stats: dict[str, float | int | None], *, note: str =
     def fmt(value):
         if value is None:
             return "n/a"
-        if isinstance(value, float):
-            return f"{value:.3f}"
-        return str(value)
-
+        return f"{value:.3f}" if isinstance(value, float) else str(value)
     print(
         f"{name:<48} n={stats['count']:>4} | "
         f"3b pos={fmt(stats['positive_rate_3'])} ret={fmt(stats['median_ret_3'])}% "
@@ -140,12 +133,7 @@ def _print_stats(name: str, stats: dict[str, float | int | None], *, note: str =
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Diagnostic-only Transition-Up evidence study. It measures which existing lower-timeframe "
-            "domains add useful early-LONG information while Structure remains SHORT."
-        )
-    )
+    parser = argparse.ArgumentParser(description="Diagnostic-only Transition-Up evidence study.")
     parser.add_argument("cache_root", type=Path)
     parser.add_argument("symbol")
     parser.add_argument("--start", default=None)
@@ -154,6 +142,9 @@ def main() -> None:
     parser.add_argument("--pattern-profile", default=None)
     parser.add_argument("--auto-calibration", action="store_true")
     parser.add_argument("--opportunity-calibration", type=Path, default=None)
+    parser.add_argument("--opportunity-none-max-atr", type=float, default=None)
+    parser.add_argument("--opportunity-compressed-max-atr", type=float, default=None)
+    parser.add_argument("--opportunity-moderate-max-atr", type=float, default=None)
     parser.add_argument("--json-out", type=Path, default=None)
     args = parser.parse_args()
 
@@ -166,11 +157,7 @@ def main() -> None:
         start_at=effective_start,
         end_at=args.end,
     )
-    opportunity_calibration, calibration_source = _calibration(
-        args,
-        cache_root=args.cache_root,
-        symbol=symbol,
-    )
+    opportunity_calibration, calibration_source = _calibration(args, cache_root=args.cache_root, symbol=symbol)
     engine_config = DecisionEngineConfig(opportunity_calibration=opportunity_calibration)
     frozen = load_frozen_decision_timeline(store, symbol, config=history_config)
     snapshots = list(frozen.replay.snapshots)
@@ -184,11 +171,7 @@ def main() -> None:
     episode_first_rows: dict[tuple[int, str], dict] = {}
 
     for index, snapshot in enumerate(snapshots):
-        prepared = prepare_horizon_assessment(
-            snapshot,
-            DecisionHorizon.SHORT_TERM,
-            config=engine_config,
-        )
+        prepared = prepare_horizon_assessment(snapshot, DecisionHorizon.SHORT_TERM, config=engine_config)
         structural = prepared.structural
         is_transition_up = (
             structural.direction is StructuralDirection.SHORT
@@ -266,37 +249,25 @@ def main() -> None:
                 episode_first_rows.setdefault((episode_id, family), row)
         for left, right in combinations(CANDIDATE_FAMILIES, 2):
             if signals[left] and signals[right]:
-                key = f"{left}+{right}"
-                episode_first_rows.setdefault((episode_id, key), row)
+                episode_first_rows.setdefault((episode_id, f"{left}+{right}"), row)
 
     signal_stats = {family: _aggregate(rows, lambda row, family=family: row["signals"][family]) for family in CANDIDATE_FAMILIES}
-    pair_stats: dict[str, dict] = {}
-    for left, right in combinations(CANDIDATE_FAMILIES, 2):
-        key = f"{left}+{right}"
-        pair_stats[key] = _aggregate(rows, lambda row, l=left, r=right: row["signals"][l] and row["signals"][r])
-
+    pair_stats = {
+        f"{left}+{right}": _aggregate(rows, lambda row, l=left, r=right: row["signals"][l] and row["signals"][r])
+        for left, right in combinations(CANDIDATE_FAMILIES, 2)
+    }
     opportunity_filtered_stats = {
-        family: _aggregate(
-            rows,
-            lambda row, family=family: row["opportunity_ok"] and row["signals"][family],
-        )
+        family: _aggregate(rows, lambda row, family=family: row["opportunity_ok"] and row["signals"][family])
         for family in CANDIDATE_FAMILIES
     }
     fresh_stats = {
-        family: _aggregate(
-            rows,
-            lambda row, family=family: row["fresh_long_event"] and row["signals"][family],
-        )
+        family: _aggregate(rows, lambda row, family=family: row["fresh_long_event"] and row["signals"][family])
         for family in CANDIDATE_FAMILIES
     }
-
     episode_rows_by_key: dict[str, list[dict]] = defaultdict(list)
     for (_, key), row in episode_first_rows.items():
         episode_rows_by_key[key].append(row)
-    episode_stats = {
-        key: _aggregate(values, lambda row: True)
-        for key, values in episode_rows_by_key.items()
-    }
+    episode_stats = {key: _aggregate(values, lambda row: True) for key, values in episode_rows_by_key.items()}
 
     print("=" * 96)
     print("ST TRANSITION-UP DOMAIN EVIDENCE DIAGNOSTIC")
@@ -314,54 +285,34 @@ def main() -> None:
     print("OUTCOME_NOTE\tforward returns use decision-snapshot prices; diagnostic only")
 
     print("\nSINGLE DOMAIN SIGNAL QUALITY — ALL TRANSITION_UP SNAPSHOTS")
-    print("---------------------------------------------------------")
     for family in CANDIDATE_FAMILIES:
         _print_stats(family, signal_stats[family])
-
     print("\nSINGLE DOMAIN + ECONOMIC ROOM (MODERATE/AMPLE)")
-    print("----------------------------------------------")
     for family in CANDIDATE_FAMILIES:
         _print_stats(family, opportunity_filtered_stats[family])
-
     print("\nSINGLE DOMAIN WHEN FRESH LONG EXECUTION EXISTS")
-    print("----------------------------------------------")
     for family in CANDIDATE_FAMILIES:
         _print_stats(family, fresh_stats[family])
-
     print("\nPAIR QUALITY — INDEPENDENCE-AWARE")
-    print("---------------------------------")
-    ranked_pairs = sorted(
-        pair_stats.items(),
-        key=lambda item: (
-            -(item[1].get("count") or 0),
-            -(item[1].get("positive_rate_6") or -1.0),
-        ),
-    )
-    for key, stats in ranked_pairs:
+    for key, stats in sorted(pair_stats.items(), key=lambda item: (-(item[1].get("count") or 0), -(item[1].get("positive_rate_6") or -1.0))):
         left, right = key.split("+")
         dependent = tuple(sorted((left, right))) in DEPENDENT_PAIRS
-        note = "DEPENDENT/OVERLAPPING EVIDENCE — DO NOT COUNT AS 2" if dependent else "independent candidate pair"
-        _print_stats(key, stats, note=note)
-
+        _print_stats(key, stats, note="DEPENDENT/OVERLAPPING EVIDENCE — DO NOT COUNT AS 2" if dependent else "independent candidate pair")
     print("\nEPISODE-FIRST SIGNAL QUALITY")
-    print("----------------------------")
+    empty_stats = {"count": 0, **{f"positive_rate_{b}": None for b in (3, 6)}, **{f"median_ret_{b}": None for b in (3, 6)}, **{f"median_mfe_{b}": None for b in (3, 6)}, **{f"median_mae_{b}": None for b in (3, 6)}}
     for family in CANDIDATE_FAMILIES:
-        stats = episode_stats.get(family, {"count": 0, **{f"positive_rate_{b}": None for b in (3, 6)}, **{f"median_ret_{b}": None for b in (3, 6)}, **{f"median_mfe_{b}": None for b in (3, 6)}, **{f"median_mae_{b}": None for b in (3, 6)}})
-        _print_stats(family, stats)
+        _print_stats(family, episode_stats.get(family, empty_stats))
 
-    print("\nFRESH LONG EVENTS INSIDE TRANSITION_UP")
-    print("--------------------------------------")
     fresh_rows = [row for row in rows if row["fresh_long_event"]]
+    print("\nFRESH LONG EVENTS INSIDE TRANSITION_UP")
     print(f"COUNT\t{len(fresh_rows)}")
     for row in fresh_rows:
         active = [name for name, value in row["signals"].items() if value]
-        f3 = row["forward_3"]
-        f6 = row["forward_6"]
+        f3, f6 = row["forward_3"], row["forward_6"]
         print(
             f"{row['as_of']} | opp={row['opportunity_state']}:{row['opportunity_room_atr']} | "
             f"signals={','.join(active) if active else 'NONE'} | "
-            f"3b={None if f3 is None else round(f3['ret'], 3)}% | "
-            f"6b={None if f6 is None else round(f6['ret'], 3)}%"
+            f"3b={None if f3 is None else round(f3['ret'], 3)}% | 6b={None if f6 is None else round(f6['ret'], 3)}%"
         )
 
     if args.json_out is not None:
