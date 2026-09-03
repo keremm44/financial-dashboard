@@ -643,6 +643,7 @@ def _latest_structural_refs_for_side(
     *,
     side: StructuralDirection,
     as_of: Any,
+    allow_data_limited: bool = False,
 ) -> tuple[FactRef, ...]:
     value = _direction_value(side)
     candidates: list[FactRef] = []
@@ -653,7 +654,11 @@ def _latest_structural_refs_for_side(
             continue
         if str(getattr(event, "validity", "")).strip().upper() != "VALID":
             continue
-        ref = _available_ref(getattr(event, "ref", None), as_of=as_of)
+        ref = _available_ref(
+            getattr(event, "ref", None),
+            as_of=as_of,
+            allow_data_limited=allow_data_limited,
+        )
         if ref is not None:
             candidates.append(ref)
     confirmed = [ref for ref in candidates if ref.confirmed_at is not None]
@@ -663,13 +668,35 @@ def _latest_structural_refs_for_side(
     return _unique_refs(ref for ref in confirmed if ref.confirmed_at == latest_time)
 
 
+def _canonical_authority_ref(
+    raw_ref: FactRef | None,
+    *,
+    canonical_refs: tuple[FactRef, ...],
+    as_of: Any,
+) -> FactRef | None:
+    """Resolve one raw authority event to the already-canonical ST Structure ref.
+
+    Decision normalizes price-only Structure DATA_LIMITED quality before building the
+    canonical StructuralAssessment. Control consumes that authority result rather
+    than independently promoting the raw 1h event. Matching is by deterministic fact
+    identity; missing canonical parity fails closed.
+    """
+
+    if raw_ref is None:
+        return None
+    by_key = {ref.deterministic_key: ref for ref in canonical_refs}
+    ref = by_key.get(raw_ref.deterministic_key)
+    return _available_ref(ref, as_of=as_of)
+
+
 def _latest_authority_bos(
     row: Any,
     *,
     side: StructuralDirection,
     as_of: Any,
+    canonical_refs: tuple[FactRef, ...],
 ) -> tuple[tuple[Any, FactRef], ...]:
-    """Return only the newest causal external BOS events for one authority side."""
+    """Return only newest causal external BOS events on canonical 1h authority."""
 
     side_value = _direction_value(side)
     candidates: list[tuple[Any, FactRef]] = []
@@ -684,7 +711,11 @@ def _latest_authority_bos(
             continue
         if str(getattr(event, "validity", "")).strip().upper() != "VALID":
             continue
-        ref = _available_ref(getattr(event, "ref", None), as_of=as_of)
+        ref = _canonical_authority_ref(
+            getattr(event, "ref", None),
+            canonical_refs=canonical_refs,
+            as_of=as_of,
+        )
         if ref is not None and ref.confirmed_at is not None:
             candidates.append((event, ref))
     if not candidates:
@@ -710,12 +741,17 @@ def _structure_evidence(
         return ()
     evidence: list[ControlEvidence] = []
 
-    for timeframe in ("2h", "30m"):
+    # 2h remains fail-closed when raw quality is DATA_LIMITED. 30m is price-only
+    # subordinate Structure and may recover an already-causal native state/event
+    # under DATA_LIMITED, mirroring Decision's price-only Structure semantics without
+    # changing the frozen ref quality or promoting 2h bridge authority.
+    for timeframe, allow_data_limited in (("2h", False), ("30m", True)):
         row = _row(projection, timeframe)
-        if (
-            row is None
-            or getattr(row, "data_quality", ContextDataQuality.UNAVAILABLE)
-            is not ContextDataQuality.VALID
+        if row is None:
+            continue
+        row_quality = getattr(row, "data_quality", ContextDataQuality.UNAVAILABLE)
+        if row_quality is not ContextDataQuality.VALID and not (
+            allow_data_limited and row_quality is ContextDataQuality.DATA_LIMITED
         ):
             continue
         for scope_name in ("external", "internal"):
@@ -731,12 +767,18 @@ def _structure_evidence(
                 row,
                 side=challenger,
                 as_of=snapshot.as_of,
+                allow_data_limited=allow_data_limited,
+            )
+            recovery = (
+                ":PRICE_ONLY_DATA_LIMITED_RECOVERY"
+                if row_quality is ContextDataQuality.DATA_LIMITED
+                else ""
             )
             _add(
                 evidence,
                 ControlEvidenceRole.CONTROL_MIGRATION,
                 challenger,
-                f"STRUCTURE_MIGRATION:{timeframe}:{scope_name.upper()}:{state or 'UNKNOWN'}",
+                f"STRUCTURE_MIGRATION:{timeframe}:{scope_name.upper()}:{state or 'UNKNOWN'}{recovery}",
                 refs,
             )
 
@@ -746,6 +788,7 @@ def _structure_evidence(
             authority,
             side=incumbent,
             as_of=snapshot.as_of,
+            canonical_refs=structural.source_refs,
         )
         confirmation_refs = tuple(
             ref
