@@ -781,6 +781,17 @@ def _role_view(evidence: tuple[ControlEvidence, ...]) -> _RoleView:
     )
 
 
+def _has_non_structural_role(
+    evidence: tuple[ControlEvidence, ...],
+    role: ControlEvidenceRole,
+) -> bool:
+    return any(
+        item.role is role
+        and any(ref.causal_family.value != "STRUCTURAL_LEVEL" for ref in item.source_refs)
+        for item in evidence
+    )
+
+
 def _incumbent_condition(
     structural: StructuralAssessment,
     roles: _RoleView,
@@ -827,6 +838,8 @@ def _challenger_condition(
 def _control_state(
     structural: StructuralAssessment,
     roles: _RoleView,
+    *,
+    challenger_acceptance_non_structural: bool,
 ) -> tuple[ShortTermControlState, str]:
     if structural.direction is StructuralDirection.UNRESOLVED:
         return ShortTermControlState.UNKNOWN, "STRUCTURE_DIRECTION_UNRESOLVED"
@@ -854,17 +867,18 @@ def _control_state(
             )
         if (
             roles.challenger_acceptance
-            and (roles.challenger_defense or roles.migration)
+            and challenger_acceptance_non_structural
+            and roles.migration
             and not roles.challenger_failure
         ):
             return (
                 ShortTermControlState.TRANSFER_DEVELOPING,
-                "CHALLENGER_ACCEPTED_AND_DEFENDED_OR_MIGRATED",
+                "NON_STRUCTURAL_CHALLENGER_ACCEPTANCE_WITH_LOWER_TF_MIGRATION",
             )
         if roles.challenger_acceptance:
             return (
                 ShortTermControlState.CONTROL_CONTESTED,
-                "CHALLENGER_ACCEPTANCE_NOT_YET_DEFENDED",
+                "CHALLENGER_ACCEPTANCE_NOT_YET_INDEPENDENTLY_MIGRATED",
             )
         if roles.challenger_initiative or roles.challenger_emergence or roles.migration:
             return (
@@ -999,7 +1013,14 @@ def assess_short_term_control(
         roles,
         evidence_present=non_structural_evidence_present,
     )
-    control_state, state_reason = _control_state(structural, roles)
+    control_state, state_reason = _control_state(
+        structural,
+        roles,
+        challenger_acceptance_non_structural=_has_non_structural_role(
+            evidence,
+            ControlEvidenceRole.CHALLENGER_ACCEPTANCE,
+        ),
+    )
 
     refs = _unique_refs(
         (
