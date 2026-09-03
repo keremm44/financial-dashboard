@@ -80,8 +80,7 @@ class ControlEvidenceRole(StrEnum):
 class ControlEvidence:
     """One typed economic role backed by already-frozen causal facts.
 
-    The object is intentionally not weighted and carries no confidence/score. Multiple
-    refs may explain one semantic role, but they never become a vote count.
+    Multiple refs may explain one role, but they never become a weight or vote count.
     """
 
     role: ControlEvidenceRole
@@ -100,12 +99,7 @@ class ControlEvidence:
 
 @dataclass(frozen=True, slots=True)
 class ShortTermControlAssessment:
-    """Action-free ST market-control synthesis.
-
-    This assessment is a pure read-model over one frozen snapshot and a canonical ST
-    StructuralAssessment. It owns no BUY/SELL, eligibility, timing, opportunity,
-    execution, persistence, PnL, or trade-thesis authority.
-    """
+    """Action-free, stateless ST market-control synthesis."""
 
     symbol: str
     as_of: Any
@@ -158,7 +152,6 @@ class _RoleView:
     transfer_confirmation: bool
 
 
-
 def _direction_value(side: StructuralDirection) -> int:
     if side is StructuralDirection.LONG:
         return 1
@@ -206,9 +199,9 @@ def _available_ref(
 def _effective_pattern_phase(row: Any | None) -> PatternBehaviorPhase | None:
     """Recover causal price-only Pattern phase without depending on Execution.
 
-    This intentionally mirrors the production price-only DATA_LIMITED semantics used
-    by Timing/Execution while keeping those policy/execution layers out of Control.
-    The frozen ref itself is never promoted to VALID here.
+    This mirrors the production DATA_LIMITED native-state recovery semantics used by
+    Timing/Execution, but keeps those layers out of Control and never promotes the
+    frozen Pattern ref itself to VALID.
     """
 
     if row is None:
@@ -272,14 +265,12 @@ def _participation_evidence(
 
     incumbent_value = _direction_value(incumbent)
     challenger_value = _direction_value(challenger)
-    as_of = snapshot.as_of
     evidence: list[ControlEvidence] = []
-
     for timeframe in _ST_CONTROL_TIMEFRAMES:
         row = _row(projection, timeframe)
         if row is None:
             continue
-        ref = _available_ref(getattr(row, "ref", None), as_of=as_of)
+        ref = _available_ref(getattr(row, "ref", None), as_of=snapshot.as_of)
         if ref is None:
             continue
 
@@ -296,11 +287,17 @@ def _participation_evidence(
 
         incumbent_activity = (
             participation_direction == incumbent_value
-            and trend in {ParticipationTrend.BUILDING, ParticipationTrend.CONFIRMED, ParticipationTrend.PROTECTED}
+            and trend
+            in {
+                ParticipationTrend.BUILDING,
+                ParticipationTrend.CONFIRMED,
+                ParticipationTrend.PROTECTED,
+            }
         )
         incumbent_break_progress = (
             break_direction == incumbent_value
-            and break_behavior in {BreakParticipationBehavior.SUPPORTED, BreakParticipationBehavior.PROTECTED}
+            and break_behavior
+            in {BreakParticipationBehavior.SUPPORTED, BreakParticipationBehavior.PROTECTED}
         )
         if incumbent_activity or incumbent_break_progress:
             _add(
@@ -318,7 +315,8 @@ def _participation_evidence(
         }
         if (
             break_direction == incumbent_value
-            and break_behavior in {BreakParticipationBehavior.UNSUPPORTED, BreakParticipationBehavior.RECLAIMED}
+            and break_behavior
+            in {BreakParticipationBehavior.UNSUPPORTED, BreakParticipationBehavior.RECLAIMED}
         ) or (effort is EffortResultBehavior.WEAK_RESULT and incumbent_related):
             _add(
                 evidence,
@@ -327,7 +325,10 @@ def _participation_evidence(
                 f"PARTICIPATION_INCUMBENT_FAILURE:{timeframe}:{break_behavior.value}:{effort.value}",
                 (ref,),
             )
-        if break_direction == incumbent_value and break_behavior is BreakParticipationBehavior.RECLAIMED:
+        if (
+            break_direction == incumbent_value
+            and break_behavior is BreakParticipationBehavior.RECLAIMED
+        ):
             _add(
                 evidence,
                 ControlEvidenceRole.INCUMBENT_LOST_GROUND,
@@ -338,7 +339,12 @@ def _participation_evidence(
 
         challenger_activity = (
             participation_direction == challenger_value
-            and trend in {ParticipationTrend.BUILDING, ParticipationTrend.CONFIRMED, ParticipationTrend.PROTECTED}
+            and trend
+            in {
+                ParticipationTrend.BUILDING,
+                ParticipationTrend.CONFIRMED,
+                ParticipationTrend.PROTECTED,
+            }
         )
         challenger_break = break_direction == challenger_value
         challenger_evidence = evidence_direction == challenger_value and evidence_direction != 0
@@ -371,6 +377,7 @@ def _participation_evidence(
                 f"PARTICIPATION_CHALLENGER_BREAK_PROTECTED:{timeframe}",
                 (ref,),
             )
+
         challenger_related = challenger_value in {
             participation_direction,
             evidence_direction,
@@ -378,7 +385,8 @@ def _participation_evidence(
         }
         if (
             challenger_break
-            and break_behavior in {BreakParticipationBehavior.UNSUPPORTED, BreakParticipationBehavior.RECLAIMED}
+            and break_behavior
+            in {BreakParticipationBehavior.UNSUPPORTED, BreakParticipationBehavior.RECLAIMED}
         ) or (effort is EffortResultBehavior.WEAK_RESULT and challenger_related):
             _add(
                 evidence,
@@ -387,7 +395,6 @@ def _participation_evidence(
                 f"PARTICIPATION_CHALLENGER_FAILURE:{timeframe}:{break_behavior.value}:{effort.value}",
                 (ref,),
             )
-
     return tuple(evidence)
 
 
@@ -415,18 +422,9 @@ def _pattern_evidence(
         return ()
 
     evidence: list[ControlEvidence] = []
-    forming = {
-        PatternBehaviorPhase.FORMING,
-        PatternBehaviorPhase.MATURE_COMPRESSION,
-    }
-    initiating = {
-        PatternBehaviorPhase.BREAK_ATTEMPT,
-        PatternBehaviorPhase.BREAK_CONFIRMING,
-    }
-    accepted = {
-        PatternBehaviorPhase.BREAK_CONFIRMED,
-        PatternBehaviorPhase.RETEST_HELD,
-    }
+    forming = {PatternBehaviorPhase.FORMING, PatternBehaviorPhase.MATURE_COMPRESSION}
+    initiating = {PatternBehaviorPhase.BREAK_ATTEMPT, PatternBehaviorPhase.BREAK_CONFIRMING}
+    accepted = {PatternBehaviorPhase.BREAK_CONFIRMED, PatternBehaviorPhase.RETEST_HELD}
     failed = {
         PatternBehaviorPhase.BREAK_FAILED,
         PatternBehaviorPhase.WEAKENING,
@@ -499,7 +497,6 @@ def _pattern_evidence(
                 f"PATTERN_INCUMBENT_FAILURE:30m:{phase.value}",
                 (ref,),
             )
-
     return tuple(evidence)
 
 
@@ -521,8 +518,8 @@ def _reaction_evidence(
         fvg_engulfing=getattr(snapshot, "fvg_engulfing_lifecycle", None),
         timeframes=_ST_REACTION_TIMEFRAMES,
     )
-
     evidence: list[ControlEvidence] = []
+
     if incumbent_reaction.state is ReactionState.CONFIRMED:
         _add(
             evidence,
@@ -571,7 +568,6 @@ def _reaction_evidence(
             "REACTION_CHALLENGER_FAILED",
             challenger_reaction.source_refs,
         )
-
     return tuple(evidence)
 
 
@@ -584,7 +580,6 @@ def _support_resistance_evidence(
     projection = getattr(snapshot, "support_resistance", None)
     if projection is None:
         return ()
-    as_of = snapshot.as_of
     incumbent_value = _direction_value(incumbent)
     challenger_value = _direction_value(challenger)
     evidence: list[ControlEvidence] = []
@@ -593,7 +588,7 @@ def _support_resistance_evidence(
         row = _row(projection, timeframe)
         if row is None:
             continue
-        ref = _available_ref(getattr(row, "ref", None), as_of=as_of)
+        ref = _available_ref(getattr(row, "ref", None), as_of=snapshot.as_of)
         if ref is None:
             continue
         break_direction = int(getattr(row, "break_direction", 0) or 0)
@@ -640,7 +635,6 @@ def _support_resistance_evidence(
                     f"SR_CHALLENGER_BREAK_RECLAIMED:{timeframe}:{location}",
                     (ref,),
                 )
-
     return tuple(evidence)
 
 
@@ -662,13 +656,46 @@ def _latest_structural_refs_for_side(
         ref = _available_ref(getattr(event, "ref", None), as_of=as_of)
         if ref is not None:
             candidates.append(ref)
-    if not candidates:
-        return ()
     confirmed = [ref for ref in candidates if ref.confirmed_at is not None]
     if not confirmed:
         return _unique_refs(candidates)
     latest_time = max(ref.confirmed_at for ref in confirmed)
     return _unique_refs(ref for ref in confirmed if ref.confirmed_at == latest_time)
+
+
+def _latest_authority_bos(
+    row: Any,
+    *,
+    side: StructuralDirection,
+    as_of: Any,
+) -> tuple[tuple[Any, FactRef], ...]:
+    """Return only the newest causal external BOS events for one authority side."""
+
+    side_value = _direction_value(side)
+    candidates: list[tuple[Any, FactRef]] = []
+    for event in getattr(row, "events", ()):
+        if str(getattr(event, "scope", "")).strip().upper() != "EXTERNAL":
+            continue
+        if str(getattr(event, "event_type", "")).strip().upper() != "EVENT_BOS":
+            continue
+        if int(getattr(event, "direction", 0) or 0) != side_value:
+            continue
+        if str(getattr(event, "confirmation_status", "")).strip().upper() != "CONFIRMED":
+            continue
+        if str(getattr(event, "validity", "")).strip().upper() != "VALID":
+            continue
+        ref = _available_ref(getattr(event, "ref", None), as_of=as_of)
+        if ref is not None and ref.confirmed_at is not None:
+            candidates.append((event, ref))
+    if not candidates:
+        return ()
+    latest_time = max(ref.confirmed_at for _, ref in candidates)
+    return tuple(
+        sorted(
+            ((event, ref) for event, ref in candidates if ref.confirmed_at == latest_time),
+            key=lambda item: item[1].deterministic_key,
+        )
+    )
 
 
 def _structure_evidence(
@@ -681,12 +708,15 @@ def _structure_evidence(
     projection = getattr(snapshot, "structure", None)
     if projection is None:
         return ()
-    as_of = snapshot.as_of
     evidence: list[ControlEvidence] = []
 
     for timeframe in ("2h", "30m"):
         row = _row(projection, timeframe)
-        if row is None or getattr(row, "data_quality", ContextDataQuality.UNAVAILABLE) is not ContextDataQuality.VALID:
+        if (
+            row is None
+            or getattr(row, "data_quality", ContextDataQuality.UNAVAILABLE)
+            is not ContextDataQuality.VALID
+        ):
             continue
         for scope_name in ("external", "internal"):
             scope = getattr(row, scope_name, None)
@@ -697,7 +727,11 @@ def _structure_evidence(
             target_states = _DIRECTIONAL_STATES[challenger] | _TRANSITION_STATES[challenger]
             if direction != _direction_value(challenger) and state not in target_states:
                 continue
-            refs = _latest_structural_refs_for_side(row, side=challenger, as_of=as_of)
+            refs = _latest_structural_refs_for_side(
+                row,
+                side=challenger,
+                as_of=snapshot.as_of,
+            )
             _add(
                 evidence,
                 ControlEvidenceRole.CONTROL_MIGRATION,
@@ -708,32 +742,25 @@ def _structure_evidence(
 
     authority = _row(projection, structural.authority_timeframe)
     if authority is not None and structural.thesis_state is ThesisState.INTACT:
-        confirmation_refs: list[FactRef] = []
-        for event in getattr(authority, "events", ()):
-            if str(getattr(event, "event_type", "")).strip().upper() != "EVENT_BOS":
-                continue
-            if str(getattr(event, "bos_maturity", "")).strip().upper() != "TRANSITION_CONFIRMATION":
-                continue
-            if int(getattr(event, "direction", 0) or 0) != _direction_value(incumbent):
-                continue
-            if str(getattr(event, "confirmation_status", "")).strip().upper() != "CONFIRMED":
-                continue
-            if str(getattr(event, "validity", "")).strip().upper() != "VALID":
-                continue
-            ref = _available_ref(getattr(event, "ref", None), as_of=as_of)
-            if ref is not None:
-                confirmation_refs.append(ref)
+        latest = _latest_authority_bos(
+            authority,
+            side=incumbent,
+            as_of=snapshot.as_of,
+        )
+        confirmation_refs = tuple(
+            ref
+            for event, ref in latest
+            if str(getattr(event, "bos_maturity", "")).strip().upper()
+            == "TRANSITION_CONFIRMATION"
+        )
         if confirmation_refs:
-            latest_time = max(ref.confirmed_at for ref in confirmation_refs if ref.confirmed_at is not None)
-            latest = [ref for ref in confirmation_refs if ref.confirmed_at == latest_time]
             _add(
                 evidence,
                 ControlEvidenceRole.TRANSFER_CONFIRMATION,
                 incumbent,
-                f"STRUCTURE_TARGET_SIDE_ESTABLISHED:{structural.authority_timeframe}",
-                latest,
+                f"STRUCTURE_LATEST_TARGET_SIDE_TRANSITION_CONFIRMATION:{structural.authority_timeframe}",
+                confirmation_refs,
             )
-
     return tuple(evidence)
 
 
@@ -778,7 +805,11 @@ def _challenger_condition(
     *,
     evidence_present: bool,
 ) -> ChallengerCondition:
-    if roles.challenger_failure and not roles.challenger_acceptance and not roles.challenger_defense:
+    if (
+        roles.challenger_failure
+        and not roles.challenger_acceptance
+        and not roles.challenger_defense
+    ):
         return ChallengerCondition.FAILING
     if roles.challenger_defense:
         return ChallengerCondition.DEFENDING_GROUND
@@ -801,7 +832,10 @@ def _control_state(
         return ShortTermControlState.UNKNOWN, "STRUCTURE_DIRECTION_UNRESOLVED"
 
     if roles.transfer_confirmation and structural.thesis_state is ThesisState.INTACT:
-        return ShortTermControlState.TRANSFER_ESTABLISHED, "STRUCTURE_TRANSITION_CONFIRMATION_ESTABLISHED_SIDE"
+        return (
+            ShortTermControlState.TRANSFER_ESTABLISHED,
+            "LATEST_STRUCTURE_BOS_ESTABLISHES_TRANSFER",
+        )
 
     active_transition = (
         structural.thesis_state is ThesisState.TRANSITIONING
@@ -814,29 +848,49 @@ def _control_state(
             and not roles.challenger_acceptance
             and not roles.challenger_defense
         ):
-            return ShortTermControlState.TRANSFER_FAILED, "CHALLENGER_FAILED_WHILE_INCUMBENT_REASSERTED"
+            return (
+                ShortTermControlState.TRANSFER_FAILED,
+                "CHALLENGER_FAILED_WHILE_INCUMBENT_REASSERTED",
+            )
         if (
             roles.challenger_acceptance
             and (roles.challenger_defense or roles.migration)
             and not roles.challenger_failure
         ):
-            return ShortTermControlState.TRANSFER_DEVELOPING, "CHALLENGER_ACCEPTED_AND_DEFENDED_OR_MIGRATED"
+            return (
+                ShortTermControlState.TRANSFER_DEVELOPING,
+                "CHALLENGER_ACCEPTED_AND_DEFENDED_OR_MIGRATED",
+            )
         if roles.challenger_acceptance:
-            return ShortTermControlState.CONTROL_CONTESTED, "CHALLENGER_ACCEPTANCE_NOT_YET_DEFENDED"
-        if (
-            roles.challenger_initiative
-            or roles.challenger_emergence
-            or roles.migration
-        ):
-            return ShortTermControlState.CONTROL_CONTESTED, "TRANSITION_WITH_ACTIVE_CHALLENGER"
+            return (
+                ShortTermControlState.CONTROL_CONTESTED,
+                "CHALLENGER_ACCEPTANCE_NOT_YET_DEFENDED",
+            )
+        if roles.challenger_initiative or roles.challenger_emergence or roles.migration:
+            return (
+                ShortTermControlState.CONTROL_CONTESTED,
+                "TRANSITION_WITH_ACTIVE_CHALLENGER",
+            )
         if roles.incumbent_failure or roles.incumbent_lost_ground:
-            return ShortTermControlState.CONTROL_WEAKENING, "INCUMBENT_CONTINUATION_DETERIORATING"
-        return ShortTermControlState.CONTROL_WEAKENING, "STRUCTURE_TRANSITION_ANCHOR_ONLY"
+            return (
+                ShortTermControlState.CONTROL_WEAKENING,
+                "INCUMBENT_CONTINUATION_DETERIORATING",
+            )
+        return (
+            ShortTermControlState.CONTROL_WEAKENING,
+            "STRUCTURE_TRANSITION_ANCHOR_ONLY",
+        )
 
     if roles.incumbent_lost_ground or roles.incumbent_failure:
         if roles.challenger_acceptance or roles.challenger_initiative or roles.migration:
-            return ShortTermControlState.CONTROL_CONTESTED, "INTACT_STRUCTURE_WITH_COUNTER_CONTROL_PRESSURE"
-        return ShortTermControlState.CONTROL_WEAKENING, "INTACT_STRUCTURE_WITH_INCUMBENT_DETERIORATION"
+            return (
+                ShortTermControlState.CONTROL_CONTESTED,
+                "INTACT_STRUCTURE_WITH_COUNTER_CONTROL_PRESSURE",
+            )
+        return (
+            ShortTermControlState.CONTROL_WEAKENING,
+            "INTACT_STRUCTURE_WITH_INCUMBENT_DETERIORATION",
+        )
     return ShortTermControlState.CONTROL_HELD, "INTACT_STRUCTURE_CONTROL_HELD"
 
 
@@ -858,9 +912,8 @@ def assess_short_term_control(
 ) -> ShortTermControlAssessment:
     """Build one stateless, action-free ST control assessment from frozen facts.
 
-    The caller supplies the already-canonical ST StructuralAssessment so this shadow
-    evaluator neither rebuilds Structure nor inherits Timing/Opportunity/Execution.
-    Context and Permission are deliberately ignored.
+    The caller supplies canonical ST Structure. Timing, Opportunity, Execution,
+    Context, Permission and position state are deliberately outside this function.
     """
 
     if structural.horizon is not DecisionHorizon.SHORT_TERM:
@@ -877,7 +930,6 @@ def assess_short_term_control(
         if structural.transition_target is not None
         else _opposite(incumbent)
     )
-
     if incumbent is StructuralDirection.UNRESOLVED or challenger is None:
         refs = _unique_refs(structural.source_refs)
         return ShortTermControlAssessment(
@@ -902,10 +954,26 @@ def assess_short_term_control(
     evidence = tuple(
         sorted(
             (
-                *_participation_evidence(snapshot, incumbent=incumbent, challenger=challenger),
-                *_pattern_evidence(snapshot, incumbent=incumbent, challenger=challenger),
-                *_reaction_evidence(snapshot, incumbent=incumbent, challenger=challenger),
-                *_support_resistance_evidence(snapshot, incumbent=incumbent, challenger=challenger),
+                *_participation_evidence(
+                    snapshot,
+                    incumbent=incumbent,
+                    challenger=challenger,
+                ),
+                *_pattern_evidence(
+                    snapshot,
+                    incumbent=incumbent,
+                    challenger=challenger,
+                ),
+                *_reaction_evidence(
+                    snapshot,
+                    incumbent=incumbent,
+                    challenger=challenger,
+                ),
+                *_support_resistance_evidence(
+                    snapshot,
+                    incumbent=incumbent,
+                    challenger=challenger,
+                ),
                 *_structure_evidence(
                     snapshot,
                     structural=structural,
@@ -948,11 +1016,14 @@ def assess_short_term_control(
                 f"INCUMBENT:{incumbent_condition.value}",
                 f"CHALLENGER:{challenger_condition.value}",
                 *(f"ROLE:{item.role.value}:{item.reason}" for item in evidence),
-                "UNKNOWN_LINEAGE_NOT_PROMOTED_TO_INDEPENDENCE" if unresolved else "LINEAGE_EXPLICIT_OR_NOT_REQUIRED",
+                (
+                    "UNKNOWN_LINEAGE_NOT_PROMOTED_TO_INDEPENDENCE"
+                    if unresolved
+                    else "LINEAGE_EXPLICIT_OR_NOT_REQUIRED"
+                ),
             )
         )
     )
-
     return ShortTermControlAssessment(
         symbol=symbol,
         as_of=snapshot.as_of,
