@@ -150,6 +150,7 @@ class _RoleView:
     challenger_failure: bool
     migration: bool
     transfer_confirmation: bool
+    transfer_invalidation: bool
 
 
 def _direction_value(side: StructuralDirection) -> int:
@@ -674,36 +675,44 @@ def _canonical_authority_ref(
     canonical_refs: tuple[FactRef, ...],
     as_of: Any,
 ) -> FactRef | None:
-    """Resolve one raw authority event to the already-canonical ST Structure ref.
+    """Resolve a raw authority event without inventing quality or identity.
 
-    Decision normalizes price-only Structure DATA_LIMITED quality before building the
-    canonical StructuralAssessment. Control consumes that authority result rather
-    than independently promoting the raw 1h event. Matching is by deterministic fact
-    identity; missing canonical parity fails closed.
+    A raw VALID ref is already usable. When raw Structure is DATA_LIMITED, Decision's
+    canonical ST StructuralAssessment may contain the same deterministic fact with
+    price-only quality normalized to VALID. Only that exact identity match may recover
+    authority evidence; missing parity fails closed.
     """
 
+    direct = _available_ref(raw_ref, as_of=as_of)
+    if direct is not None:
+        return direct
     if raw_ref is None:
         return None
     by_key = {ref.deterministic_key: ref for ref in canonical_refs}
-    ref = by_key.get(raw_ref.deterministic_key)
-    return _available_ref(ref, as_of=as_of)
+    return _available_ref(by_key.get(raw_ref.deterministic_key), as_of=as_of)
 
 
-def _latest_authority_bos(
+def _latest_authority_resolution(
     row: Any,
     *,
     side: StructuralDirection,
     as_of: Any,
     canonical_refs: tuple[FactRef, ...],
 ) -> tuple[tuple[Any, FactRef], ...]:
-    """Return only newest causal external BOS events on canonical 1h authority."""
+    """Return newest causal external event that resolves canonical 1h control.
+
+    BOS and TRANSITION_FAIL both resolve a Structure transition. CHoCH only opens a
+    transition and therefore cannot by itself establish or fail transfer once the
+    canonical StructuralAssessment is INTACT.
+    """
 
     side_value = _direction_value(side)
     candidates: list[tuple[Any, FactRef]] = []
     for event in getattr(row, "events", ()):
         if str(getattr(event, "scope", "")).strip().upper() != "EXTERNAL":
             continue
-        if str(getattr(event, "event_type", "")).strip().upper() != "EVENT_BOS":
+        event_type = str(getattr(event, "event_type", "")).strip().upper()
+        if event_type not in {"EVENT_BOS", "EVENT_TRANSITION_FAIL"}:
             continue
         if int(getattr(event, "direction", 0) or 0) != side_value:
             continue
@@ -784,26 +793,38 @@ def _structure_evidence(
 
     authority = _row(projection, structural.authority_timeframe)
     if authority is not None and structural.thesis_state is ThesisState.INTACT:
-        latest = _latest_authority_bos(
+        latest = _latest_authority_resolution(
             authority,
             side=incumbent,
             as_of=snapshot.as_of,
             canonical_refs=structural.source_refs,
         )
-        confirmation_refs = tuple(
-            ref
-            for event, ref in latest
-            if str(getattr(event, "bos_maturity", "")).strip().upper()
-            == "TRANSITION_CONFIRMATION"
-        )
-        if confirmation_refs:
-            _add(
-                evidence,
-                ControlEvidenceRole.TRANSFER_CONFIRMATION,
-                incumbent,
-                f"STRUCTURE_LATEST_TARGET_SIDE_TRANSITION_CONFIRMATION:{structural.authority_timeframe}",
-                confirmation_refs,
-            )
+        for event, ref in latest:
+            # Resolution labels are change-point semantics, not sticky historical
+            # state. On later snapshots the market is simply held/contested again.
+            if ref.available_at != snapshot.as_of:
+                continue
+            event_type = str(getattr(event, "event_type", "")).strip().upper()
+            if event_type == "EVENT_TRANSITION_FAIL":
+                _add(
+                    evidence,
+                    ControlEvidenceRole.TRANSFER_INVALIDATION,
+                    incumbent,
+                    f"STRUCTURE_TRANSITION_FAIL_RESTORES_SIDE:{structural.authority_timeframe}",
+                    (ref,),
+                )
+            elif (
+                event_type == "EVENT_BOS"
+                and str(getattr(event, "bos_maturity", "")).strip().upper()
+                == "TRANSITION_CONFIRMATION"
+            ):
+                _add(
+                    evidence,
+                    ControlEvidenceRole.TRANSFER_CONFIRMATION,
+                    incumbent,
+                    f"STRUCTURE_TARGET_SIDE_TRANSITION_CONFIRMATION:{structural.authority_timeframe}",
+                    (ref,),
+                )
     return tuple(evidence)
 
 
@@ -821,6 +842,7 @@ def _role_view(evidence: tuple[ControlEvidence, ...]) -> _RoleView:
         challenger_failure=ControlEvidenceRole.CHALLENGER_FAILURE in roles,
         migration=ControlEvidenceRole.CONTROL_MIGRATION in roles,
         transfer_confirmation=ControlEvidenceRole.TRANSFER_CONFIRMATION in roles,
+        transfer_invalidation=ControlEvidenceRole.TRANSFER_INVALIDATION in roles,
     )
 
 
@@ -887,10 +909,15 @@ def _control_state(
     if structural.direction is StructuralDirection.UNRESOLVED:
         return ShortTermControlState.UNKNOWN, "STRUCTURE_DIRECTION_UNRESOLVED"
 
+    if roles.transfer_invalidation and structural.thesis_state is ThesisState.INTACT:
+        return (
+            ShortTermControlState.TRANSFER_FAILED,
+            "CANONICAL_STRUCTURE_TRANSITION_FAILED_AND_INCUMBENT_REGAINED",
+        )
     if roles.transfer_confirmation and structural.thesis_state is ThesisState.INTACT:
         return (
             ShortTermControlState.TRANSFER_ESTABLISHED,
-            "LATEST_STRUCTURE_BOS_ESTABLISHES_TRANSFER",
+            "CANONICAL_STRUCTURE_TRANSITION_CONFIRMED",
         )
 
     active_transition = (
@@ -898,16 +925,6 @@ def _control_state(
         and structural.transition_target is not None
     )
     if active_transition:
-        if (
-            roles.challenger_failure
-            and (roles.incumbent_progress or roles.incumbent_defense)
-            and not roles.challenger_acceptance
-            and not roles.challenger_defense
-        ):
-            return (
-                ShortTermControlState.TRANSFER_FAILED,
-                "CHALLENGER_FAILED_WHILE_INCUMBENT_REASSERTED",
-            )
         if (
             roles.challenger_acceptance
             and challenger_acceptance_non_structural
@@ -918,10 +935,20 @@ def _control_state(
                 ShortTermControlState.TRANSFER_DEVELOPING,
                 "NON_STRUCTURAL_CHALLENGER_ACCEPTANCE_WITH_LOWER_TF_MIGRATION",
             )
+        if (
+            roles.challenger_failure
+            and (roles.incumbent_progress or roles.incumbent_defense)
+            and not roles.challenger_acceptance
+            and not roles.challenger_defense
+        ):
+            return (
+                ShortTermControlState.CONTROL_CONTESTED,
+                "CHALLENGER_SETBACK_WITHIN_STILL_ACTIVE_STRUCTURE_TRANSITION",
+            )
         if roles.challenger_acceptance:
             return (
                 ShortTermControlState.CONTROL_CONTESTED,
-                "CHALLENGER_ACCEPTANCE_NOT_YET_INDEPENDENTLY_MIGRATED",
+                "CHALLENGER_ACCEPTANCE_NOT_YET_PAIRED_WITH_LOWER_TF_MIGRATION",
             )
         if roles.challenger_initiative or roles.challenger_emergence or roles.migration:
             return (
