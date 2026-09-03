@@ -2,9 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-from financial_dashboard.context.axes import evaluate_context_axes
+from financial_dashboard.context.axes import (
+    ConflictState as ContextConflictState,
+    ContextDirection,
+    evaluate_context_axes,
+)
 from financial_dashboard.context.envelope import ContextDataQuality, FactRef
-from financial_dashboard.context.permissions import PermissionEnvelope, resolve_permission_axes
+from financial_dashboard.context.permissions import (
+    GateState,
+    PermissionEnvelope,
+    PermittedSide,
+    resolve_permission_axes,
+)
 from financial_dashboard.context.projections import StructuralFactsProjection
 from financial_dashboard.decision_input import DecisionInputSnapshot
 
@@ -36,6 +45,8 @@ from .timing import TimingAssessment, assess_timing
 
 
 DECISION_CONTRACT_VERSION = 3
+_ST_NEUTRAL_PERMISSION_WAIT = "QUALIFIED_CONTINUATION_REACTION_OR_TRANSITION_CONTEXT"
+_ST_NEUTRAL_PERMISSION_REASON = "NEUTRAL_CONTEXT_DOES_NOT_VETO_SHORT_TERM"
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +183,43 @@ def _decision_structure_projection(structural):
     return replace(structural, timeframe_facts=tuple(rows))
 
 
+def _st_permission_neutral_context(
+    axes,
+    permission: PermissionEnvelope,
+) -> PermissionEnvelope:
+    """Keep neutral broad ST context from becoming a second setup-confirmation gate.
+
+    The generic Context resolver intentionally remains unchanged. Decision applies this
+    narrower interpretation only to ST and only to its final no-positive-confirmation
+    WAIT. Material/high/unresolved conflict, structural transition, counter-reaction,
+    and side-conflict paths are resolved earlier and keep their existing authority.
+    """
+
+    if permission.gate_state is not GateState.WAITING:
+        return permission
+    if tuple(permission.waiting_for) != (_ST_NEUTRAL_PERMISSION_WAIT,):
+        return permission
+    if axes.conflict not in {ContextConflictState.NONE, ContextConflictState.LOW}:
+        return permission
+
+    if axes.structural_direction is ContextDirection.UP:
+        side = PermittedSide.LONG
+    elif axes.structural_direction is ContextDirection.DOWN:
+        side = PermittedSide.SHORT
+    else:
+        return permission
+
+    return replace(
+        permission,
+        permitted_side=side,
+        gate_state=GateState.CONDITIONAL,
+        allowed_reasons=tuple(
+            dict.fromkeys((*permission.allowed_reasons, _ST_NEUTRAL_PERMISSION_REASON))
+        ),
+        waiting_for=(),
+    )
+
+
 def _horizon_permission(
     snapshot: DecisionInputSnapshot,
     horizon: DecisionHorizon,
@@ -189,7 +237,10 @@ def _horizon_permission(
         ham=snapshot.ham,
         trigger_timeframes=trigger_timeframes,
     )
-    return resolve_permission_axes(axes)
+    permission = resolve_permission_axes(axes)
+    if horizon is DecisionHorizon.SHORT_TERM:
+        return _st_permission_neutral_context(axes, permission)
+    return permission
 
 
 def _pattern_quality(snapshot: DecisionInputSnapshot, timeframe: str) -> ContextDataQuality:

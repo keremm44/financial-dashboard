@@ -12,8 +12,8 @@ from .environment import EnvironmentAssessment, EnvironmentRisk
 from .gate_authority import GateAuthority, deferred_permission_blocker_owner
 from .opportunity import OpportunityAssessment, OpportunityState
 from .stabil_policy import StabilEntryPolicyAssessment, StabilPolicyEffect
-from .structural import StructuralAssessment, StructuralDirection, ThesisState
-from .timing import TimingAssessment, TimingState
+from .structural import DecisionHorizon, StructuralAssessment, StructuralDirection, ThesisState
+from .timing import TimingAssessment, TimingEntryEffect, TimingState
 
 
 class EligibilityState(StrEnum):
@@ -36,6 +36,31 @@ def _permission_side(side: StructuralDirection) -> PermittedSide:
     if side is StructuralDirection.SHORT:
         return PermittedSide.SHORT
     return PermittedSide.NONE
+
+
+def _st_timing_defers_entry(timing: TimingAssessment) -> bool:
+    """Return whether ST Timing carries explicit adverse entry authority.
+
+    Production ``TimingAssessment`` values expose ``entry_effect``. The fallback keeps
+    older/simple test or plugin doubles compatible while remaining conservative for a
+    genuine FAILED timing state.
+    """
+
+    effect = getattr(timing, "entry_effect", None)
+    if effect is None:
+        return timing.state is TimingState.FAILED
+    return effect in {TimingEntryEffect.ADVERSE, TimingEntryEffect.FAILED}
+
+
+def _structural_horizon(structural: StructuralAssessment) -> DecisionHorizon:
+    """Read the production horizon while preserving legacy/simple assessment doubles.
+
+    Older tests and external callers may provide structural-like objects without a
+    ``horizon`` attribute. Those callers predate the ST-specific Timing authority
+    split, so retaining the historical/LT READY contract is the safe fallback.
+    """
+
+    return getattr(structural, "horizon", DecisionHorizon.LONG_TERM)
 
 
 def assess_eligibility(
@@ -71,15 +96,17 @@ def assess_eligibility(
     structure_hard_blocked = bool(blockers)
 
     # G4: Permission remains scope/context only. Some Permission reasons summarize
-    # facts whose canonical hard-gate owner is already present in this Decision
-    # assessment. Do not count those summaries as a second independent veto.
+    # facts whose canonical owner is already present in this Decision assessment.
+    # Context HIGH is produced only by canonical structural contradiction in the
+    # current Context model, so it is Structure-owned rather than an independent
+    # Reaction/Participation/Environment Conflict vote.
     expected_permission_side = _permission_side(structural.direction)
     if permission.gate_state is GateState.BLOCKED:
         permission_blockers = tuple(permission.blocking_reasons or ("PERMISSION_BLOCKED",))
         non_context_blockers = tuple(
             item
             for item in permission_blockers
-            if deferred_permission_blocker_owner(item) is not GateAuthority.CONFLICT
+            if item != "CONTEXT_CONFLICT_HIGH"
         )
         authoritative_permission_blockers = tuple(
             item
@@ -94,8 +121,11 @@ def assess_eligibility(
         elif non_context_blockers:
             reasons.append("PERMISSION_STRUCTURE_BLOCK_DEFERRED_TO_STRUCTURE")
         elif "CONTEXT_CONFLICT_HIGH" in permission_blockers:
-            reasons.append("CONTEXT_CONFLICT_DEFERRED_TO_INDEPENDENT_FAMILY_GATE")
-            waiting.append("CONTEXT_CONFLICT_TO_RECONCILE")
+            if structural.thesis_state is ThesisState.TRANSITIONING:
+                reasons.append("CONTEXT_STRUCTURAL_CONFLICT_ALREADY_OWNED_BY_STRUCTURE")
+            else:
+                reasons.append("CURRENT_STRUCTURAL_CONTEXT_CONFLICT_TO_RECONCILE")
+                waiting.append("CONTEXT_CONFLICT_TO_RECONCILE")
     elif permission.permitted_side not in {expected_permission_side, PermittedSide.NONE}:
         waiting.append("PERMISSION_SCOPE_SIDE_TO_RECONCILE")
     elif permission.permitted_side is PermittedSide.NONE and permission.gate_state in {
@@ -151,7 +181,14 @@ def assess_eligibility(
     # CONDITIONAL is intentionally not a WAIT by itself. Its historical placeholder
     # FUTURE_ACTION_LAYER_TIMING is satisfied here by the explicit timing layer.
 
-    if timing.state is not TimingState.READY:
+    # LT keeps the existing maturity contract. ST Timing has deliberately smaller
+    # authority: neutral/no-confirmation, aligned forming, and unavailable evidence do
+    # not veto economic eligibility. Only explicit adverse/failed short-term evidence
+    # defers the current entry attempt. Fresh execution is still required downstream.
+    if _structural_horizon(structural) is DecisionHorizon.SHORT_TERM:
+        if _st_timing_defers_entry(timing):
+            waiting.extend(timing.waiting_for or (f"TIMING_{timing.state.value}",))
+    elif timing.state is not TimingState.READY:
         waiting.extend(timing.waiting_for or (f"TIMING_{timing.state.value}",))
 
     if opportunity.state is OpportunityState.COMPRESSED:

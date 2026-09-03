@@ -61,10 +61,10 @@ GATE_REGISTRY: tuple[GateDefinition, ...] = (
     GateDefinition("LOWER_HORIZON_COUNTER_MOVE_TO_RESOLVE", GateAuthority.STRUCTURE, GateSemantic.WAIT, "structure"),
     GateDefinition("{}:STRUCTURAL_TIMING_CONTEXT", GateAuthority.STRUCTURE, GateSemantic.WAIT, "structure"),
 
-    # Permission owns context permission. Two summary reasons deliberately defer to
-    # canonical Structure / independent Conflict owners rather than double-vetoing.
+    # Permission owns context permission. Structural context-conflict summaries are
+    # explicitly Structure-owned; they are not independent Conflict-family votes.
     GateDefinition("CANONICAL_STRUCTURE_UNRESOLVED", GateAuthority.STRUCTURE, GateSemantic.DEFERRED_SUMMARY, "structure"),
-    GateDefinition("CONTEXT_CONFLICT_HIGH", GateAuthority.CONFLICT, GateSemantic.DEFERRED_SUMMARY, "context_conflict"),
+    GateDefinition("CONTEXT_CONFLICT_HIGH", GateAuthority.STRUCTURE, GateSemantic.DEFERRED_SUMMARY, "structure"),
     GateDefinition("REVERSAL_DIRECTION_UNRESOLVED", GateAuthority.PERMISSION, GateSemantic.HARD_BLOCK, "permission"),
     GateDefinition("CONTINUATION_DIRECTION_UNRESOLVED", GateAuthority.PERMISSION, GateSemantic.HARD_BLOCK, "permission"),
     GateDefinition("PERMISSION_BLOCKED", GateAuthority.PERMISSION, GateSemantic.HARD_BLOCK, "permission"),
@@ -77,7 +77,7 @@ GATE_REGISTRY: tuple[GateDefinition, ...] = (
     GateDefinition("PERMISSION_SCOPE_SIDE_TO_RECONCILE", GateAuthority.PERMISSION, GateSemantic.WAIT, "permission"),
     GateDefinition("PERMISSION_SIDE_TO_RESOLVE", GateAuthority.PERMISSION, GateSemantic.WAIT, "permission"),
     GateDefinition("PERMISSION_TO_OPEN", GateAuthority.PERMISSION, GateSemantic.WAIT, "permission"),
-    GateDefinition("CONTEXT_CONFLICT_TO_RECONCILE", GateAuthority.CONFLICT, GateSemantic.WAIT, "context_conflict"),
+    GateDefinition("CONTEXT_CONFLICT_TO_RECONCILE", GateAuthority.STRUCTURE, GateSemantic.WAIT, "structure"),
 
     # Stabil owns only fresh-LONG entry contradiction/recovery readiness. Exact native
     # matrix rows remain on the Stabil policy assessment for attribution.

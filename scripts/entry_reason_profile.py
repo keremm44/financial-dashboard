@@ -11,10 +11,13 @@ from financial_dashboard.analysis_config import ANALYSIS_TIMEFRAMES
 from financial_dashboard.data.identity import normalize_symbol
 from financial_dashboard.data.parquet_store import ParquetOHLCVStore
 from financial_dashboard.decision.arbiter import assess_entry_arbitration
-from financial_dashboard.decision.engine import assess_horizon_decision
+from financial_dashboard.decision.calibration import load_opportunity_calibration
+from financial_dashboard.decision.engine import DecisionEngineConfig, assess_horizon_decision
 from financial_dashboard.decision.entry import assess_entry_decision
+from financial_dashboard.decision.execution_detect import detect_30m_execution_events
 from financial_dashboard.decision.history_replay import HistoricalDecisionInputReplayRunner
 from financial_dashboard.decision.history_source import HistoricalDecisionInputConfig
+from financial_dashboard.decision.opportunity import OpportunityCalibration
 from financial_dashboard.decision.persistent_state import PersistentObjectStore
 from financial_dashboard.decision.scenario import assess_entry_scenario
 from financial_dashboard.decision.structural import DecisionHorizon
@@ -111,6 +114,65 @@ def _count_conflict(
             reason_counter[f"{prefix}:{family.family}:{reason}"] += 1
 
 
+def _calibration(
+    args: argparse.Namespace,
+    *,
+    cache_root: Path,
+    symbol: str,
+) -> tuple[OpportunityCalibration, str]:
+    manual = (
+        args.opportunity_none_max_atr,
+        args.opportunity_compressed_max_atr,
+        args.opportunity_moderate_max_atr,
+    )
+    has_manual = any(value is not None for value in manual)
+    has_file = args.opportunity_calibration is not None or args.auto_calibration
+    if has_manual and has_file:
+        raise SystemExit(
+            "manual opportunity boundaries cannot be combined with "
+            "--opportunity-calibration/--auto-calibration"
+        )
+    if has_manual:
+        if any(value is None for value in manual):
+            raise SystemExit(
+                "Opportunity calibration requires all three manual boundaries: "
+                "--opportunity-none-max-atr, --opportunity-compressed-max-atr, "
+                "--opportunity-moderate-max-atr"
+            )
+        return (
+            OpportunityCalibration(
+                none_max_atr=float(manual[0]),
+                compressed_max_atr=float(manual[1]),
+                moderate_max_atr=float(manual[2]),
+            ),
+            "MANUAL",
+        )
+
+    path = args.opportunity_calibration
+    clean_symbol = normalize_symbol(symbol)
+    if path is None and args.auto_calibration:
+        path = cache_root / "calibration" / "opportunity" / f"{clean_symbol}.json"
+    if path is None:
+        raise SystemExit(
+            "OPPORTUNITY_CALIBRATION_REQUIRED\n"
+            "Entry reason profiling must use the same Class-C opportunity calibration as the "
+            "canonical backtest. Build it with:\n"
+            f"  python scripts/build_opportunity_calibration.py {cache_root} {clean_symbol}\n"
+            "Then rerun this command with --auto-calibration."
+        )
+    if not Path(path).exists():
+        raise SystemExit(
+            f"opportunity calibration file is missing: {path}. Build it with "
+            f"`python scripts/build_opportunity_calibration.py {cache_root} {clean_symbol}`"
+        )
+    record = load_opportunity_calibration(path)
+    if normalize_symbol(record.symbol) != clean_symbol:
+        raise SystemExit(
+            f"opportunity calibration symbol mismatch: file={record.symbol} requested={clean_symbol}"
+        )
+    return record.calibration, str(path)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -125,6 +187,15 @@ def main() -> None:
     parser.add_argument("--max-bars", type=int, default=None)
     parser.add_argument("--pattern-profile", default=None)
     parser.add_argument("--top", type=int, default=30)
+    parser.add_argument("--opportunity-calibration", type=Path, default=None)
+    parser.add_argument(
+        "--auto-calibration",
+        action="store_true",
+        help="Load <cache_root>/calibration/opportunity/<symbol>.json and fail if missing",
+    )
+    parser.add_argument("--opportunity-none-max-atr", type=float, default=None)
+    parser.add_argument("--opportunity-compressed-max-atr", type=float, default=None)
+    parser.add_argument("--opportunity-moderate-max-atr", type=float, default=None)
     args = parser.parse_args()
 
     store = ParquetOHLCVStore(args.cache_root)
@@ -140,6 +211,12 @@ def main() -> None:
         start_at=effective_start,
         end_at=args.end,
     )
+    opportunity_calibration, calibration_source = _calibration(
+        args,
+        cache_root=args.cache_root,
+        symbol=clean_symbol,
+    )
+    engine_config = DecisionEngineConfig(opportunity_calibration=opportunity_calibration)
 
     runner = HistoricalDecisionInputReplayRunner(store)
     identity = runner._cache_identity(symbol=clean_symbol, config=config)
@@ -150,6 +227,7 @@ def main() -> None:
     frozen = load_frozen_decision_timeline(store, clean_symbol, config=config)
     load_seconds = perf_counter() - started
     snapshots = frozen.replay.snapshots
+    entry_execution_events, exit_execution_events = detect_30m_execution_events(snapshots)
 
     horizon_state: dict[str, Counter[str]] = {
         "LT presence": Counter(),
@@ -186,10 +264,14 @@ def main() -> None:
 
     decision_started = perf_counter()
     for snapshot in snapshots:
-        lt = assess_entry_scenario(snapshot, DecisionHorizon.LONG_TERM)
-        st = assess_entry_scenario(snapshot, DecisionHorizon.SHORT_TERM)
-        lt_decision = assess_horizon_decision(snapshot, DecisionHorizon.LONG_TERM)
-        st_decision = assess_horizon_decision(snapshot, DecisionHorizon.SHORT_TERM)
+        lt = assess_entry_scenario(snapshot, DecisionHorizon.LONG_TERM, config=engine_config)
+        st = assess_entry_scenario(snapshot, DecisionHorizon.SHORT_TERM, config=engine_config)
+        lt_decision = assess_horizon_decision(
+            snapshot, DecisionHorizon.LONG_TERM, config=engine_config
+        )
+        st_decision = assess_horizon_decision(
+            snapshot, DecisionHorizon.SHORT_TERM, config=engine_config
+        )
 
         for prefix, scenario, assessment in (
             ("LT", lt, lt_decision),
@@ -212,13 +294,17 @@ def main() -> None:
                 reason_counter=conflict_reasons,
             )
 
-        arbitration = assess_entry_arbitration(snapshot)
+        arbitration = assess_entry_arbitration(snapshot, config=engine_config)
         arbiter_state[_value(arbitration.state)] += 1
         arbiter_selection[_value(arbitration.selection)] += 1
         _add_many(arbiter_reasons, arbitration.reasons)
         _add_many(arbiter_waiting, arbitration.waiting_for)
 
-        entry = assess_entry_decision(snapshot, execution_event=None)
+        entry = assess_entry_decision(
+            snapshot,
+            config=engine_config,
+            execution_event=entry_execution_events.get(snapshot.as_of),
+        )
         entry_action[_value(entry.action)] += 1
         entry_stage["NONE" if entry.scenario_stage is None else _value(entry.scenario_stage)] += 1
         entry_horizon["NONE" if entry.selected_horizon is None else _value(entry.selected_horizon)] += 1
@@ -235,6 +321,9 @@ def main() -> None:
     print(f"SNAPSHOTS\t{len(snapshots)}")
     print(f"FROZEN_CACHE_STATUS\t{frozen.cache_status}")
     print(f"FROZEN_CACHE_FILE_MB\t{cache_mb:.3f}")
+    print(f"OPPORTUNITY_CALIBRATION\t{calibration_source}")
+    print(f"ENTRY_EXECUTION_EVENTS\t{len(entry_execution_events)}")
+    print(f"EXIT_EXECUTION_EVENTS\t{len(exit_execution_events)}")
     print(f"FROZEN_TIMELINE_LOAD_SECONDS\t{load_seconds:.3f}")
     print(f"REASON_PROFILE_SECONDS\t{decision_seconds:.3f}")
     print("DOMAIN_REPLAY_SECONDS\t0.000")

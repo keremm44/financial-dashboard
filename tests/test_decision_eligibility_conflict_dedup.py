@@ -18,12 +18,13 @@ from financial_dashboard.decision.eligibility import EligibilityState, assess_el
 from financial_dashboard.decision.engine import _decision_structure_projection
 from financial_dashboard.decision.environment import EnvironmentRisk
 from financial_dashboard.decision.opportunity import OpportunityState
-from financial_dashboard.decision.structural import StructuralDirection, ThesisState
+from financial_dashboard.decision.structural import DecisionHorizon, StructuralDirection, ThesisState
 from financial_dashboard.decision.timing import TimingState
 
 
 def _structural():
     return SimpleNamespace(
+        horizon=DecisionHorizon.LONG_TERM,
         data_quality=ContextDataQuality.VALID,
         direction=StructuralDirection.LONG,
         thesis_state=ThesisState.INTACT,
@@ -88,7 +89,7 @@ def test_context_conflict_high_is_not_a_second_hard_veto() -> None:
 
     assert result.state is EligibilityState.WAITING
     assert result.blockers == ()
-    assert "CONTEXT_CONFLICT_DEFERRED_TO_INDEPENDENT_FAMILY_GATE" in result.reasons
+    assert "CURRENT_STRUCTURAL_CONTEXT_CONFLICT_TO_RECONCILE" in result.reasons
     assert "CONTEXT_CONFLICT_TO_RECONCILE" in result.waiting_for
 
 

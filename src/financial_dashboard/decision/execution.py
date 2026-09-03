@@ -56,6 +56,14 @@ class ExecutionTriggerAssessment:
     source_refs: tuple[FactRef, ...]
 
 
+def _event_proves_valid_price_channel(event: ExecutionTriggerEvent) -> bool:
+    """Require explicit normalized causal refs before recovering generic DATA_LIMITED."""
+
+    return bool(event.source_refs) and all(
+        ref.data_quality is ContextDataQuality.VALID for ref in event.source_refs
+    )
+
+
 def assess_execution_trigger(
     side: StructuralDirection,
     *,
@@ -67,7 +75,9 @@ def assess_execution_trigger(
     """Validate one fresh execution event without inventing a trigger from state.
 
     A valid trigger channel with no fresh event is ``ABSENT``. Missing/degraded
-    trigger data is ``UNAVAILABLE``. Supplied stale/future/mismatched events are
+    trigger data is ``UNAVAILABLE``. A fresh event backed by explicit VALID causal
+    price refs may recover a generic DATA_LIMITED channel; missing/unavailable
+    evidence is never promoted. Supplied stale/future/mismatched events are
     programming errors and fail closed rather than being silently reused.
     """
 
@@ -82,7 +92,29 @@ def assess_execution_trigger(
             ("EXECUTION_SIDE_UNRESOLVED",),
             (),
         )
-    if data_quality is not ContextDataQuality.VALID:
+
+    if event is not None:
+        if event.side is not side:
+            raise ValueError("execution trigger side must match assessed structural side")
+        if event.timeframe.strip().lower() != normalized:
+            raise ValueError("execution trigger timeframe must match configured trigger timeframe")
+        try:
+            if event.available_at > as_of:
+                raise ValueError("future-unavailable execution trigger cannot be consumed")
+            if event.observed_at != as_of:
+                raise ValueError("execution trigger event must be fresh at decision as_of")
+        except TypeError as exc:
+            raise TypeError("execution trigger timestamps must be comparable") from exc
+
+        for ref in event.source_refs:
+            if ref.timeframe.strip().lower() != normalized:
+                raise ValueError("execution trigger refs must belong to trigger timeframe")
+            if not ref.is_available_at(as_of):
+                raise ValueError("execution trigger cannot contain future-unavailable refs")
+
+    if data_quality is not ContextDataQuality.VALID and not (
+        event is not None and _event_proves_valid_price_channel(event)
+    ):
         return ExecutionTriggerAssessment(
             ExecutionTriggerState.UNAVAILABLE,
             side,
@@ -98,24 +130,6 @@ def assess_execution_trigger(
             ("NO_FRESH_EXECUTION_EVENT",),
             (),
         )
-
-    if event.side is not side:
-        raise ValueError("execution trigger side must match assessed structural side")
-    if event.timeframe.strip().lower() != normalized:
-        raise ValueError("execution trigger timeframe must match configured trigger timeframe")
-    try:
-        if event.available_at > as_of:
-            raise ValueError("future-unavailable execution trigger cannot be consumed")
-        if event.observed_at != as_of:
-            raise ValueError("execution trigger event must be fresh at decision as_of")
-    except TypeError as exc:
-        raise TypeError("execution trigger timestamps must be comparable") from exc
-
-    for ref in event.source_refs:
-        if ref.timeframe.strip().lower() != normalized:
-            raise ValueError("execution trigger refs must belong to trigger timeframe")
-        if not ref.is_available_at(as_of):
-            raise ValueError("execution trigger cannot contain future-unavailable refs")
 
     return ExecutionTriggerAssessment(
         event.state,

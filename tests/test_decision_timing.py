@@ -12,6 +12,7 @@ from financial_dashboard.decision.reaction import ReactionAssessment, ReactionSt
 from financial_dashboard.decision.structural import DecisionHorizon, HorizonRelation, StructuralDirection
 from financial_dashboard.decision.timing import (
     SetupTriggerState,
+    TimingEntryEffect,
     TimingState,
     assess_setup_trigger,
     assess_timing,
@@ -81,14 +82,29 @@ def test_aligned_confirmed_pattern_can_mature_setup():
     assert result.state is SetupTriggerState.CONFIRMED
 
 
-def test_opposite_pattern_does_not_manufacture_setup_for_structure_side():
+def test_opposite_confirmed_pattern_is_explicit_adverse_setup_evidence():
     result = assess_setup_trigger(
         StructuralDirection.LONG,
         reaction=_reaction(ReactionState.ABSENT),
         pattern=_pattern(PatternBehaviorPhase.BREAK_CONFIRMED, direction=-1),
         timeframe="30m",
     )
-    assert result.state is SetupTriggerState.ABSENT
+    assert result.state is SetupTriggerState.ADVERSE
+    assert "OPPOSING_PATTERN_CONFIRMED:BREAK_CONFIRMED" in result.reasons
+
+
+def test_st_opposite_confirmed_pattern_defers_with_adverse_effect():
+    result = assess_timing(
+        DecisionHorizon.SHORT_TERM,
+        StructuralDirection.LONG,
+        HorizonRelation.ALIGNED,
+        reaction=_reaction(ReactionState.ABSENT),
+        pattern=_pattern(PatternBehaviorPhase.RETEST_HELD, direction=-1),
+        timeframe="30m",
+    )
+    assert result.state is TimingState.EARLY
+    assert result.entry_effect is TimingEntryEffect.ADVERSE
+    assert result.waiting_for == ("NEW_SETUP_PATH",)
 
 
 def test_developing_reaction_maps_to_developing_timing():
@@ -101,6 +117,7 @@ def test_developing_reaction_maps_to_developing_timing():
         timeframe="30m",
     )
     assert result.state is TimingState.DEVELOPING
+    assert result.entry_effect is TimingEntryEffect.NEUTRAL
     assert "SETUP_TRIGGER_CONFIRMATION" in result.waiting_for
 
 
@@ -116,6 +133,19 @@ def test_lt_counter_reaction_remains_early_even_when_setup_fact_is_confirmed():
     assert result.state is TimingState.EARLY
 
 
+def test_lt_opposite_pattern_keeps_legacy_early_wait_contract():
+    result = assess_timing(
+        DecisionHorizon.LONG_TERM,
+        StructuralDirection.LONG,
+        HorizonRelation.ALIGNED,
+        reaction=_reaction(ReactionState.ABSENT),
+        pattern=_pattern(PatternBehaviorPhase.BREAK_CONFIRMED, direction=-1),
+        timeframe="30m",
+    )
+    assert result.state is TimingState.EARLY
+    assert result.waiting_for == ("SETUP_TRIGGER",)
+
+
 def test_st_counter_reaction_can_be_ready_on_its_own_horizon():
     result = assess_timing(
         DecisionHorizon.SHORT_TERM,
@@ -126,6 +156,7 @@ def test_st_counter_reaction_can_be_ready_on_its_own_horizon():
         timeframe="30m",
     )
     assert result.state is TimingState.READY
+    assert result.entry_effect is TimingEntryEffect.SUPPORTIVE
 
 
 def test_pattern_missing_is_not_unavailable_when_reaction_was_validly_observed_absent():
@@ -146,6 +177,32 @@ def test_all_setup_evidence_missing_is_unavailable_not_absent():
         timeframe="30m",
     )
     assert result.state is SetupTriggerState.UNAVAILABLE
+
+
+def test_st_unavailable_timing_is_unknown_not_adverse():
+    result = assess_timing(
+        DecisionHorizon.SHORT_TERM,
+        StructuralDirection.LONG,
+        HorizonRelation.ALIGNED,
+        reaction=_reaction(ReactionState.UNKNOWN),
+        pattern=None,
+        timeframe="30m",
+    )
+    assert result.state is TimingState.UNAVAILABLE
+    assert result.entry_effect is TimingEntryEffect.UNKNOWN
+
+
+def test_failed_setup_has_failed_entry_effect():
+    result = assess_timing(
+        DecisionHorizon.SHORT_TERM,
+        StructuralDirection.LONG,
+        HorizonRelation.ALIGNED,
+        reaction=_reaction(ReactionState.FAILED, failed=True),
+        pattern=None,
+        timeframe="30m",
+    )
+    assert result.state is TimingState.FAILED
+    assert result.entry_effect is TimingEntryEffect.FAILED
 
 
 def test_extended_is_not_emitted_without_calibration():

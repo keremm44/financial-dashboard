@@ -19,6 +19,7 @@ class SetupTriggerState(StrEnum):
     ABSENT = "ABSENT"
     FORMING = "FORMING"
     CONFIRMED = "CONFIRMED"
+    ADVERSE = "ADVERSE"
     FAILED = "FAILED"
     UNAVAILABLE = "UNAVAILABLE"
 
@@ -30,6 +31,16 @@ class TimingState(StrEnum):
     EXTENDED = "EXTENDED"
     FAILED = "FAILED"
     UNAVAILABLE = "UNAVAILABLE"
+
+
+class TimingEntryEffect(StrEnum):
+    """Entry authority carried by short-term Timing, separate from maturity state."""
+
+    UNKNOWN = "UNKNOWN"
+    NEUTRAL = "NEUTRAL"
+    SUPPORTIVE = "SUPPORTIVE"
+    ADVERSE = "ADVERSE"
+    FAILED = "FAILED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +59,7 @@ class TimingAssessment:
     reasons: tuple[str, ...]
     waiting_for: tuple[str, ...]
     source_refs: tuple[FactRef, ...]
+    entry_effect: TimingEntryEffect = TimingEntryEffect.UNKNOWN
 
 
 def _direction_value(side: StructuralDirection) -> int:
@@ -105,8 +117,9 @@ def assess_setup_trigger(
 
     ``reaction`` must already be restricted to the timing timeframe by the caller.
     Pattern is optional. A directional Pattern can confirm setup maturity only when
-    its native direction agrees with the Structure-owned side. Pattern absence never
-    blocks an otherwise confirmed reaction path.
+    its native direction agrees with the Structure-owned side. A confirmed opposing
+    Pattern is explicit short-term adverse evidence rather than neutral absence.
+    Pattern absence never blocks an otherwise confirmed reaction path.
     """
 
     normalized = timeframe.strip().lower()
@@ -126,13 +139,13 @@ def assess_setup_trigger(
         and row.ref.data_quality is ContextDataQuality.VALID
         and row.phase is not PatternBehaviorPhase.UNAVAILABLE
     )
-    pattern_aligned = bool(
+    pattern_direction = int(row.classic_direction) if pattern_available else 0
+    pattern_aligned = bool(pattern_available and pattern_direction == direction)
+    pattern_neutral = bool(pattern_available and pattern_direction == 0)
+    pattern_opposing_confirmed = bool(
         pattern_available
-        and int(row.classic_direction) == direction
-    )
-    pattern_neutral = bool(
-        pattern_available
-        and int(row.classic_direction) == 0
+        and pattern_direction == -direction
+        and row.phase in {PatternBehaviorPhase.BREAK_CONFIRMED, PatternBehaviorPhase.RETEST_HELD}
     )
 
     reaction_known = reaction.state is not ReactionState.UNKNOWN
@@ -155,6 +168,14 @@ def assess_setup_trigger(
             SetupTriggerState.CONFIRMED,
             normalized,
             tuple(reasons),
+            refs,
+        )
+
+    if pattern_opposing_confirmed:
+        return SetupTriggerAssessment(
+            SetupTriggerState.ADVERSE,
+            normalized,
+            (f"OPPOSING_PATTERN_CONFIRMED:{row.phase.value}",),
             refs,
         )
 
@@ -212,7 +233,7 @@ def assess_setup_trigger(
                 reasons.append("NO_PATTERN_OBSERVED")
             elif row.phase is PatternBehaviorPhase.COMPLETED:
                 reasons.append("PATTERN_ALREADY_COMPLETED")
-            elif int(row.classic_direction) not in {0, direction}:
+            elif pattern_direction not in {0, direction}:
                 reasons.append("PATTERN_DIRECTION_NOT_ALIGNED_WITH_STRUCTURE")
         return SetupTriggerAssessment(
             SetupTriggerState.ABSENT,
@@ -238,10 +259,12 @@ def assess_timing(
     pattern: PatternBehaviorProjection | None,
     timeframe: str,
 ) -> TimingAssessment:
-    """Explicit v1 timing state machine with named guard conditions.
+    """Explicit v1 timing state machine with separate ST entry authority.
 
-    EXTENDED is part of the public contract but intentionally not emitted in v1;
-    no uncalibrated ATR/age threshold is introduced here.
+    Timing maturity remains observable for both horizons. ``entry_effect`` prevents
+    ST eligibility from treating every non-READY maturity state as a veto. LT keeps
+    its legacy maturity requirement in Eligibility. EXTENDED remains part of the
+    public contract but is intentionally not emitted without calibration.
     """
 
     setup = assess_setup_trigger(
@@ -261,6 +284,7 @@ def assess_timing(
             ("TIMING_INPUT_UNAVAILABLE",),
             (f"{normalized}:SETUP_TRIGGER_DATA",),
             refs,
+            TimingEntryEffect.UNKNOWN,
         )
 
     if horizon is DecisionHorizon.LONG_TERM and relation in {
@@ -275,6 +299,7 @@ def assess_timing(
             (f"LT_TIMING_HELD_BY_RELATION:{relation.value}",),
             ("LOWER_HORIZON_COUNTER_MOVE_TO_RESOLVE",),
             refs,
+            TimingEntryEffect.ADVERSE,
         )
 
     if horizon is DecisionHorizon.LONG_TERM and relation is HorizonRelation.ST_UNRESOLVED:
@@ -285,6 +310,28 @@ def assess_timing(
             ("LT_ENTRY_TIMING_REQUIRES_VALID_ST_AUTHORITY",),
             ("1h:STRUCTURAL_TIMING_CONTEXT",),
             refs,
+            TimingEntryEffect.UNKNOWN,
+        )
+
+    if setup.state is SetupTriggerState.ADVERSE:
+        if horizon is DecisionHorizon.LONG_TERM:
+            return TimingAssessment(
+                TimingState.EARLY,
+                normalized,
+                setup,
+                ("SETUP_TRIGGER_ABSENT",),
+                ("SETUP_TRIGGER",),
+                refs,
+                TimingEntryEffect.ADVERSE,
+            )
+        return TimingAssessment(
+            TimingState.EARLY,
+            normalized,
+            setup,
+            ("SHORT_TERM_PATTERN_OPPOSES_STRUCTURE",),
+            ("NEW_SETUP_PATH",),
+            refs,
+            TimingEntryEffect.ADVERSE,
         )
 
     if setup.state is SetupTriggerState.FAILED:
@@ -295,6 +342,7 @@ def assess_timing(
             ("CURRENT_SETUP_PATH_FAILED",),
             ("NEW_SETUP_PATH",),
             refs,
+            TimingEntryEffect.FAILED,
         )
     if setup.state is SetupTriggerState.FORMING:
         return TimingAssessment(
@@ -304,6 +352,7 @@ def assess_timing(
             ("SETUP_TRIGGER_FORMING",),
             ("SETUP_TRIGGER_CONFIRMATION",),
             refs,
+            TimingEntryEffect.NEUTRAL,
         )
     if setup.state is SetupTriggerState.CONFIRMED:
         return TimingAssessment(
@@ -313,6 +362,7 @@ def assess_timing(
             ("SETUP_TRIGGER_CONFIRMED",),
             (),
             refs,
+            TimingEntryEffect.SUPPORTIVE,
         )
 
     return TimingAssessment(
@@ -322,6 +372,7 @@ def assess_timing(
         ("SETUP_TRIGGER_ABSENT",),
         ("SETUP_TRIGGER",),
         refs,
+        TimingEntryEffect.NEUTRAL,
     )
 
 
@@ -329,6 +380,7 @@ __all__ = [
     "SetupTriggerAssessment",
     "SetupTriggerState",
     "TimingAssessment",
+    "TimingEntryEffect",
     "TimingState",
     "assess_setup_trigger",
     "assess_timing",
