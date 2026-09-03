@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import fields
 from types import SimpleNamespace
 
-import pytest
-
 from financial_dashboard.context.envelope import (
     CausalFamily,
     ContextDataQuality,
@@ -141,6 +139,7 @@ def _participation_row(
     effort: EffortResultBehavior = EffortResultBehavior.NEUTRAL,
     quality: ContextDataQuality = ContextDataQuality.VALID,
     lineage_id: str | None = None,
+    available_at: int = 10,
 ):
     return SimpleNamespace(
         ref=_ref(
@@ -149,8 +148,9 @@ def _participation_row(
             timeframe="1h",
             native_id=(
                 f"VOL:{break_direction}:{break_behavior.value}:"
-                f"{participation_direction}:{trend.value}:{effort.value}"
+                f"{participation_direction}:{trend.value}:{effort.value}:{available_at}"
             ),
+            available_at=available_at,
             quality=quality,
             lineage_id=lineage_id,
         ),
@@ -321,9 +321,8 @@ def test_up_down_semantics_are_symmetric() -> None:
     assert down.challenger_side is StructuralDirection.SHORT
 
 
-def test_challenger_failure_with_incumbent_defense_during_transition_is_failed() -> None:
+def test_challenger_failure_with_incumbent_progress_during_transition_is_failed() -> None:
     structural = _structural(StructuralDirection.SHORT, transitioning=True)
-    challenger = StructuralDirection.LONG
     snapshot = _snapshot(
         participation_row=_participation_row(
             break_direction=1,
@@ -332,16 +331,13 @@ def test_challenger_failure_with_incumbent_defense_during_transition_is_failed()
             trend=ParticipationTrend.CONFIRMED,
             evidence_direction=-1,
         ),
-        pattern_row=_pattern_row(challenger, PatternBehaviorPhase.BREAK_FAILED),
+        pattern_row=_pattern_row(StructuralDirection.LONG, PatternBehaviorPhase.BREAK_FAILED),
     )
     assessment = assess_short_term_control(snapshot, structural=structural)
 
     assert assessment.control_state is ShortTermControlState.TRANSFER_FAILED
     assert assessment.challenger_condition is ChallengerCondition.FAILING
-    assert assessment.incumbent_condition in {
-        IncumbentCondition.PROGRESSING,
-        IncumbentCondition.DEFENDING,
-    }
+    assert assessment.incumbent_condition is IncumbentCondition.PROGRESSING
 
 
 def test_explicit_1h_transition_confirmation_can_establish_transfer() -> None:
@@ -419,10 +415,19 @@ def test_unknown_lineage_is_reported_not_fabricated_as_independence() -> None:
 
 def test_future_unavailable_optional_evidence_is_ignored() -> None:
     structural = _structural(StructuralDirection.SHORT, transitioning=True)
-    future = _participation_row(
-        break_direction=1,
-        break_behavior=BreakParticipationBehavior.PROTECTED,
-        participation_direction=1,
-        trend=ParticipationTrend.PROTECTED,
+    snapshot = _snapshot(
+        participation_row=_participation_row(
+            break_direction=1,
+            break_behavior=BreakParticipationBehavior.PROTECTED,
+            participation_direction=1,
+            trend=ParticipationTrend.PROTECTED,
+            evidence_direction=1,
+            available_at=11,
+        )
     )
-    future.ref = pytest.fail  # SimpleNamespace is mutable; guard against accidental direct mutation below.
+
+    assessment = assess_short_term_control(snapshot, structural=structural)
+
+    assert not assessment.evidence
+    assert assessment.control_state is ShortTermControlState.CONTROL_WEAKENING
+    assert all(ref.available_at <= snapshot.as_of for ref in assessment.source_refs)
