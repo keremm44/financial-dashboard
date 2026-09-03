@@ -11,9 +11,11 @@ from financial_dashboard.context.participation_behavior_projection import (
     EffortResultBehavior,
     ParticipationTrend,
 )
-from financial_dashboard.context.pattern_behavior_projection import PatternBehaviorPhase
+from financial_dashboard.context.pattern_behavior_projection import (
+    PatternBehaviorPhase,
+    _phase as _native_pattern_phase,
+)
 
-from .execution_detect import _effective_phase as _effective_pattern_phase
 from .reaction import ReactionState, assess_reaction
 from .structural import DecisionHorizon, StructuralAssessment, StructuralDirection, ThesisState
 
@@ -199,6 +201,36 @@ def _available_ref(
     if allow_data_limited and ref.data_quality is ContextDataQuality.DATA_LIMITED:
         return ref
     return None
+
+
+def _effective_pattern_phase(row: Any | None) -> PatternBehaviorPhase | None:
+    """Recover causal price-only Pattern phase without depending on Execution.
+
+    This intentionally mirrors the production price-only DATA_LIMITED semantics used
+    by Timing/Execution while keeping those policy/execution layers out of Control.
+    The frozen ref itself is never promoted to VALID here.
+    """
+
+    if row is None:
+        return None
+    phase = getattr(row, "phase", None)
+    if phase is not None and not isinstance(phase, PatternBehaviorPhase):
+        try:
+            phase = PatternBehaviorPhase(str(getattr(phase, "value", phase)))
+        except ValueError:
+            phase = None
+    ref = getattr(row, "ref", None)
+    quality = getattr(ref, "data_quality", ContextDataQuality.UNAVAILABLE)
+    if (
+        phase is not None
+        and phase is not PatternBehaviorPhase.UNAVAILABLE
+        and quality is ContextDataQuality.VALID
+    ):
+        return phase
+    native_state = str(getattr(row, "native_state", "") or "").strip()
+    if not native_state:
+        return phase
+    return _native_pattern_phase(native_state, unavailable=False)
 
 
 def _row(projection: Any, timeframe: str) -> Any | None:
