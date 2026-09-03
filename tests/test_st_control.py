@@ -321,7 +321,7 @@ def test_up_down_semantics_are_symmetric() -> None:
     assert down.challenger_side is StructuralDirection.SHORT
 
 
-def test_challenger_failure_with_incumbent_progress_during_transition_is_failed() -> None:
+def test_challenger_failure_with_incumbent_progress_keeps_active_transition_contested() -> None:
     structural = _structural(StructuralDirection.SHORT, transitioning=True)
     snapshot = _snapshot(
         participation_row=_participation_row(
@@ -335,7 +335,7 @@ def test_challenger_failure_with_incumbent_progress_during_transition_is_failed(
     )
     assessment = assess_short_term_control(snapshot, structural=structural)
 
-    assert assessment.control_state is ShortTermControlState.TRANSFER_FAILED
+    assert assessment.control_state is ShortTermControlState.CONTROL_CONTESTED
     assert assessment.challenger_condition is ChallengerCondition.FAILING
     assert assessment.incumbent_condition is IncumbentCondition.PROGRESSING
 
