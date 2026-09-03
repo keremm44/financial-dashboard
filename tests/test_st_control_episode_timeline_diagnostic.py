@@ -1,13 +1,23 @@
 from __future__ import annotations
 
-import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 
 
-def test_st_control_episode_timeline_diagnostic_imports() -> None:
-    path = Path(__file__).resolve().parents[1] / "scripts" / "st_control_episode_timeline_diagnostic.py"
-    spec = importlib.util.spec_from_file_location("st_control_episode_timeline_diagnostic", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    assert callable(module.main)
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts" / "st_control_episode_timeline_diagnostic.py"
+
+
+def test_st_control_episode_timeline_diagnostic_help_imports_cleanly() -> None:
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--help"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Phase A1B diagnostic-only ST transition episode timeline" in result.stdout
+    assert "--json-out" in result.stdout
